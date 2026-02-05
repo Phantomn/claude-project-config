@@ -51,6 +51,7 @@ git log --oneline -5
 - `chore`: 빌드/설정 변경
 
 **생성 규칙**:
+- **언어: 한글로 작성** (type/scope만 영문)
 - subject: 50자 이내, 명령형
 - body: 72자 줄바꿈, 왜 변경했는지 설명
 - footer: Breaking changes, Issue 참조
@@ -59,10 +60,10 @@ git log --oneline -5
 ```
 📝 제안 커밋 메시지:
 
-feat(auth): implement JWT token refresh mechanism
+feat(auth): JWT 토큰 자동 갱신 기능 구현
 
-Add automatic token refresh when access token expires.
-Prevents user logout due to token expiration during active sessions.
+액세스 토큰 만료 시 자동 갱신 기능 추가.
+활성 세션 중 로그아웃 방지.
 
 Closes #123
 
@@ -114,10 +115,10 @@ gh pr create --title "..." --body "..."
 
 **타입**: feat
 **범위**: auth
-**제목**: implement JWT token refresh mechanism
+**제목**: JWT 토큰 자동 갱신 기능 구현
 
 **본문**:
-자동 토큰 갱신 기능 추가로 액세스 토큰 만료 시에도 사용자 세션 유지.
+액세스 토큰 만료 시 자동 갱신 기능 추가.
 활성 세션 중 로그아웃 방지.
 
 **Footer**:
