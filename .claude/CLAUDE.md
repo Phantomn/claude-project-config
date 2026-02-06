@@ -84,4 +84,7 @@ src/
 <!-- 비용: 일반 대비 ~7배 토큰, 팀원 수에 비례 -->
 <!-- 권장: 다중 파일 병렬 편집, 리뷰+구현 동시, 대규모 리팩토링 -->
 <!-- 비권장: 단순 작업, 단일 파일, 탐색/질문 -->
-<!-- 상세: docs/AGENT-TEAMS-GUIDE.md -->
+<!-- 훅 스크립트: .claude/hooks/scripts/ (TeammateIdle, TaskCompleted 핸들러) -->
+<!-- 알림 설정: HOOK_NOTIFY_DESKTOP=1 (데스크톱), SLACK_WEBHOOK_URL (Slack) -->
+<!-- 로그 위치: .claude/logs/agent-team.jsonl (JSONL 형식, tail -f로 모니터링) -->
+<!-- 상세: docs/AGENT-TEAMS-GUIDE.md, docs/TEAMMATE-HOOKS-GUIDE.md -->

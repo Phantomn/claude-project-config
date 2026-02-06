@@ -339,15 +339,90 @@ fi
 
 2. **훅 트리거 확인**:
    ```bash
-   # 로그 모니터링
+   # 로그 모니터링 (인라인 jq 사용 시)
    tail -f /tmp/agent-team.log
+   # 훅 스크립트 시스템 사용 시
+   tail -f .claude/logs/agent-team.jsonl | jq .
    ```
 
 3. **TaskCompleted 검증**:
    ```bash
-   # 완료된 태스크 카운트
+   # 완료된 태스크 카운트 (인라인 jq 사용 시)
    grep "task_completed" /tmp/agent-team.log | wc -l
+   # 훅 스크립트 시스템 사용 시
+   jq -r 'select(.event == "task_completed")' .claude/logs/agent-team.jsonl | wc -l
    ```
+
+---
+
+## 훅 스크립트 시스템
+
+인라인 `jq` 원라이너 대신 **모듈형 스크립트**로 훅을 관리할 수 있습니다.
+
+### 스크립트 구조
+
+```
+.claude/hooks/scripts/
+├── hooks-common.sh         # 공통 유틸 (로깅, 알림, 진행률)
+├── on-teammate-idle.sh     # TeammateIdle 핸들러
+└── on-task-completed.sh    # TaskCompleted 핸들러
+```
+
+### settings.json 설정
+
+```json
+{
+  "hooks": {
+    "TeammateIdle": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bash \"${CWD}/.claude/hooks/scripts/on-teammate-idle.sh\" 2>/dev/null || true"
+      }]
+    }],
+    "TaskCompleted": [{
+      "hooks": [{
+        "type": "command",
+        "command": "bash \"${CWD}/.claude/hooks/scripts/on-task-completed.sh\" 2>/dev/null || true"
+      }]
+    }]
+  }
+}
+```
+
+### 환경변수로 기능 제어
+
+| 환경변수 | 설명 | 기본값 |
+|----------|------|--------|
+| `HOOK_NOTIFY_DESKTOP` | `1`로 설정 시 데스크톱 알림 (notify-send/osascript) | 비활성 |
+| `SLACK_WEBHOOK_URL` | 설정 시 Slack 알림 발송 | 비활성 |
+| `HOOK_GITHUB_AUTOCLOSE` | `1`로 설정 시 태스크 제목의 `#숫자`로 GitHub 이슈 닫기 | 비활성 |
+
+### 로그 위치
+
+- **기본**: `${CWD}/.claude/logs/agent-team.jsonl` (프로젝트 내, `.gitignore` 처리)
+- **모니터링**: `tail -f .claude/logs/agent-team.jsonl`
+- **형식**: JSONL (한 줄 = 하나의 JSON 이벤트)
+
+```bash
+# 로그 모니터링
+tail -f .claude/logs/agent-team.jsonl | jq .
+
+# 에이전트별 완료 태스크 수
+jq -r 'select(.event == "task_completed") | .agent' .claude/logs/agent-team.jsonl | sort | uniq -c
+
+# 전체 진행률
+jq -r 'select(.event == "task_completed") | .task_id' .claude/logs/agent-team.jsonl | sort -u | wc -l
+```
+
+### 커스터마이즈
+
+`hooks-common.sh`를 수정하여 로그 위치, 알림 방식 등을 변경할 수 있습니다:
+
+```bash
+# hooks-common.sh 내 변경 가능 설정
+HOOK_LOG_DIR="${CWD:-.}/.claude/logs"   # 로그 디렉토리
+HOOK_LOG_FILE="${HOOK_LOG_DIR}/agent-team.jsonl"  # 로그 파일
+```
 
 ---
 
