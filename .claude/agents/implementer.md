@@ -1,3 +1,9 @@
+---
+name: implementer
+description: 기능 구현 전문 에이전트
+memory: project
+---
+
 # Implementer Agent - Universal
 
 ## Role

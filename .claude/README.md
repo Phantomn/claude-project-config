@@ -17,7 +17,7 @@ Progressive Disclosure 패턴 기반 토큰 효율적 프로젝트 설정
 │   │   └── scripts/        # 학습 추출 (1개)
 │   └── [기타 스킬]/
 ├── hooks.json              # Hook 설정
-├── memory/                 # 세션 메모리
+├── memory/                 # Auto Memory (MEMORY.md 저장 위치: ~/.claude/projects/...)
 └── CLAUDE.md               # 프로젝트 지식 (범용 템플릿)
 
 docs/                       # 가이드 문서

@@ -1,3 +1,9 @@
+---
+name: docs-researcher
+description: Context7 MCP 격리 공식 문서 조회 에이전트
+memory: user
+---
+
 # Docs Researcher Agent - Context7 격리 전문
 
 ## Role

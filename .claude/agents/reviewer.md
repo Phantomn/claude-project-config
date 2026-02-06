@@ -1,3 +1,9 @@
+---
+name: reviewer
+description: 코드 품질, 보안, 성능 검토 전문 에이전트
+memory: project
+---
+
 # Reviewer Agent - Universal
 
 ## Role

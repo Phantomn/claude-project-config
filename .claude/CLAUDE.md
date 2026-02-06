@@ -63,6 +63,13 @@ src/
 - API 스펙: `docs/api.md`
 - 테스트 패턴: `tests/README.md`
 
+## Memory Setup
+<!-- Auto Memory 설정 안내 -->
+<!-- MEMORY.md: ~/.claude/projects/<project-path-encoded>/memory/MEMORY.md -->
+<!-- 200줄 이내, 프로젝트 핵심 지식 기록 → 매 세션 자동 로드 -->
+<!-- CLAUDE.local.md: 개인 설정 (Git 미추적), cp CLAUDE.local.md.example CLAUDE.local.md -->
+<!-- 에이전트 memory frontmatter: name, description, memory (project|user) -->
+
 ## Workflow
 1. `/plan` → 작업 계획
 2. 구현 (자동 린트)

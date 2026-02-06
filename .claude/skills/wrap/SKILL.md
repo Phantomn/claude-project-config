@@ -151,10 +151,11 @@ Phase 1의 4개 분석 결과를 받아서 검증:
 다음 작업을 제안:
 ```
 ✅ 선택 가능한 작업:
-1. CLAUDE.md 업데이트 (문서화)
-2. 자동화 설정 추가 (Hook/Skill)
-3. Git 커밋 (/commit으로 연결)
-4. 모두 건너뛰기
+1. CLAUDE.md 업데이트 (팀 공유 규칙)
+2. MEMORY.md 업데이트 (프로젝트 메모리)
+3. 자동화 설정 추가 (Hook/Skill)
+4. Git 커밋 (/commit으로 연결)
+5. 모두 건너뛰기
 
 어떤 작업을 수행할까요?
 ```
@@ -188,7 +189,7 @@ Phase 1의 4개 분석 결과를 받아서 검증:
 - [ ] API 문서화 (OpenAPI 스펙)
 
 ---
-✅ 선택: 1, 2, 3, 4
+✅ 선택: 1, 2, 3, 4, 5
 ```
 
 ## Implementation Notes
@@ -197,6 +198,23 @@ Phase 1의 4개 분석 결과를 받아서 검증:
 - CLAUDE.md는 Git에 커밋되므로 팀원과 공유
 - 자동화 제안은 즉시 적용하지 않고 사용자 확인 필요
 - 2-phase 접근으로 중복 제거 및 일관성 보장
+
+### MEMORY.md 업데이트 가이드
+**역할 분리**:
+- CLAUDE.md Lessons Learned = 팀 공유 규칙 (Git 추적)
+- MEMORY.md = Claude 자동 참조 지식 (로컬, 200줄 제한)
+
+**MEMORY.md에 적합한 내용**:
+- 프로젝트 구조 지식 (모듈 간 의존성, 숨겨진 관계)
+- 반복적으로 참조하는 경로/명령어
+- 디버깅 시 유용했던 패턴
+
+**부적합한 내용** (CLAUDE.md에 넣을 것):
+- 명시적 코딩 규칙 ("await 필수" 등)
+- 팀원에게 공유해야 할 교훈
+
+**저장 위치**: `~/.claude/projects/<project-path-encoded>/memory/MEMORY.md`
+**제약**: 200줄 초과 시 잘림, 중요 항목을 앞에 배치
 
 ## Two-Phase Architecture
 

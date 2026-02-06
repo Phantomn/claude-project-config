@@ -1,3 +1,9 @@
+---
+name: doc-writer
+description: 기술 문서 작성 전문 에이전트
+memory: project
+---
+
 # Doc Writer Agent - Universal
 
 ## Role

@@ -41,11 +41,11 @@ jq empty .claude/*.json
 .claude/
 ├── CLAUDE.md           # 복사용 템플릿 (수정 시 영향 범위 확인!)
 ├── hooks.json          # 확장자별 자동 린트 (case문 구조)
-├── agents/             # 역할 기반 에이전트 (7개)
-│   ├── implementer.md  # 구현
-│   ├── reviewer.md     # 보안/품질/성능 리뷰
-│   ├── planner.md      # 계획 수립
-│   └── [3 more]        # MCP 격리 에이전트
+├── agents/             # 역할 기반 에이전트 (7개, memory frontmatter 포함)
+│   ├── implementer.md  # 구현 (memory: project)
+│   ├── reviewer.md     # 보안/품질/성능 리뷰 (memory: project)
+│   ├── planner.md      # 계획 수립 (memory: project)
+│   └── [4 more]        # MCP 격리 에이전트 (memory: project/user)
 └── skills/             # Progressive Disclosure 스킬 (8개)
     ├── plan/           # /plan 작업 계획
     ├── verify/scripts/ # 언어별 검증 스크립트
@@ -75,6 +75,10 @@ jq empty .claude/*.json
 - **함정**: match-case, 새 타입 힌트 등 3.12+ 전용 문법
 - **대안**: 3.10+ 호환 유지, `from __future__ import annotations`
 
+### MEMORY.md vs CLAUDE.md Lessons Learned 혼동
+- **함정**: MEMORY.md에 팀 공유 규칙 작성, 또는 CLAUDE.md에 로컬 메모리 작성
+- **대안**: CLAUDE.md Lessons Learned = 팀 공유 (Git 추적), MEMORY.md = Claude 자동 참조 지식 (로컬, 200줄 제한)
+
 ## Compact Instructions
 - `.claude/CLAUDE.md`는 템플릿 - 이 프로젝트 설정은 루트 `CLAUDE.md`
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
@@ -88,6 +92,7 @@ jq empty .claude/*.json
 
 ## References
 - 가이드: `docs/CLAUDE-MD-GUIDE.md`
+- Auto Memory 가이드: `docs/AUTO-MEMORY-GUIDE.md`
 - 스킬 상세: `.claude/skills/*/SKILL.md`
 - 에이전트 상세: `.claude/agents/*.md`
 - 검증 도구: `.claude/skills/verify/references/LANGUAGES.md`

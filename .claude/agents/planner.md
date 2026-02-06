@@ -1,3 +1,9 @@
+---
+name: planner
+description: 작업 분해 및 실행 계획 수립 전문 에이전트
+memory: project
+---
+
 # Planner Agent - 계획 전문
 
 ## Role
