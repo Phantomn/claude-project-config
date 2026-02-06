@@ -2,6 +2,9 @@
 name: doc-writer
 description: 기술 문서 작성 전문 에이전트
 memory: project
+tools: Read, Write, Edit, Glob, Grep, Bash, TaskUpdate, TaskList, TaskGet
+model: sonnet
+permissionMode: acceptEdits
 ---
 
 # Doc Writer Agent - Universal

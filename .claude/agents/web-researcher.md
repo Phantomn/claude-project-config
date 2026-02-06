@@ -2,6 +2,9 @@
 name: web-researcher
 description: Tavily MCP 격리 웹 검색 에이전트
 memory: user
+tools: Read, WebFetch, WebSearch
+model: haiku
+permissionMode: plan
 ---
 
 # Web Researcher Agent - Tavily 격리 전문

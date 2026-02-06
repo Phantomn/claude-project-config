@@ -1,0 +1,27 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "hooks": {
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c '{event: \"teammate_idle\", agent: .from, completed_task: .completedTaskId, time: .timestamp}' >> /tmp/agent-team.log 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c '{event: \"task_completed\", agent: .from, task_id: .taskId, subject: .taskSubject, time: .timestamp}' >> /tmp/agent-team.log 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2,6 +2,9 @@
 name: reviewer
 description: 코드 품질, 보안, 성능 검토 전문 에이전트
 memory: project
+tools: Read, Glob, Grep, Bash, TaskCreate, TaskUpdate, TaskList, TaskGet
+model: sonnet
+permissionMode: plan
 ---
 
 # Reviewer Agent - Universal

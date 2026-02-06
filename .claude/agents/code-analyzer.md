@@ -2,6 +2,9 @@
 name: code-analyzer
 description: Serena+Sequential MCP 격리 코드 분석 에이전트
 memory: project
+tools: Read, Glob, Grep, Bash
+model: sonnet
+permissionMode: plan
 ---
 
 # Code Analyzer Agent - Serena+Sequential 격리 전문

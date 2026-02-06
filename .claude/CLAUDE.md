@@ -76,3 +76,12 @@ src/
 3. `/verify` → 검증
 4. `/wrap` → 학습 정리
 5. `/commit` → 커밋
+
+## Agent Teams
+<!-- 실험적 기능 (선택 사항) -->
+<!-- 활성화: settings.json → "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"} -->
+<!-- 에이전트 정의: .claude/agents/*.md (frontmatter: tools, model, permissionMode) -->
+<!-- 비용: 일반 대비 ~7배 토큰, 팀원 수에 비례 -->
+<!-- 권장: 다중 파일 병렬 편집, 리뷰+구현 동시, 대규모 리팩토링 -->
+<!-- 비권장: 단순 작업, 단일 파일, 탐색/질문 -->
+<!-- 상세: docs/AGENT-TEAMS-GUIDE.md -->

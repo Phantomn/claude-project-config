@@ -41,11 +41,14 @@ jq empty .claude/*.json
 .claude/
 ├── CLAUDE.md           # 복사용 템플릿 (수정 시 영향 범위 확인!)
 ├── hooks.json          # 확장자별 자동 린트 (case문 구조)
-├── agents/             # 역할 기반 에이전트 (7개, memory frontmatter 포함)
-│   ├── implementer.md  # 구현 (memory: project)
-│   ├── reviewer.md     # 보안/품질/성능 리뷰 (memory: project)
-│   ├── planner.md      # 계획 수립 (memory: project)
-│   └── [4 more]        # MCP 격리 에이전트 (memory: project/user)
+├── agents/             # 역할 기반 에이전트 (7개, Agent Teams 지원)
+│   ├── implementer.md  # 구현 (sonnet, acceptEdits)
+│   ├── reviewer.md     # 리뷰 (sonnet, plan)
+│   ├── planner.md      # 계획 (opus, plan)
+│   ├── code-analyzer.md # Serena+Sequential 분석 (sonnet, plan)
+│   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
+│   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
+│   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
 └── skills/             # Progressive Disclosure 스킬 (8개)
     ├── plan/           # /plan 작업 계획
     ├── verify/scripts/ # 언어별 검증 스크립트
@@ -78,6 +81,10 @@ jq empty .claude/*.json
 ### MEMORY.md vs CLAUDE.md Lessons Learned 혼동
 - **함정**: MEMORY.md에 팀 공유 규칙 작성, 또는 CLAUDE.md에 로컬 메모리 작성
 - **대안**: CLAUDE.md Lessons Learned = 팀 공유 (Git 추적), MEMORY.md = Claude 자동 참조 지식 (로컬, 200줄 제한)
+
+### Agent Teams 비용
+- **함정**: 팀원 5명 스폰 시 토큰 ~7배 증가
+- **대안**: 최소 팀원 수 유지, Sonnet/Haiku 모델 사용, 완료 후 즉시 정리
 
 ## Compact Instructions
 - `.claude/CLAUDE.md`는 템플릿 - 이 프로젝트 설정은 루트 `CLAUDE.md`

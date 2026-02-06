@@ -2,6 +2,9 @@
 name: implementer
 description: 기능 구현 전문 에이전트
 memory: project
+tools: Read, Write, Edit, Glob, Grep, Bash, TaskUpdate, TaskList, TaskGet
+model: sonnet
+permissionMode: acceptEdits
 ---
 
 # Implementer Agent - Universal
