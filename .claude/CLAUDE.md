@@ -71,7 +71,7 @@ src/
 <!-- 에이전트 memory frontmatter: name, description, memory (project|user) -->
 
 ## Workflow
-1. `/plan` → 작업 계획
+1. `/breakdown` → 작업 계획
 2. 구현 (자동 린트)
 3. `/verify` → 검증
 4. `/wrap` → 학습 정리

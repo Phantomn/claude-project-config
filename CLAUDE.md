@@ -56,8 +56,9 @@ jq empty .claude/*.json
 │   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
 │   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
 │   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
-└── skills/             # Progressive Disclosure 스킬 (8개)
-    ├── plan/           # /plan 작업 계획
+└── skills/             # Progressive Disclosure 스킬 (9개)
+    ├── breakdown/      # /breakdown 작업 계획
+    ├── thinking/       # /thinking 구조적 사고 전략 (7가지)
     ├── verify/scripts/ # 언어별 검증 스크립트
     ├── wrap/scripts/   # 학습 추출 Python
     └── [mcp-*/]        # MCP 격리 스킬

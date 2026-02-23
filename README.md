@@ -27,7 +27,7 @@
     ├── wrap/           # 세션 정리 및 학습 추출
     ├── commit/         # Git 커밋 자동화
     ├── verify/         # 검증 루프
-    └── plan/           # 작업 계획 수립
+    └── breakdown/      # 작업 계획 수립
 ```
 
 ## 주요 변경 사항
@@ -101,7 +101,7 @@ git commit -m "Add Claude Code configuration"
 claude
 
 # 작업 계획
-> /plan "사용자 인증 구현"
+> /breakdown "사용자 인증 구현"
 
 # 구현 진행...
 # (파일 편집 시 자동으로 언어별 린터 실행)
@@ -179,7 +179,7 @@ claude
 - **Go**: golangci-lint, go test
 - **Rust**: clippy, cargo test
 
-### /plan (작업 계획)
+### /breakdown (작업 계획)
 **목적**: 복잡한 작업을 단계별로 분해
 
 **구조**:
@@ -222,7 +222,7 @@ claude
 1. ✅ **병렬 처리**: Hooks에서 자동 린트 병렬 실행
 2. ✅ **Opus 4.5**: 복잡한 작업은 상위 모델 권장
 3. ✅ **CLAUDE.md 팀 공유**: Git 체크인
-4. ✅ **Plan Mode**: /plan 스킬로 시작
+4. ✅ **Plan Mode**: /breakdown 스킬로 시작
 5. ✅ **Slash Commands**: /wrap, /commit, /verify
 6. ✅ **권한 공유**: hooks.json, settings.local.json
 7. ✅ **검증 루프**: /verify 스킬
@@ -425,7 +425,7 @@ vim .claude/CLAUDE.md
 | **Agent** | 역할별 분리 | 대화 길어지면 산만할 때 |
 
 ### 판단 매트릭스
-- "하면 좋은 것" → **Skill** (예: /wrap, /plan)
+- "하면 좋은 것" → **Skill** (예: /wrap, /breakdown)
 - "안 하면 안 되는 것" → **Hook** (예: 린트 자동 실행)
 - "역할 충돌 발생" → **Agent** (예: implementer, reviewer 분리)
 
@@ -550,7 +550,7 @@ claude
 
 ### 4. 워크플로우 테스트
 ```bash
-/plan "사용자 인증 구현"
+/breakdown "사용자 인증 구현"
 # → planner 에이전트 활성화
 # → 단계별 분해, 리스크 평가
 
@@ -588,7 +588,7 @@ claude
 │   ├── web-researcher.md        # ⭐ Tavily 격리 (신규)
 │   └── code-analyzer.md         # ⭐ Serena+Sequential 격리 (신규)
 ├── skills/
-│   ├── plan/                    # 작업 계획 수립
+│   ├── breakdown/               # 작업 계획 수립
 │   ├── verify/                  # 검증 루프
 │   ├── wrap/                    # 세션 정리 (5개 에이전트)
 │   ├── commit/                  # Git 커밋 자동화

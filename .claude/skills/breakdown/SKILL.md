@@ -1,10 +1,10 @@
 ---
-name: plan
+name: breakdown
 description: 복잡한 작업 계획 수립 및 단계별 분해
-triggers: ["/plan", "계획 세워줘", "어떻게 시작하지"]
+triggers: ["/breakdown", "계획 세워줘", "어떻게 시작하지"]
 ---
 
-# /plan - 작업 계획 스킬
+# /breakdown - 작업 계획 스킬
 
 ## What
 복잡한 요구사항을 구체적이고 실행 가능한 단계로 분해하여 계획 수립

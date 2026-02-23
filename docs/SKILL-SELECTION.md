@@ -4,7 +4,7 @@
 
 ### 소규모 (1-3명)
 **핵심 5개**:
-- `/plan` - 작업 계획
+- `/breakdown` - 작업 계획
 - `/verify` - 검증 자동화
 - `/wrap` - 학습 기록
 - `/commit` - 커밋 관리
@@ -23,7 +23,7 @@
 
 ### Python
 - `/verify` (ruff, mypy, pytest)
-- `/plan`
+- `/breakdown`
 - `/wrap`
 
 ### TypeScript
@@ -33,22 +33,22 @@
 
 ### Go
 - `/verify` (gofmt, golangci-lint)
-- `/plan`
+- `/breakdown`
 - `/commit`
 
 ## 워크플로우별 스킬 조합
 
 ### 백엔드 API 개발
 ```
-/plan → /mcp-docs → 구현 → /verify → /wrap → /commit
+/breakdown → /mcp-docs → 구현 → /verify → /wrap → /commit
 ```
 
 ### 프론트엔드 컴포넌트
 ```
-/plan → /mcp-docs → 구현 → /mcp-test → /verify → /commit
+/breakdown → /mcp-docs → 구현 → /mcp-test → /verify → /commit
 ```
 
 ### 풀스택 기능
 ```
-/plan → /mcp-docs (양쪽) → 구현 → /mcp-test → /verify → /wrap
+/breakdown → /mcp-docs (양쪽) → 구현 → /mcp-test → /verify → /wrap
 ```

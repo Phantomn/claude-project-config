@@ -18,13 +18,13 @@ cd your-project
 claude  # Claude Code 시작
 
 # 첫 스킬 실행
-/plan "JWT 인증 시스템 구현"
+/breakdown "JWT 인증 시스템 구현"
 ```
 
 ### 핵심 스킬 3개
 | 스킬 | 용도 | 예시 |
 |------|------|------|
-| `/plan` | 작업 계획 수립 | `/plan "로그인 기능"` |
+| `/breakdown` | 작업 계획 수립 | `/breakdown "로그인 기능"` |
 | `/verify` | 린트/타입/테스트 | `/verify` |
 | `/commit` | Git 커밋 | `/commit` |
 
@@ -36,7 +36,7 @@ claude  # Claude Code 시작
 
 | 스킬 | 용도 | When | Output |
 |------|------|------|--------|
-| `/plan` | 작업 계획 수립 | 3단계 이상 복잡한 작업 | `.claude/plans/*.md` + TodoWrite |
+| `/breakdown` | 작업 계획 수립 | 3단계 이상 복잡한 작업 | `.claude/breakdowns/*.md` + TodoWrite |
 | `/verify` | 린트/타입/테스트/빌드 검증 | 커밋 전, 구현 완료 후 | ✅/❌ 결과 요약 |
 | `/wrap` | 세션 학습 정리 | 세션 종료 전, 주요 작업 후 | CLAUDE.md 업데이트 제안 |
 | `/commit` | Git 커밋/PR 생성 | /verify 통과 후 | Conventional Commits 메시지 |
@@ -68,7 +68,7 @@ claude  # Claude Code 시작
 |----------|------|-------------|
 | `implementer` | 기능 구현 | 구현 요청 시 |
 | `reviewer` | 보안/품질/성능 리뷰 | /verify 내부 |
-| `planner` | 계획 수립 | /plan 내부 |
+| `planner` | 계획 수립 | /breakdown 내부 |
 | `doc-writer` | 문서 작성 | 문서화 요청 시 |
 | `docs-researcher` | 문서 조회 | /docs 내부 |
 | `web-researcher` | 웹 검색 | /search 내부 |
@@ -82,7 +82,7 @@ claude  # Claude Code 시작
 
 ### 패턴 1: 기능 개발
 ```
-/plan "JWT 인증 구현"    # 계획 수립
+/breakdown "JWT 인증 구현"    # 계획 수립
 ↓
 [구현]                   # 자동 린트 (hooks.json)
 ↓
@@ -239,7 +239,7 @@ triggers: ["/my-skill", "my skill"]
 ## Workflow Summary
 
 ```
-1. /plan      → 작업 계획 (복잡한 작업)
+1. /breakdown      → 작업 계획 (복잡한 작업)
 2. 구현        → 자동 린트 (hooks.json)
 3. /verify    → 검증 (린트/타입/테스트)
 4. /wrap      → 학습 정리 (세션 종료 전)

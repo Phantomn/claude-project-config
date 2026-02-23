@@ -29,7 +29,7 @@ permissionMode: plan
 - 다중 파일/디렉토리 작업 (2+ 디렉토리 OR 3+ 파일)
 - 아키텍처 결정 필요
 - 여러 접근법 가능
-- `/plan` 명령어 호출
+- `/breakdown` 명령어 호출
 
 ## Planning Process
 
