@@ -2,13 +2,60 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
+  "permissions": {
+    "allow": [
+      "Read", "Glob", "Grep", "LSP",
+      "Bash(python3 *)", "Bash(python *)",
+      "Bash(cat *)", "Bash(head *)", "Bash(tail *)",
+      "Bash(wc *)", "Bash(file *)", "Bash(ls *)",
+      "Bash(find *)", "Bash(grep *)", "Bash(rg *)",
+      "Bash(awk *)", "Bash(sed -n *)",
+      "Bash(git *)",
+      "Bash(jq *)", "Bash(xxd *)", "Bash(hexdump *)",
+      "Bash(strings *)", "Bash(readelf *)", "Bash(objdump *)",
+      "Bash(sort *)", "Bash(uniq *)", "Bash(cut *)",
+      "Bash(diff *)", "Bash(stat *)", "Bash(du *)",
+      "Bash(which *)", "Bash(type *)", "Bash(echo *)",
+      "Bash(printf *)", "Bash(realpath *)", "Bash(basename *)",
+      "Bash(dirname *)", "Bash(sha256sum *)", "Bash(md5sum *)",
+      "Bash(pwd)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(mkfs *)",
+      "Bash(dd if=*)",
+      "Bash(chmod 777 *)"
+    ]
+  },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scripts/auto-approve-readonly.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ext=\"${CLAUDE_FILE_PATH##*.}\"; case \"$ext\" in py) python -m ruff check \"$CLAUDE_FILE_PATH\" --fix 2>/dev/null || true;; ts|tsx|js|jsx) npx eslint \"$CLAUDE_FILE_PATH\" --fix 2>/dev/null || true;; go) gofmt -w \"$CLAUDE_FILE_PATH\" 2>/dev/null || true;; rs) rustfmt \"$CLAUDE_FILE_PATH\" 2>/dev/null || true;; sql) sqlfluff lint \"$CLAUDE_FILE_PATH\" 2>/dev/null || true;; yaml|yml) yamllint \"$CLAUDE_FILE_PATH\" 2>/dev/null || true;; esac"
+          }
+        ]
+      }
+    ],
     "TeammateIdle": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CWD}/.claude/hooks/scripts/on-teammate-idle.sh\" 2>/dev/null || true"
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scripts/on-teammate-idle.sh\" 2>/dev/null || true"
           }
         ]
       }
@@ -18,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CWD}/.claude/hooks/scripts/on-task-completed.sh\" 2>/dev/null || true"
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scripts/on-task-completed.sh\" 2>/dev/null || true"
           }
         ]
       }
