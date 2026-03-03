@@ -70,7 +70,7 @@ questions:                         # 에이전트별 핵심 질문 (선택)
 
 | 에이전트 수 | 전략 조합 | 역할 |
 |------------|----------|------|
-| 3 | Flow-Injection, Invariant, ReAct | 흐름분석 + 규칙분석 + 증거검증 |
+| 3 | Flow-Injection, Invariant, ReAct | 흐름분석+RCA + 규칙분석 + 증거검증 |
 | 5 | Flow-Injection, Invariant, ReAct, Step-Back, Ulysses | + 추상화 + 위험평가 |
 | 7 | Flow-Injection, Invariant, CoT, ReAct, Step-Back, OODA, Ulysses | 전체 커버리지 |
 
@@ -175,6 +175,14 @@ sequentialthinking(
 ## 비즈니스 영향 (Business Impact)
 | 취약점 | 불변 규칙 위반 | 영향 범위 | 심각도 |
 |--------|--------------|----------|--------|
+
+## 근본 원인 패턴 집계
+| 근본 원인 패턴 | 해당 취약점 | 발견 에이전트 | 빈도 |
+|--------------|-----------|-------------|------|
+
+## 재발 예측 매트릭스
+| # | 근본 원인 패턴 | 예상 재발 위치 | 확인 방법 | 우선순위 |
+|---|--------------|--------------|----------|---------|
 
 ## 과거 분석 참조
 [memory/panel-* 이전 분석 참조 → 중복 회피]
