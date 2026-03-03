@@ -42,8 +42,9 @@ jq empty .claude/*.json
 ```
 .claude/
 ├── CLAUDE.md           # 복사용 템플릿 (수정 시 영향 범위 확인!)
-├── hooks.json          # 확장자별 자동 린트 (case문 구조)
-├── hooks/scripts/      # Agent Teams 훅 스크립트 (settings.json에서 참조)
+├── settings.json       # 훅 + 권한 설정 (PreToolUse, PostToolUse, TeammateIdle, TaskCompleted)
+├── hooks/scripts/      # 훅 스크립트 (settings.json에서 참조)
+│   ├── auto-approve-readonly.sh # PreToolUse: 블랙리스트 기반 자동 승인/차단
 │   ├── hooks-common.sh     # 공통 유틸 (로깅, 알림, 진행률)
 │   ├── on-teammate-idle.sh # TeammateIdle 핸들러
 │   └── on-task-completed.sh # TaskCompleted 핸들러
@@ -94,9 +95,13 @@ jq empty .claude/*.json
 - **함정**: 팀원 5명 스폰 시 토큰 ~7배 증가
 - **대안**: 최소 팀원 수 유지, Sonnet/Haiku 모델 사용, 완료 후 즉시 정리
 
-### hooks.json vs settings.json 훅 스키마 차이
-- **함정**: `hooks.json`(파일 저장 훅)과 `settings.json`(Agent Teams 훅)의 구조를 혼동
-- **대안**: `hooks.json` = 파일 확장자별 린트 (`PreToolUse` 등), `settings.json` = 팀 이벤트 (`TeammateIdle`/`TaskCompleted`)
+### 스킬 이름과 내장 명령 충돌
+- **함정**: 스킬 이름이 Claude Code 내장 명령(`plan`, `help` 등)과 동일하면 스킬 호출 불가
+- **대안**: 충돌 시 이름 변경 (예: `plan` → `breakdown`)
+
+### 훅 설정 위치
+- **함정**: `.claude/hooks.json` 파일에 훅 정의 (Claude Code가 인식하지 않음)
+- **대안**: 모든 훅은 `settings.json`의 `hooks` 필드에 정의. PreToolUse 출력은 `hookSpecificOutput.permissionDecision` 포맷 필수
 
 ## Compact Instructions
 - `.claude/CLAUDE.md`는 템플릿 - 이 프로젝트 설정은 루트 `CLAUDE.md`
