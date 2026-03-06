@@ -18,7 +18,8 @@
       "Bash(which *)", "Bash(type *)", "Bash(echo *)",
       "Bash(printf *)", "Bash(realpath *)", "Bash(basename *)",
       "Bash(dirname *)", "Bash(sha256sum *)", "Bash(md5sum *)",
-      "Bash(pwd)"
+      "Bash(pwd)",
+      "Bash(qmd *)"
     ],
     "deny": [
       "Bash(rm -rf *)",
@@ -66,6 +67,23 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scripts/on-task-completed.sh\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "VAULT_DIR=\"$VAULT_DIR\" python3 ~/.claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions --days 7 && qmd update 2>/dev/null || true",
+            "timeout": 60
           }
         ]
       }

@@ -63,6 +63,13 @@ src/
 - API 스펙: `docs/api.md`
 - 테스트 패턴: `tests/README.md`
 
+## QMD 검색
+<!-- 문서/세션 컨텍스트 검색 시 QMD 사용 -->
+<!-- 세션 시작 전: /recall <프로젝트명 또는 날짜> -->
+<!-- 문서 검색: qmd query "<키워드>" -c <컬렉션> -n 5 -->
+<!-- 세션 검색: qmd vsearch "<키워드>" -c sessions -n 5 -->
+<!-- 컬렉션 목록: qmd collection list -->
+
 ## Memory Setup
 <!-- Auto Memory 설정 안내 -->
 <!-- MEMORY.md: ~/.claude/projects/<project-path-encoded>/memory/MEMORY.md -->
