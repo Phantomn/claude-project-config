@@ -106,10 +106,10 @@ python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/q
 | 플래그 | 설명 | 로드 |
 |--------|------|------|
 | `--brainstorm` | 협업 발견, 요구사항 탐색 | `/load brainstorm` |
-| `--introspect` | 메타인지, 자기 분석 | `/load introspect` |
 | `--task-manage` | 계층적 태스크 관리 | `/load task-manage` |
 | `--orchestrate` | 도구 선택 최적화 | `/load orchestrate` |
 | `--uc` | 토큰 효율 모드 | `/load token-efficiency` |
+| `--research` | 체계적 조사, 리서치 | `/load deep-research` |
 
 ## MCP Servers
 | 플래그 | 용도 | 로드 |
