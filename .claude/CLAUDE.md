@@ -117,18 +117,10 @@ python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/q
 | `--tavily` | 웹 검색, 리서치 | `/load tavily` |
 | `--ida` | 바이너리 리버싱 | `/load ida` |
 
-## Full References
-| 문서 | 설명 | 로드 |
-|------|------|------|
-| rules | 전체 행동 규칙 | `/load rules` |
-| flags | 전체 플래그 문서 | `/load flags` |
-| principles | 엔지니어링 원칙 | `/load principles` |
-
 ## Bulk Load
 ```
 /load modes      # 모든 모드 문서
 /load mcp        # 모든 MCP 문서
-/load all        # 전체 (비상용)
 ```
 
 ---
