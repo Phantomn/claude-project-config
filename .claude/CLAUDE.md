@@ -117,12 +117,6 @@ python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/q
 | `--tavily` | 웹 검색, 리서치 | `/load tavily` |
 | `--ida` | 바이너리 리버싱 | `/load ida` |
 
-## Business & Research
-| 카테고리 | 설명 | 로드 |
-|----------|------|------|
-| business | 비즈니스 전문가 패널 | `/load business` |
-| research | 딥 리서치 설정 | `/load research` |
-
 ## Full References
 | 문서 | 설명 | 로드 |
 |------|------|------|
