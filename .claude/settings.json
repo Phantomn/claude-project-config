@@ -55,7 +55,25 @@
     ],
     "defaultMode": "default"
   },
-  "model": "sonnet",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "VAULT_DIR='/mnt/c/Users/tmdsv/Documents/Obsidian Vault' python3 ~/.claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions --days 9999 && qmd update 2>/dev/null || true",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  },
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-rich.sh"
@@ -86,24 +104,5 @@
   "feedbackSurveyState": {
     "lastShownTime": 1754063128374
   },
-  "effortLevel": "high",
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "VAULT_DIR='/mnt/c/Users/tmdsv/Documents/Obsidian Vault' python3 ~/.claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions --days 7 && qmd update 2>/dev/null || true",
-            "timeout": 60
-          }
-        ]
-      }
-    ]
-  }
+  "effortLevel": "high"
 }
