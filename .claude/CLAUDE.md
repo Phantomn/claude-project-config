@@ -145,12 +145,6 @@ req requirements   deps dependencies   val validation
 # Extension Paths
 ```
 ~/.claude/extensions/
-├── modes/       # brainstorming, introspection, task-management, ...
-├── mcp/         # context7, serena, tavily, ida
-├── business/    # panel-examples, symbols
-└── research/    # config
-~/.claude/references/
-├── rules-full.md
-├── flags-full.md
-└── principles-full.md
+├── modes/   # brainstorming, deep-research, token-efficiency
+└── mcp/     # context7, serena, tavily, ida
 ```
