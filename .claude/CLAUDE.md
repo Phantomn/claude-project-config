@@ -321,10 +321,6 @@ jq empty .claude/*.json
 - **함정**: `.claude/hooks.json` 파일에 훅 정의 (Claude Code가 인식하지 않음)
 - **대안**: 모든 훅은 `settings.json`의 `hooks` 필드에 정의. PreToolUse 출력은 `hookSpecificOutput.permissionDecision` 포맷 필수
 
-### 루트 CLAUDE.md Architecture 누락
-- **함정**: 스킬 추가 시 `.claude/CLAUDE.md`(템플릿)만 업데이트하고 루트 `CLAUDE.md`(프로젝트 고유)의 Architecture 섹션 누락
-- **대안**: 스킬 수/목록 변경 시 루트 `CLAUDE.md`의 Architecture 섹션도 동시 업데이트
-
 ## Compact Instructions
 - `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
@@ -339,8 +335,7 @@ jq empty .claude/*.json
 4. `/verify` → `/wrap` → `/commit`
 
 ## Lessons Learned
-- **외부 프롬프트 → 스킬 변환 시 MVP 먼저**: 복잡한 Phase는 사용자 확인 전에 구현하지 않는다. 초기 설계를 제시하고 피드백으로 범위를 확정한다.
-- **passive 모드 vs active 스킬**: `extensions/modes/`는 자동 활성화 행동 변화, `skills/`는 명시적 호출 플로우. 동일 기능처럼 보여도 역할이 다르므로 두 파일에 상호 참조를 명시한다.
+<!-- /wrap 스킬로 자동 축적 - 수동 편집 지양 -->
 
 ## References
 - 가이드: `docs/CLAUDE-MD-GUIDE.md`

@@ -114,6 +114,14 @@ jq empty .claude/*.json
 - **함정**: `.claude/hooks.json` 파일에 훅 정의 (Claude Code가 인식하지 않음)
 - **대안**: 모든 훅은 `settings.json`의 `hooks` 필드에 정의. PreToolUse 출력은 `hookSpecificOutput.permissionDecision` 포맷 필수
 
+### 템플릿(.claude/CLAUDE.md)에 프로젝트 특정 내용 추가
+- **함정**: Gotchas/Lessons Learned를 `.claude/CLAUDE.md`(템플릿)에 추가하면 다른 프로젝트 복사 시 오염
+- **대안**: 이 프로젝트 고유 내용은 루트 `CLAUDE.md`에, 범용 규칙만 `.claude/CLAUDE.md`에 작성
+
+## Lessons Learned
+- **외부 프롬프트 → 스킬 변환 시 MVP 먼저**: 복잡한 Phase는 사용자 확인 전에 구현하지 않는다. 초기 설계를 제시하고 피드백으로 범위를 확정한다.
+- **passive 모드 vs active 스킬**: `extensions/modes/`는 자동 활성화 행동 변화, `skills/`는 명시적 호출 플로우. 동일 기능처럼 보여도 역할이 다르므로 두 파일에 상호 참조를 명시한다.
+
 ## Compact Instructions
 - `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
