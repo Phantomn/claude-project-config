@@ -29,15 +29,19 @@ echo "[2/3] PyInstaller 빌드"
     --workpath build/work \
     --noconfirm
 
-echo "[3/3] 완료"
+echo "[3/3] 점검 스크립트 배포 디렉토리 구성"
+mkdir -p build/dist/scripts
+cp -r scripts/linux build/dist/scripts/linux
+
 echo ""
-echo "바이너리: build/dist/os-check"
+echo "=== 빌드 완료 ==="
+echo "배포 패키지: build/dist/"
+echo "  os-check          (실행 파일)"
+echo "  scripts/linux/    (점검 스크립트 $(find scripts/linux -maxdepth 1 -type f | wc -l)개)"
 echo ""
-echo "배포 방법:"
-echo "  타겟 서버에 다음 두 가지를 복사:"
-echo "    1) build/dist/os-check  (실행 파일)"
-echo "    2) scripts/linux/       (점검 스크립트 디렉토리)"
+echo "실행 방법:"
+echo "  sudo build/dist/os-check"
 echo ""
-echo "  실행 (타겟 서버에서):"
-echo "    mkdir -p scripts/linux"
-echo "    sudo ./os-check"
+echo "타겟 서버 배포:"
+echo "  scp -r build/dist/ user@target:/opt/os-check/"
+echo "  ssh user@target 'sudo /opt/os-check/os-check'"
