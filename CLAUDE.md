@@ -118,9 +118,19 @@ jq empty .claude/*.json
 - **함정**: Gotchas/Lessons Learned를 `.claude/CLAUDE.md`(템플릿)에 추가하면 다른 프로젝트 복사 시 오염
 - **대안**: 이 프로젝트 고유 내용은 루트 `CLAUDE.md`에, 범용 규칙만 `.claude/CLAUDE.md`에 작성
 
+### Worktree 도입 시 3중 동기화 주의
+- **함정**: `.claude/CLAUDE.md`(템플릿) ↔ `~/.claude/CLAUDE.md`(전역) ↔ 각 브랜치 CLAUDE.md를 각각 수정하면 불일치 발생
+- **대안**: 공통 수정은 main에서만, 카테고리 전용은 해당 브랜치에서만 수정
+
+### Worktree 스킬 중복 증식 경계
+- **함정**: 5개 worktree에 동일 스킬 복붙 시 파일 5배 증가
+- **대안**: main에서 공통 스킬 유지, 각 브랜치에 카테고리 전용 차분(diff)만 추가
+
 ## Lessons Learned
 - **외부 프롬프트 → 스킬 변환 시 MVP 먼저**: 복잡한 Phase는 사용자 확인 전에 구현하지 않는다. 초기 설계를 제시하고 피드백으로 범위를 확정한다.
 - **passive 모드 vs active 스킬**: `extensions/modes/`는 자동 활성화 행동 변화, `skills/`는 명시적 호출 플로우. 동일 기능처럼 보여도 역할이 다르므로 두 파일에 상호 참조를 명시한다.
+- **git worktree 기반 역할 분리**: 카테고리별 Claude 환경 분리 시 git worktree 사용. CLAUDE.md/skills는 git으로 공유, 세션 메모리는 경로별 자동 분리 (컨텍스트 오염 없음).
+- **공통 업데이트 전파**: main 수정 후 각 worktree에서 `git rebase main` (merge 아닌 rebase로 선형 히스토리 유지).
 
 ## Compact Instructions
 - `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
