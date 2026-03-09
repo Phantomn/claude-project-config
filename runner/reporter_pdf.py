@@ -18,11 +18,14 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     try:
         from jinja2 import Environment, FileSystemLoader
         from weasyprint import HTML
-    except ImportError as exc:
+    except (ImportError, OSError) as exc:
+        # OSError: cffi가 libpango 등 시스템 공유 라이브러리를 동적 로드 실패 시 발생
         raise RuntimeError(
-            f"PDF 생성 의존성 미설치: {exc}\n"
-            "pip install jinja2 weasyprint 를 실행하고,\n"
-            "시스템 패키지(libcairo2, libpango-1.0-0 등)도 설치하세요."
+            f"PDF 생성 의존성 오류: {exc}\n"
+            "시스템 패키지 설치 필요:\n"
+            "  Ubuntu: sudo apt-get install libcairo2 libpango-1.0-0 libpangocairo-1.0-0 "
+            "libgdk-pixbuf2.0-0 libffi-dev shared-mime-info\n"
+            "에어갭 환경: JSON 결과(results/*.json)만 활용 가능합니다."
         ) from exc
 
     template_dir = _get_template_dir()

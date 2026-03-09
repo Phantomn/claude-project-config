@@ -336,6 +336,11 @@ jq empty .claude/*.json
 
 ## Lessons Learned
 <!-- /wrap 스킬로 자동 축적 - 수동 편집 지양 -->
+- **PyInstaller --onefile 경로 3종 구분**: `sys.frozen`(번들 여부), `sys._MEIPASS`(내부 리소스 임시 경로), `sys.executable`(바이너리 위치, 동반 파일 탐색용). --onedir 모드에서는 동작 방식 다름
+- **에어갭 배포 구조**: 단일 바이너리로 해결 안 될 경우 `scripts/` 등 보조 디렉토리를 함께 배포. `sys.executable` 기준 상대 경로로 탐색
+- **venv 완전성 체크는 `[ -f venv/bin/pip ]`**: `[ -d venv ]`는 불완전 초기화 상태를 감지 못함. pip 파일 존재 여부가 정확한 기준
+- **PEP 668 + ensurepip**: Python 3.11+ 시스템 환경에서 pip install 직접 실행 시 차단됨 → venv 격리 필수. venv 내 pip 부재 시 `python -m ensurepip --upgrade`로 부트스트랩
+- **PowerShell은 `elif` 미지원**: `elseif`가 올바른 문법. Python/Bash 습관에서 비롯되는 혼동 주의
 
 ## References
 - 가이드: `docs/CLAUDE-MD-GUIDE.md`
