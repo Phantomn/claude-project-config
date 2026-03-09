@@ -10,16 +10,22 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir   = Split-Path -Parent $ScriptDir
+$VenvDir   = Join-Path $ScriptDir ".venv"
 Set-Location $RootDir
 
 Write-Host "=== os-check Windows 빌드 (대상: $Target) ==="
 
 Write-Host "[1/3] 빌드 의존성 설치"
-pip install pyinstaller
-pip install -r runner\requirements.txt
+if (-not (Test-Path $VenvDir)) {
+    Write-Host "  venv 생성: $VenvDir"
+    python -m venv $VenvDir
+}
+& "$VenvDir\Scripts\pip" install --quiet --upgrade pip
+& "$VenvDir\Scripts\pip" install --quiet pyinstaller
+& "$VenvDir\Scripts\pip" install --quiet -r runner\requirements.txt
 
 Write-Host "[2/3] PyInstaller 빌드"
-pyinstaller build\os-check.spec `
+& "$VenvDir\Scripts\pyinstaller" build\os-check.spec `
     --distpath build\dist `
     --workpath build\work `
     --noconfirm
