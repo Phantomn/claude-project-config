@@ -1,6 +1,6 @@
 # claude-project-config
 Claude Code 범용 프로젝트 템플릿 저장소. Skills, Agents, Hooks 제공.
-**중요**: 이 파일은 이 프로젝트 자체의 설정. `.claude/CLAUDE.md`는 복사용 템플릿.
+**중요**: 이 파일은 이 프로젝트 고유 설정. `.claude/CLAUDE.md`와 `~/.claude/CLAUDE.md`는 동기화 유지.
 
 ## Tech Stack
 - **Language**: Markdown, Shell (Bash), Python 3.10+, JSON
@@ -41,14 +41,20 @@ jq empty .claude/*.json
 ## Architecture
 ```
 .claude/
-├── CLAUDE.md           # 복사용 템플릿 (수정 시 영향 범위 확인!)
+├── CLAUDE.md           # 프로젝트 설정 (~/.claude/CLAUDE.md와 동기화)
+├── README.md           # 프로젝트 설명
 ├── settings.json       # 훅 + 권한 설정 (PreToolUse, PostToolUse, TeammateIdle, TaskCompleted)
+├── settings.local.json # 로컬 전용 설정 (.gitignore)
+├── extensions/         # Progressive Disclosure 확장 문서
+│   ├── modes/          # brainstorming, deep-research, token-efficiency
+│   └── mcp/            # context7, serena, tavily, ida
 ├── hooks/scripts/      # 훅 스크립트 (settings.json에서 참조)
 │   ├── auto-approve-readonly.sh # PreToolUse: 블랙리스트 기반 자동 승인/차단
 │   ├── hooks-common.sh     # 공통 유틸 (로깅, 알림, 진행률)
 │   ├── on-teammate-idle.sh # TeammateIdle 핸들러
 │   └── on-task-completed.sh # TaskCompleted 핸들러
 ├── logs/               # 훅 로그 (JSONL, .gitignore 처리)
+├── memory/             # Auto Memory (MEMORY.md, 로컬 전용)
 ├── agents/             # 역할 기반 에이전트 (7개, Agent Teams 지원)
 │   ├── implementer.md  # 구현 (sonnet, acceptEdits)
 │   ├── reviewer.md     # 리뷰 (sonnet, plan)
@@ -57,27 +63,31 @@ jq empty .claude/*.json
 │   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
 │   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
 │   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
-└── skills/             # Progressive Disclosure 스킬 (9개)
+└── skills/             # Progressive Disclosure 스킬 (16개)
     ├── breakdown/      # /breakdown 작업 계획
-    ├── thinking/       # /thinking 구조적 사고 전략 (7가지)
-    ├── verify/scripts/ # 언어별 검증 스크립트
-    ├── wrap/scripts/   # 학습 추출 Python
-    └── [mcp-*/]        # MCP 격리 스킬
+    ├── commit/         # /commit Git 커밋 자동화
+    ├── find-skills/    # /find-skills 스킬 검색
+    ├── notebooklm/     # /notebooklm NotebookLM 연동
+    ├── panel/          # /panel N-Agent Panel 분석
+    ├── recall/         # /recall 세션/문서 컨텍스트 로드
+    ├── sync-claude-sessions/ # /sync-claude-sessions Obsidian 동기화
+    ├── tasknotes/      # /tasknotes 작업 관리
+    ├── team-assemble/  # /team-assemble 에이전트 팀 조립
+    ├── thinking/       # /thinking 구조적 사고 전략 (9가지)
+    ├── verify/         # /verify 언어별 검증 스크립트
+    ├── wrap/           # /wrap 학습 추출
+    └── mcp-*/          # MCP 격리 스킬 (analyze, docs, search, test)
 ```
 
 ## Gotchas
 
-### 템플릿 vs 실제 설정 혼동
-- **함정**: `.claude/CLAUDE.md`를 이 프로젝트용으로 수정
-- **대안**: 루트 `CLAUDE.md`(이 파일)가 이 프로젝트 설정
+### CLAUDE.md 동기화 누락
+- **함정**: `.claude/CLAUDE.md`와 `~/.claude/CLAUDE.md`를 개별 수정하여 내용 불일치
+- **대안**: 한쪽 수정 후 반드시 다른 쪽에 동기화. 두 파일은 항상 동일 내용 유지
 
 ### Skills/Agents 무분별 수정
 - **함정**: 다른 프로젝트에서 사용 중인 스킬/에이전트 임의 수정
 - **대안**: 수정 전 영향 범위 확인, 범용성 유지
-
-### hooks.json 언어 추가
-- **함정**: case문 구조 손상, `;;` 누락
-- **대안**: 기존 패턴 복사, `esac` 직전에 추가, `jq empty` 검증
 
 ### Shell 스크립트 Bash 전용 문법
 - **함정**: `[[ ]]`, `echo -e`, array 사용 (현재 verify-*.sh에 존재)
@@ -104,7 +114,7 @@ jq empty .claude/*.json
 - **대안**: 모든 훅은 `settings.json`의 `hooks` 필드에 정의. PreToolUse 출력은 `hookSpecificOutput.permissionDecision` 포맷 필수
 
 ## Compact Instructions
-- `.claude/CLAUDE.md`는 템플릿 - 이 프로젝트 설정은 루트 `CLAUDE.md`
+- `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
 - Scripts: shellcheck/py_compile 검증 필수, JSON: jq 검증 필수
 
