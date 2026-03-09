@@ -11,9 +11,13 @@ cd "$ROOT_DIR"
 echo "=== os-check Linux 빌드 ==="
 
 echo "[1/3] 빌드 의존성 설치"
-if [ ! -d "$VENV_DIR" ]; then
+if [ ! -f "${VENV_DIR}/bin/pip" ]; then
     echo "  venv 생성: $VENV_DIR"
     python3 -m venv "$VENV_DIR"
+    # 일부 환경에서 venv에 pip이 포함되지 않는 경우 ensurepip으로 설치
+    if [ ! -f "${VENV_DIR}/bin/pip" ]; then
+        "${VENV_DIR}/bin/python" -m ensurepip --upgrade
+    fi
 fi
 "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
 "${VENV_DIR}/bin/pip" install --quiet pyinstaller
