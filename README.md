@@ -12,6 +12,8 @@ Python 오케스트레이터(`runner/`)가 스크립트를 순차 실행하고, 
 
 ## 빠른 시작
 
+### Python이 있는 환경
+
 ```bash
 # 1. 의존성 설치 (PDF 출력 필요 시)
 pip install -r runner/requirements.txt
@@ -24,6 +26,25 @@ python -m runner.main
 ```
 
 실행 중 `sudo 비밀번호:` 또는 `관리자 계정:` 프롬프트가 표시됩니다.
+
+### Python이 없는 환경 (에어갭)
+
+분석가 PC에서 단일 실행 파일로 빌드한 뒤 타겟에 전달합니다.
+
+```bash
+# 분석가 PC (타겟과 동일 OS/아키텍처에서 빌드)
+bash build/build.sh          # Linux 바이너리 생성
+# Windows: powershell -File build\build.ps1
+
+# 타겟 서버에 USB 등으로 전달
+os-check          ← 실행 파일 (Python 불필요)
+scripts/linux/    ← 점검 스크립트
+
+# 타겟 서버에서 실행
+sudo ./os-check
+```
+
+> OS/아키텍처별로 별도 빌드 필요 (Linux ELF ≠ Windows EXE)
 
 ## 결과 확인
 
@@ -56,7 +77,15 @@ runner/
 │   └── report.html.j2
 └── main.py          진입점
 
-results/             출력 디렉토리 (.gitignore)
+build/
+├── os-check.spec    PyInstaller 스펙 (템플릿 번들 포함)
+├── build.sh         Linux 바이너리 빌드
+├── build.ps1        Windows 바이너리 빌드
+├── dist/            빌드 출력 (.gitignore)
+└── work/            빌드 캐시 (.gitignore)
+
+entrypoint.py        PyInstaller 진입점
+results/             점검 결과 출력 디렉토리 (.gitignore)
 ```
 
 ## 스크립트 출력 규약
