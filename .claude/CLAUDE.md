@@ -102,7 +102,7 @@
 
 # Workflow
 ```
-/plan → 구현 → /verify → /wrap → /commit
+/recall → [plan 모드] → /breakdown → [plan 모드 종료] → 구현 → /verify → /wrap → /commit
 ```
 
 # Tool Selection

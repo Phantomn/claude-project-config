@@ -56,6 +56,17 @@
     "defaultMode": "default"
   },
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/scripts/workflow-reminder.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
