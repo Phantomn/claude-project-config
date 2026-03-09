@@ -1,83 +1,107 @@
-# claude-project-config
-Claude Code 범용 프로젝트 템플릿 저장소. Skills, Agents, Hooks 제공.
-**중요**: 이 파일은 이 프로젝트 고유 설정. `.claude/CLAUDE.md`와 `~/.claude/CLAUDE.md`는 동기화 유지.
+# vuln-os - 주요정보통신기반시설 OS 하드닝 점검
 
-## Tech Stack
-- **Language**: Markdown, Shell (Bash), Python 3.10+, JSON
-- **Linting**: shellcheck, ruff, py_compile, markdownlint, jq, yamllint
+주요정보통신기반시설 기술적 취약점 분석·평가 기준에 따른 OS 하드닝 자동화 점검 도구.
 
-## Commands
+## 프로젝트 구조
+
+```
+scripts/
+├── linux/          U-01~70.sh    (70개, bash)
+├── windows_server/ W-01~82.ps1  (82개, PowerShell)
+└── windows/        PC-01~18.ps1 (18개, PowerShell)
+
+runner/
+├── __init__.py
+├── models.py          # ResultCode, OSKind, ScriptMeta, CheckResult, RunSession
+├── detector.py        # OS 탐지 + preflight
+├── credentials.py     # 자격증명 수집 (getpass)
+├── executor.py        # subprocess 실행 + 파싱
+├── reporter_json.py   # JSON 결과 직렬화
+├── reporter_pdf.py    # Jinja2 + WeasyPrint PDF 생성
+├── templates/
+│   └── report.html.j2
+├── main.py            # 진입점
+└── requirements.txt
+
+results/               # 출력 디렉토리 (.gitignore)
+```
+
+## 실행 방법
+
 ```bash
-# Shell 스크립트 검증
-find .claude/skills -name "*.sh" -exec shellcheck {} \;
-shellcheck .claude/hooks/scripts/*.sh
+# 의존성 설치 (PDF 필요 시)
+pip install -r runner/requirements.txt
+# Ubuntu: sudo apt-get install libcairo2 libpango-1.0-0 libpangocairo-1.0-0
 
+# 실행 (관리자 권한 필수)
+python -m runner.main
+```
+
+## 결과 해석
+
+| 상태 | 설명 |
+|------|------|
+| PASS | 양호 (점검 결과: 0) |
+| FAIL | 취약 (점검 결과: N≥1) |
+| ERROR | 스크립트 오류 또는 파싱 실패 |
+| TIMEOUT | 제한 시간 초과 |
+
+```bash
+# 취약 항목 추출
+jq '.items[] | select(.code=="FAIL") | {id, value}' results/최신.json
+
+# 요약
+jq '.summary' results/최신.json
+```
+
+## 타임아웃 설정
+
+| 제한 | 대상 |
+|------|------|
+| 30s (기본) | 대부분 |
+| 60s | W-04,05,15,16,40,46,47,48,49,50,51,54,55 (secedit) |
+| 120s | PC-08 (Win32_Product WMI) |
+| 180s | U-06,13,15,58 (find / 전체 탐색) |
+
+## 알려진 버그 수정 이력 (Phase 0)
+
+| 파일 | 버그 | 수정일 |
+|------|------|--------|
+| `W-69.ps1` | `elif` → `elseif` (11곳) | 2026-03-09 |
+| `W-10.ps1` | `Invok-WebRequest` → `Invoke-WebRequest` | 2026-03-09 |
+| `W-04.ps1` | `locskDuration` → `lockDuration` | 2026-03-09 |
+
+## 주의사항
+
+- **관리자 권한 필수**: Linux는 root/sudo, Windows는 Administrator
+- **수동 검증 필수**: 자동화 점검은 참조용, 최종 판정은 수동 검증
+- **자격증명 보안**: sudo 비밀번호는 stdin pipe만 사용, 로그/히스토리 미기록
+- **Windows**: 반드시 관리자 권한 PowerShell에서 실행, `results/` 디렉토리 자동 생성
+
+## 개발 워크플로우
+
+```bash
 # Python 구문 검증
-find .claude -name "*.py" -exec python -m py_compile {} \;
+python -m py_compile runner/models.py runner/detector.py runner/credentials.py \
+    runner/executor.py runner/reporter_json.py runner/reporter_pdf.py runner/main.py
+
+# Shell 스크립트 검증
+shellcheck .claude/hooks/scripts/on-audit-completed.sh
 
 # JSON 유효성
-jq empty .claude/*.json
+jq empty .claude/settings.json
 
-# 전체 검증 (순차)
-shellcheck .claude/skills/verify/scripts/*.sh && \
-shellcheck .claude/hooks/scripts/*.sh && \
-python -m py_compile .claude/skills/wrap/scripts/*.py && \
-jq empty .claude/*.json
+# Phase 0 버그 수정 검증
+grep 'elif' scripts/windows_server/W-69.ps1       # → 결과 없음
+grep 'Invok-WebRequest' scripts/windows_server/W-10.ps1  # → 결과 없음
+grep 'locskDuration' scripts/windows_server/W-04.ps1     # → 결과 없음
 ```
 
-## Code Style
+## 스크립트 공통 출력 규약
 
-### We Use
-- **Shell**: `set -euo pipefail`, 색상 변수, 함수 분리
-- **Python**: 타입 힌트, pathlib, dataclass, 3.10+ 호환
-- **SKILL.md**: YAML frontmatter (name, description, triggers) 필수
-
-### We Avoid
-- **Shell**: Bash 전용 → POSIX 호환 권장 (`[[` → `[`, `echo -e` → `printf`)
-  - 현재 verify-*.sh에 `[[` 사용 중 - 점진적 마이그레이션 예정
-- **Python**: `os.path` → `pathlib.Path`, 3.12+ 전용 문법 지양
-- **하드코딩된 경로**: `$(dirname "$0")` 또는 `pathlib.Path(__file__).parent` 사용
-
-## Architecture
+모든 스크립트는 마지막 줄에 아래 형식 출력:
 ```
-.claude/
-├── CLAUDE.md           # 프로젝트 설정 (~/.claude/CLAUDE.md와 동기화)
-├── README.md           # 프로젝트 설명
-├── settings.json       # 훅 + 권한 설정 (PreToolUse, PostToolUse, TeammateIdle, TaskCompleted)
-├── settings.local.json # 로컬 전용 설정 (.gitignore)
-├── extensions/         # Progressive Disclosure 확장 문서
-│   ├── modes/          # brainstorming, deep-research, token-efficiency
-│   └── mcp/            # context7, serena, tavily, ida
-├── hooks/scripts/      # 훅 스크립트 (settings.json에서 참조)
-│   ├── auto-approve-readonly.sh # PreToolUse: 블랙리스트 기반 자동 승인/차단
-│   ├── hooks-common.sh     # 공통 유틸 (로깅, 알림, 진행률)
-│   ├── on-teammate-idle.sh # TeammateIdle 핸들러
-│   └── on-task-completed.sh # TaskCompleted 핸들러
-├── logs/               # 훅 로그 (JSONL, .gitignore 처리)
-├── memory/             # Auto Memory (MEMORY.md, 로컬 전용)
-├── agents/             # 역할 기반 에이전트 (7개, Agent Teams 지원)
-│   ├── implementer.md  # 구현 (sonnet, acceptEdits)
-│   ├── reviewer.md     # 리뷰 (sonnet, plan)
-│   ├── planner.md      # 계획 (opus, plan)
-│   ├── code-analyzer.md # Serena+Sequential 분석 (sonnet, plan)
-│   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
-│   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
-│   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
-└── skills/             # Progressive Disclosure 스킬 (17개)
-    ├── brainstorm/     # /brainstorm 요구사항 발견 (소크라테스 대화)
-    ├── breakdown/      # /breakdown 작업 계획
-    ├── commit/         # /commit Git 커밋 자동화
-    ├── find-skills/    # /find-skills 스킬 검색
-    ├── notebooklm/     # /notebooklm NotebookLM 연동
-    ├── panel/          # /panel N-Agent Panel 분석
-    ├── recall/         # /recall 세션/문서 컨텍스트 로드
-    ├── sync-claude-sessions/ # /sync-claude-sessions Obsidian 동기화
-    ├── tasknotes/      # /tasknotes 작업 관리
-    ├── team-assemble/  # /team-assemble 에이전트 팀 조립
-    ├── thinking/       # /thinking 구조적 사고 전략 (9가지)
-    ├── verify/         # /verify 언어별 검증 스크립트
-    ├── wrap/           # /wrap 학습 추출
-    └── mcp-*/          # MCP 격리 스킬 (analyze, docs, search, test)
+echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 ```
 
 ## Gotchas
@@ -143,21 +167,5 @@ jq empty .claude/*.json
 - **`cp -r` 대신 `cp -rL`**: 심볼릭 링크를 포함한 디렉토리 복사 시 `cp -r`은 링크 자체를 복사해 dangling symlink를 유발한다. `cp -rL`로 링크를 실제 파일로 해소하여 복사한다.
 - **UserPromptSubmit 훅 stdout → Claude 컨텍스트 주입**: UserPromptSubmit 훅에서 stdout으로 출력한 내용은 Claude 컨텍스트에 자동 주입된다. 스킬 추천, 자동 컨텍스트 로딩 등에 활용 가능하다.
 
-## Compact Instructions
-- `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
-- Skills/Agents 수정 전 다른 프로젝트 영향 고려
-- Scripts: shellcheck/py_compile 검증 필수, JSON: jq 검증 필수
-
-## Workflow
-1. 수정 전 영향 범위 확인 (다른 프로젝트에서 사용 여부)
-2. 스크립트 수정 시 `shellcheck` / `python -m py_compile`
-3. JSON 수정 시 `jq empty` 검증
-4. `/verify` → `/wrap` → `/commit`
-
-## References
-- 가이드: `docs/CLAUDE-MD-GUIDE.md`
-- Auto Memory 가이드: `docs/AUTO-MEMORY-GUIDE.md`
-- 스킬 상세: `.claude/skills/*/SKILL.md`
-- 에이전트 상세: `.claude/agents/*.md`
-- 검증 도구: `.claude/skills/verify/references/LANGUAGES.md`
-- 훅 가이드: `docs/TEAMMATE-HOOKS-GUIDE.md`
+- **스크립트 버그 수정 전 Phase 0 완료 필수**: runner 구현 전 반드시 W-69/W-10/W-04 버그 수정
+- **Windows 자격증명 MVP 제약**: v1은 현재 프로세스 컨텍스트 사용, v2에서 `CreateProcessWithLogonW` 구현 예정

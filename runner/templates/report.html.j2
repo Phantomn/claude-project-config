@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<style>
+  @font-face {
+    font-family: 'NotoSansKR';
+    src: local('Noto Sans KR'), local('NotoSansKR');
+  }
+  body {
+    font-family: 'NotoSansKR', 'Malgun Gothic', sans-serif;
+    font-size: 10pt;
+    color: #222;
+    margin: 20mm 15mm;
+  }
+  h1 { font-size: 18pt; text-align: center; border-bottom: 2px solid #333; padding-bottom: 8px; }
+  h2 { font-size: 13pt; color: #1a3a5c; margin-top: 20px; border-left: 4px solid #1a3a5c; padding-left: 8px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  th { background: #1a3a5c; color: #fff; padding: 6px 8px; text-align: left; font-size: 9pt; }
+  td { border: 1px solid #ccc; padding: 5px 8px; font-size: 9pt; vertical-align: top; }
+  tr:nth-child(even) td { background: #f5f7fa; }
+  .pass { color: #1a7a1a; font-weight: bold; }
+  .fail { color: #c0392b; font-weight: bold; }
+  .error { color: #e67e22; font-weight: bold; }
+  .timeout { color: #8e44ad; font-weight: bold; }
+  .summary-box { display: flex; gap: 12px; margin-bottom: 16px; }
+  .summary-card { flex: 1; border-radius: 6px; padding: 12px; text-align: center; }
+  .card-pass { background: #e8f8e8; border: 1px solid #1a7a1a; }
+  .card-fail { background: #fdeaea; border: 1px solid #c0392b; }
+  .card-error { background: #fef3e2; border: 1px solid #e67e22; }
+  .card-timeout { background: #f3e8f8; border: 1px solid #8e44ad; }
+  .card-num { font-size: 24pt; font-weight: bold; }
+  .card-label { font-size: 9pt; }
+  .disclaimer { font-size: 8pt; color: #666; border-top: 1px solid #ccc; margin-top: 20px; padding-top: 8px; }
+  .output-pre { background: #f4f4f4; border: 1px solid #ddd; padding: 4px 6px;
+                font-size: 7.5pt; font-family: monospace; white-space: pre-wrap;
+                word-break: break-all; max-height: 80px; overflow: hidden; }
+  @page { margin: 20mm 15mm; }
+</style>
+</head>
+<body>
+
+<h1>주요정보통신기반시설 OS 하드닝 점검 결과</h1>
+
+<h2>1. 점검 개요</h2>
+<table>
+  <tr><th>항목</th><th>내용</th></tr>
+  <tr><td>점검 일시</td><td>{{ session.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
+  <tr><td>대상 OS</td><td>{{ session.os_kind }}</td></tr>
+  <tr><td>호스트명</td><td>{{ session.hostname }}</td></tr>
+  <tr><td>총 점검 항목</td><td>{{ session.results | length }}개</td></tr>
+</table>
+
+<h2>2. 요약</h2>
+<div class="summary-box">
+  <div class="summary-card card-pass">
+    <div class="card-num pass">{{ pass_items | length }}</div>
+    <div class="card-label">양호 (PASS)</div>
+  </div>
+  <div class="summary-card card-fail">
+    <div class="card-num fail">{{ fail_items | length }}</div>
+    <div class="card-label">취약 (FAIL)</div>
+  </div>
+  <div class="summary-card card-error">
+    <div class="card-num error">{{ error_items | select("equalto", ResultCode.ERROR) | list | length }}</div>
+    <div class="card-label">오류 (ERROR)</div>
+  </div>
+  <div class="summary-card card-timeout">
+    <div class="card-num timeout">{{ error_items | selectattr("code", "equalto", ResultCode.TIMEOUT) | list | length }}</div>
+    <div class="card-label">타임아웃</div>
+  </div>
+</div>
+
+{% if session.preflight_warnings %}
+<h2>3. 사전 점검 경고</h2>
+<table>
+  <tr><th>#</th><th>경고 내용</th></tr>
+  {% for w in session.preflight_warnings %}
+  <tr><td>{{ loop.index }}</td><td>{{ w }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if fail_items %}
+<h2>{% if session.preflight_warnings %}4{% else %}3{% endif %}. 취약 항목 목록</h2>
+<table>
+  <tr><th>ID</th><th>결과값</th><th>소요시간(s)</th><th>출력 요약</th></tr>
+  {% for r in fail_items %}
+  <tr>
+    <td><span class="fail">{{ r.meta.script_id }}</span></td>
+    <td>{{ r.parsed_value }}</td>
+    <td>{{ r.elapsed_sec }}</td>
+    <td><div class="output-pre">{{ r.raw_output[:300] }}</div></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if error_items %}
+<h2>오류/타임아웃 항목</h2>
+<table>
+  <tr><th>ID</th><th>상태</th><th>오류 메시지</th></tr>
+  {% for r in error_items %}
+  <tr>
+    <td>{{ r.meta.script_id }}</td>
+    <td>{% if r.code.name == 'TIMEOUT' %}<span class="timeout">TIMEOUT</span>{% else %}<span class="error">ERROR</span>{% endif %}</td>
+    <td>{{ r.error_message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>전체 항목 상세</h2>
+<table>
+  <tr><th>ID</th><th>상태</th><th>결과값</th><th>소요(s)</th></tr>
+  {% for r in all_items %}
+  <tr>
+    <td>{{ r.meta.script_id }}</td>
+    <td>
+      {% if r.code.name == 'PASS' %}<span class="pass">PASS</span>
+      {% elif r.code.name == 'FAIL' %}<span class="fail">FAIL</span>
+      {% elif r.code.name == 'TIMEOUT' %}<span class="timeout">TIMEOUT</span>
+      {% else %}<span class="error">ERROR</span>{% endif %}
+    </td>
+    <td>{{ r.parsed_value if r.parsed_value >= 0 else '-' }}</td>
+    <td>{{ r.elapsed_sec }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="disclaimer">
+  ※ 본 결과는 자동화 점검 참조용이며 최종 판정은 수동 검증이 필요합니다.<br>
+  ※ 이 보고서는 {{ session.started_at.strftime('%Y-%m-%d %H:%M:%S') }}에 자동 생성되었습니다.
+</div>
+
+</body>
+</html>
