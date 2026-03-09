@@ -5,15 +5,22 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+VENV_DIR="${SCRIPT_DIR}/.venv"
 cd "$ROOT_DIR"
 
 echo "=== os-check Linux 빌드 ==="
+
 echo "[1/3] 빌드 의존성 설치"
-pip install pyinstaller
-pip install -r runner/requirements.txt
+if [ ! -d "$VENV_DIR" ]; then
+    echo "  venv 생성: $VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+fi
+"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
+"${VENV_DIR}/bin/pip" install --quiet pyinstaller
+"${VENV_DIR}/bin/pip" install --quiet -r runner/requirements.txt
 
 echo "[2/3] PyInstaller 빌드"
-pyinstaller build/os-check.spec \
+"${VENV_DIR}/bin/pyinstaller" build/os-check.spec \
     --distpath build/dist \
     --workpath build/work \
     --noconfirm
