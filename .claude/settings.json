@@ -76,6 +76,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/phantom/claude-worktrees/vuln-os/.claude/hooks/scripts/on-file-saved.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "TaskCompleted": [
       {
         "matcher": "audit|점검|os.check|os-check",
