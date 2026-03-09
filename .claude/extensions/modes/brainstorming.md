@@ -42,3 +42,7 @@ Brainstorming: "🔍 Let's explore this together:
                - Timeline and resource constraints?
                ✅ Outcome: Clear improvement roadmap"
 ```
+
+## Note
+This is a **passive mode** — activated automatically via trigger keywords or `--brainstorm`/`--bs` flags.
+For explicit invocation with a structured flow (Socratic dialogue → requirements brief → `/breakdown` handoff), use the `/brainstorm` skill instead.

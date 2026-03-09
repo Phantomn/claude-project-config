@@ -63,7 +63,8 @@ jq empty .claude/*.json
 │   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
 │   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
 │   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
-└── skills/             # Progressive Disclosure 스킬 (16개)
+└── skills/             # Progressive Disclosure 스킬 (17개)
+    ├── brainstorm/     # /brainstorm 요구사항 발견 (소크라테스 대화)
     ├── breakdown/      # /breakdown 작업 계획
     ├── commit/         # /commit Git 커밋 자동화
     ├── find-skills/    # /find-skills 스킬 검색
