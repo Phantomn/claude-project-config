@@ -67,6 +67,18 @@
         ]
       }
     ],
+    "TaskCompleted": [
+      {
+        "matcher": "audit|점검|os.check|os-check",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/phantom/claude-worktrees/vuln-os/.claude/hooks/scripts/on-audit-completed.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
