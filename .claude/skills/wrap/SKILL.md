@@ -160,6 +160,16 @@ Phase 1의 4개 분석 결과를 받아서 검증:
 어떤 작업을 수행할까요?
 ```
 
+### 4단계: QMD 세션 인덱싱 (자동)
+사용자 선택 완료 후 **항상** 실행:
+
+```bash
+python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions && qmd update
+```
+
+- 성공 시: "✅ QMD 인덱싱 완료 — `/recall <키워드>`로 이 세션 검색 가능"
+- 실패 시: 경고만 출력, wrap 전체를 중단하지 않음
+
 ## Output Example
 ```markdown
 # 🎁 세션 정리 결과
@@ -246,4 +256,6 @@ Phase 2 (순차):
      └─ 최종 제안
      ↓
 사용자 선택
+     ↓ (자동)
+QMD 인덱싱 (extract-sessions + qmd update)
 ```
