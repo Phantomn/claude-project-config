@@ -102,7 +102,7 @@
 
 # Workflow
 ```
-/recall → [plan 모드] → /breakdown → [plan 모드 종료] → 구현 → /verify → /wrap → /commit
+/recall → (/brainstorm →) [plan 모드] → /breakdown → [plan 모드 종료] → 구현 → /verify → /wrap → /commit
 ```
 
 # Tool Selection
@@ -269,7 +269,8 @@ jq empty .claude/*.json
 │   ├── docs-researcher.md # Context7 문서 조회 (haiku, plan)
 │   ├── web-researcher.md  # Tavily 웹 검색 (haiku, plan)
 │   └── doc-writer.md   # 문서 작성 (sonnet, acceptEdits)
-└── skills/             # Progressive Disclosure 스킬 (16개)
+└── skills/             # Progressive Disclosure 스킬 (17개)
+    ├── brainstorm/     # /brainstorm 요구사항 발견 (소크라테스 대화)
     ├── breakdown/      # /breakdown 작업 계획
     ├── commit/         # /commit Git 커밋 자동화
     ├── find-skills/    # /find-skills 스킬 검색
@@ -324,6 +325,7 @@ jq empty .claude/*.json
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
 - Scripts: shellcheck/py_compile 검증 필수, JSON: jq 검증 필수
 - **코드 참조는 반드시 Serena MCP 사용**: 심볼 검색(`find_symbol`), 개요(`get_symbols_overview`), 참조 추적(`find_referencing_symbols`), 심볼 편집(`replace_symbol_body`, `insert_after_symbol`) — 파일 전체 읽기(`Read`) 대신 심볼 단위 탐색 우선
+- `/brainstorm` → `/breakdown` 순서: 요구사항 불명확 시 brainstorm 먼저
 
 ## Workflow
 1. 수정 전 영향 범위 확인 (다른 프로젝트에서 사용 여부)

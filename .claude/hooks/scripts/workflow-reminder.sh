@@ -2,7 +2,7 @@
 # workflow-reminder.sh - UserPromptSubmit 훅
 # 세션 시작 or 작업 계획 키워드 감지 시 워크플로우 리마인더 출력
 
-WORKFLOW="⚠️ Workflow: /recall → [plan 모드] → /breakdown → [plan 모드 종료] → 구현 → /verify → /wrap → /commit"
+WORKFLOW="⚠️ Workflow: /recall → (/brainstorm →) [plan 모드] → /breakdown → [plan 모드 종료] → 구현 → /verify → /wrap → /commit"
 
 SHOW=false
 
