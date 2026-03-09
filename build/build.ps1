@@ -30,14 +30,16 @@ Write-Host "[2/3] PyInstaller 빌드"
     --workpath build\work `
     --noconfirm
 
-Write-Host "[3/3] 완료"
+Write-Host "[3/3] 점검 스크립트 배포 디렉토리 구성"
+New-Item -ItemType Directory -Path "build\dist\scripts" -Force | Out-Null
+Copy-Item -Recurse -Force "scripts\$Target" "build\dist\scripts\$Target"
+
+$scriptCount = (Get-ChildItem "scripts\$Target").Count
 Write-Host ""
-Write-Host "바이너리: build\dist\os-check.exe"
+Write-Host "=== 빌드 완료 ==="
+Write-Host "배포 패키지: build\dist\"
+Write-Host "  os-check.exe            (실행 파일)"
+Write-Host "  scripts\$Target\   (점검 스크립트 ${scriptCount}개)"
 Write-Host ""
-Write-Host "배포 방법:"
-Write-Host "  타겟 서버에 다음 두 가지를 복사:"
-Write-Host "    1) build\dist\os-check.exe  (실행 파일)"
-Write-Host "    2) scripts\$Target\         (점검 스크립트 디렉토리)"
-Write-Host ""
-Write-Host "  실행 (타겟 서버 - Administrator PowerShell):"
-Write-Host "    .\os-check.exe"
+Write-Host "실행 방법 (Administrator PowerShell):"
+Write-Host "  .\build\dist\os-check.exe"
