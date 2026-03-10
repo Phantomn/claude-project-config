@@ -21,6 +21,34 @@ if (-not (Test-Path $VenvDir)) {
 & "$VenvDir\Scripts\pip" install --quiet pyinstaller
 & "$VenvDir\Scripts\pip" install --quiet fpdf2
 
+Write-Host "[1.5/3] 한글 폰트 획득"
+New-Item -ItemType Directory -Path "runner\fonts" -Force | Out-Null
+if (-not (Test-Path "runner\fonts\NotoSansKR.ttf")) {
+    $candidates = @(
+        "$env:WINDIR\Fonts\malgun.ttf",
+        "$env:WINDIR\Fonts\malgunbd.ttf",
+        "$env:WINDIR\Fonts\batang.ttc",
+        "$env:WINDIR\Fonts\gulim.ttc"
+    )
+    $copied = $false
+    foreach ($font in $candidates) {
+        if (Test-Path $font) {
+            Copy-Item $font "runner\fonts\NotoSansKR.ttf"
+            Write-Host "  시스템 폰트 복사: $font"
+            $copied = $true
+            break
+        }
+    }
+    if (-not $copied) {
+        Write-Host "  경고: 한글 폰트를 찾지 못함 → PDF가 한글 깨질 수 있습니다"
+        Write-Host "        runner\fonts\NotoSansKR.ttf 에 폰트를 직접 배치하세요"
+    }
+}
+if (Test-Path "runner\fonts\NotoSansKR.ttf") {
+    $fontSize = (Get-Item "runner\fonts\NotoSansKR.ttf").Length / 1MB
+    Write-Host ("  폰트: runner\fonts\NotoSansKR.ttf ({0:F1}MB)" -f $fontSize)
+}
+
 Write-Host "[2/3] PyInstaller 빌드"
 & "$VenvDir\Scripts\pyinstaller" build\os-check.spec `
     --distpath build\dist `

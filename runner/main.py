@@ -111,7 +111,7 @@ def main() -> None:
     try:
         pdf_path = write_pdf(session, out_dir)
         print(f"PDF:  {pdf_path}")
-    except RuntimeError as exc:
+    except Exception as exc:
         print(f"[경고] PDF 생성 실패: {exc}")
         print("       JSON 결과는 정상 저장되었습니다.")
 
