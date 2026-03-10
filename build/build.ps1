@@ -28,9 +28,11 @@ Write-Host "[2/3] PyInstaller 빌드"
     --noconfirm
 
 Write-Host "[3/3] 점검 스크립트 배포 디렉토리 구성"
-New-Item -ItemType Directory -Path "build\dist\scripts" -Force | Out-Null
-Copy-Item -Recurse -Force "scripts\windows_server" "build\dist\scripts\windows_server"
-Copy-Item -Recurse -Force "scripts\windows"        "build\dist\scripts\windows"
+# -Recurse 시 대상이 이미 존재하면 하위 중첩 복사되므로 대상 디렉토리를 먼저 생성 후 내용물(*) 복사
+New-Item -ItemType Directory -Path "build\dist\scripts\windows_server" -Force | Out-Null
+New-Item -ItemType Directory -Path "build\dist\scripts\windows"        -Force | Out-Null
+Copy-Item -Recurse -Force "scripts\windows_server\*" "build\dist\scripts\windows_server"
+Copy-Item -Recurse -Force "scripts\windows\*"        "build\dist\scripts\windows"
 
 $serverCount = (Get-ChildItem "scripts\windows_server").Count
 $pcCount     = (Get-ChildItem "scripts\windows").Count
