@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
+
+# fonttools 폰트 서브셋팅 경고 억제 (MERG NOT subset 등 노이즈 방지)
+logging.getLogger("fontTools").setLevel(logging.ERROR)
 
 from .models import ResultCode, RunSession
 

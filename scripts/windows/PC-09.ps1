@@ -7,6 +7,8 @@ $lastUpdated = $defenderStatus.AntivirusSignatureLastUpdated
 Write-Host "가장 최근 윈도우 디펜더 업데이트 날짜입니다. 날짜: $($lastUpdated)"
 Write-Host "https://www.microsoft.com/en-us/wdsi/defenderupdates를 확인하여 윈도우 디펜더가 최신인지 확인하세요. 현재 버전: $($currentVersion)"
 
+Write-Host "점검 결과: $result"
+
 <#
 $result = 0
 
