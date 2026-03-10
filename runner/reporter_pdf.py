@@ -111,10 +111,19 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     # --- 취약 항목 ---
     if fail_items:
         pdf.add_page()
-        pdf.set_font("NotoSansKR", size=13)
+        pdf.set_font(font_name, size=13)
         pdf.cell(0, 10, f"취약 항목 ({len(fail_items)}개)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("NotoSansKR", size=10)
+        pdf.set_font(font_name, size=10)
         _write_result_table(pdf, fail_items)
+
+    # --- 취약 항목 상세 출력 ---
+    if fail_items:
+        pdf.add_page()
+        pdf.set_font(font_name, size=13)
+        pdf.cell(0, 10, f"취약 항목 상세 출력 ({len(fail_items)}개)",
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font(font_name, size=10)
+        _write_fail_details(pdf, fail_items, font_name)
 
     # --- 오류 항목 ---
     if error_items:
@@ -144,6 +153,32 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     out_path = out_dir / filename
     pdf.output(str(out_path))
     return out_path
+
+
+MAX_OUTPUT_CHARS = 4000
+
+
+def _write_fail_details(pdf: "FPDFType", items: list, font_name: str) -> None:
+    """각 FAIL 항목의 raw_output을 상세 출력."""
+    from fpdf.enums import XPos, YPos
+
+    for r in items:
+        # 항목 헤더
+        pdf.set_fill_color(220, 220, 220)
+        pdf.set_font(font_name, size=11)
+        pdf.cell(
+            0, 8, f"[{r.meta.script_id}] {r.code.name}",
+            border=1, fill=True,
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
+
+        # 스크립트 출력
+        pdf.set_font(font_name, size=9)
+        output = r.raw_output or "(출력 없음)"
+        if len(output) > MAX_OUTPUT_CHARS:
+            output = output[:MAX_OUTPUT_CHARS] + "\n... (이하 생략 — 전체 내용은 JSON 참조)"
+        pdf.multi_cell(0, 5, output)
+        pdf.ln(4)
 
 
 def _write_result_table(pdf: "FPDFType", items: list) -> None:
