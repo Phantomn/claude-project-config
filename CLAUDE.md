@@ -182,6 +182,8 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **fpdf2 커스텀 헤더/푸터는 FPDF 서브클래스로 구현**: `header()`/`footer()` 오버라이드 + `page_no() == 1` 조건으로 표지를 제외한다. `footer()`에서 `self.set_y(-15)`로 하단 고정 위치 지정.
 - **uv + pyproject.toml 마이그레이션 시 패키지 경로 명시**: `[tool.hatch.build.targets.wheel] packages = ["runner"]` 누락 시 `uv sync`/`uv build`가 패키지를 찾지 못한다. 빌드 스크립트(build.sh, build.ps1)는 venv + pip 기반이므로 `pip install fpdf2`로 직접 설치.
 - **fpdf2 `table()` 가독성 옵션**: `repeat_headings=1` (페이지 넘김 시 헤더 반복), `padding=(상하, 좌우)` (셀 여백). 긴 텍스트는 표에 넣기 전 개행(`\n`)을 공백으로 치환 후 문자 수 제한 적용.
+- **빌드 스크립트는 런타임 OS 탐지 분기 수만큼 스크립트 디렉토리를 모두 배포**: `build.ps1`이 `scripts\windows_server\`만 복사하면 Windows PC 탐지 시 경로 오류 발생. 런타임에서 `OSKind`별 분기가 N개라면 배포 패키지도 N개 디렉토리를 포함해야 한다. 매개변수화(`$Target`)로 선택 배포하면 탐지 결과와 불일치가 생긴다.
+- **내부 상수 문자열을 사용자 노출 레이블로 직접 사용 금지**: `OSKind.WINDOWS_SERVER` 같은 내부 Enum 값을 `print()` 등 UI 출력에 직접 사용하면 가독성이 낮다. `{OSKind.LINUX: "Linux", OSKind.WINDOWS_SERVER: "Windows Server", ...}` dict 매핑을 별도 두고 레이블을 분리한다.
 
 ## Common Mistakes
 
