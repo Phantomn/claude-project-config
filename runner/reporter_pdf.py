@@ -50,7 +50,7 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
         ) from exc
 
     font_path = _get_font_path()
-    use_korean = font_path.exists()
+    use_korean = font_path is not None and font_path.exists()
     font_name = "NotoSansKR" if use_korean else "Helvetica"
 
     pass_items = [r for r in session.results if r.code == ResultCode.PASS]
