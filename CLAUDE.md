@@ -265,6 +265,7 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **PDF 폰트 크기 상수화 (`FS_*` 패턴)**: `set_font(size=12)` 하드코딩이 여러 함수에 산재하면 일관성 유지가 어렵다. 파일 상단에 `FS_TITLE = 20; FS_SECTION = 13; FS_BODY = 10` 등 상수를 정의하고 모든 `set_font` 호출에서 참조한다. 불일치 발견 시 상수 값 하나만 수정하면 전체 반영된다.
 - **관리자 쉘 전제 환경에서 자격증명 수집 불필요**: `sudo -s` / Administrator PowerShell로 실행하는 구조라면 `credentials.py` 모듈 자체가 불필요하다. 자격증명 수집 → stdin pipe 전달 구조는 비관리자 실행 경로가 있을 때만 의미 있다. 실행 컨텍스트 가정을 명확히 하고 불필요한 복잡도를 제거한다.
 - **Windows 빌드에서 한글 폰트를 명시적으로 배포 패키지에 포함**: fpdf2 Helvetica 폴백 상태에서 한글 텍스트가 있으면 `FPDFUnicodeEncodingException` 발생. `build.ps1`에 `malgun.ttf` 등 시스템 한글 폰트를 `dist\` 하위로 복사하는 단계를 반드시 추가한다. Linux 빌드는 fc-list 탐색으로 런타임 해결하지만 Windows는 빌드 타임에 폰트를 패키징해야 한다.
+- **PowerShell `net accounts` 파싱은 레이블 검색 대신 행 인덱스 사용**: `Select-String "Maximum password age"` 방식은 한글 Windows에서 레이블이 다르게 출력되어 null을 반환한다. `Where-Object { $_ -match ':' }`로 값 행만 추출한 뒤 `[0]`, `[1]`, `[2]` 등 인덱스로 접근해야 언어에 독립적으로 파싱할 수 있다.
 
 ## Common Mistakes
 
@@ -277,6 +278,7 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **ruff 줄 길이 불일치**: ruff 기본값(88)과 `pyproject.toml [tool.ruff] line-length = 100` 설정이 다를 경우 CI/로컬 결과가 달라진다. `pyproject.toml`에 `line-length`를 명시하여 일관성을 유지한다.
 - **`multi_cell` fill 전용 사용 시 테두리 누락**: `fill=True`만 설정하면 배경색만 적용되고 테두리가 없어 박스 구분이 어렵다. 내용 박스에는 `border=1`을 함께 지정한다.
 - **PowerShell `Copy-Item -Recurse` 대상 기존 디렉토리 존재 시 중첩 복사**: 대상 경로(`"build\dist\scripts\windows"`)가 이미 존재하면 소스 폴더 자체가 내부에 복사되어 `scripts\windows\windows\PC-01.ps1`처럼 중첩된다. `New-Item -ItemType Directory -Force` 로 대상 디렉토리를 먼저 생성한 뒤 `"scripts\windows\*"` 와일드카드로 내용물만 복사해야 한다.
+- **PowerShell CLI 출력을 영문 레이블 텍스트로 파싱하면 로케일 의존**: `Select-String "Maximum password age"` 등 영문 레이블 검색은 한글 Windows에서 null을 반환한다. null에 `.Trim()` 등을 호출하면 `InvokeMethodOnNull` 오류가 발생한다. `Where-Object { $_ -match ':' }`로 값 행을 추출한 뒤 행 인덱스로 접근하는 언어 독립적 방식을 사용한다.
 - **외부 프롬프트 → 스킬 변환 시 MVP 먼저**: 복잡한 Phase는 사용자 확인 전에 구현하지 않는다. 초기 설계를 제시하고 피드백으로 범위를 확정한다.
 - **passive 모드 vs active 스킬**: `extensions/modes/`는 자동 활성화 행동 변화, `skills/`는 명시적 호출 플로우. 동일 기능처럼 보여도 역할이 다르므로 두 파일에 상호 참조를 명시한다.
 - **git worktree 기반 역할 분리**: 카테고리별 Claude 환경 분리 시 git worktree 사용. CLAUDE.md/skills는 git으로 공유, 세션 메모리는 경로별 자동 분리 (컨텍스트 오염 없음).
@@ -305,6 +307,7 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **PDF 폰트 크기 상수화 (`FS_*` 패턴)**: `set_font(size=12)` 하드코딩이 여러 함수에 산재하면 일관성 유지가 어렵다. 파일 상단에 `FS_TITLE = 20; FS_SECTION = 13; FS_BODY = 10` 등 상수를 정의하고 모든 `set_font` 호출에서 참조한다. 불일치 발견 시 상수 값 하나만 수정하면 전체 반영된다.
 - **관리자 쉘 전제 환경에서 자격증명 수집 불필요**: `sudo -s` / Administrator PowerShell로 실행하는 구조라면 `credentials.py` 모듈 자체가 불필요하다. 자격증명 수집 → stdin pipe 전달 구조는 비관리자 실행 경로가 있을 때만 의미 있다. 실행 컨텍스트 가정을 명확히 하고 불필요한 복잡도를 제거한다.
 - **Windows 빌드에서 한글 폰트를 명시적으로 배포 패키지에 포함**: fpdf2 Helvetica 폴백 상태에서 한글 텍스트가 있으면 `FPDFUnicodeEncodingException` 발생. `build.ps1`에 `malgun.ttf` 등 시스템 한글 폰트를 `dist\` 하위로 복사하는 단계를 반드시 추가한다. Linux 빌드는 fc-list 탐색으로 런타임 해결하지만 Windows는 빌드 타임에 폰트를 패키징해야 한다.
+- **PowerShell `net accounts` 파싱은 레이블 검색 대신 행 인덱스 사용**: `Select-String "Maximum password age"` 방식은 한글 Windows에서 레이블이 다르게 출력되어 null을 반환한다. `Where-Object { $_ -match ':' }`로 값 행만 추출한 뒤 `[0]`, `[1]`, `[2]` 등 인덱스로 접근해야 언어에 독립적으로 파싱할 수 있다.
 
 ## Common Mistakes
 
@@ -317,3 +320,4 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **ruff 줄 길이 불일치**: ruff 기본값(88)과 `pyproject.toml [tool.ruff] line-length = 100` 설정이 다를 경우 CI/로컬 결과가 달라진다. `pyproject.toml`에 `line-length`를 명시하여 일관성을 유지한다.
 - **`multi_cell` fill 전용 사용 시 테두리 누락**: `fill=True`만 설정하면 배경색만 적용되고 테두리가 없어 박스 구분이 어렵다. 내용 박스에는 `border=1`을 함께 지정한다.
 - **PowerShell `Copy-Item -Recurse` 대상 기존 디렉토리 존재 시 중첩 복사**: 대상 경로(`"build\dist\scripts\windows"`)가 이미 존재하면 소스 폴더 자체가 내부에 복사되어 `scripts\windows\windows\PC-01.ps1`처럼 중첩된다. `New-Item -ItemType Directory -Force` 로 대상 디렉토리를 먼저 생성한 뒤 `"scripts\windows\*"` 와일드카드로 내용물만 복사해야 한다.
+- **PowerShell CLI 출력을 영문 레이블 텍스트로 파싱하면 로케일 의존**: `Select-String "Maximum password age"` 등 영문 레이블 검색은 한글 Windows에서 null을 반환한다. null에 `.Trim()` 등을 호출하면 `InvokeMethodOnNull` 오류가 발생한다. `Where-Object { $_ -match ':' }`로 값 행을 추출한 뒤 행 인덱스로 접근하는 언어 독립적 방식을 사용한다.

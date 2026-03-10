@@ -1,11 +1,12 @@
 ﻿$result = 0
 $bootEntries = bcdedit /enum all
 
-$multiBootEntries = $bootEntires | Select-String "description" -Context 0,1
+# bcdedit 출력 레이블은 로케일에 따라 한글화됨 (예: "description" → "설명")
+# 레이블 매칭 대신 "bootmgr"/"winload" 등 언어 독립적 로더 식별자로 엔트리 수 계산
+$bootLoaderEntries = $bootEntries | Where-Object { $_ -match "winload|winresume|bootmgr" }
 
-if($multiBootEntries) {
+if(($bootLoaderEntries | Measure-Object).Count -gt 1) {
     Write-Host "멀티부팅이 설정되어 있습니다"
-    Write-Host "Boot Entries:" $multiBootEntries | ForEach-Object { $_.Line }
     $result += 1
 }
 
