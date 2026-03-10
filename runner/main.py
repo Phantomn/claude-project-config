@@ -94,7 +94,8 @@ def main() -> None:
         result = run_script(meta, creds)
         session.results.append(result)
         status_icon = "✓" if result.code == ResultCode.PASS else "✗"
-        print(f"  [{status_icon}] {meta.script_id:8s} {result.code.name:<8s} ({result.elapsed_sec:.1f}s)")
+        print(f"  [{status_icon}] {meta.script_id:8s} {result.code.name:<8s}"
+              f" ({result.elapsed_sec:.1f}s)")
 
     # [7] 터미널 요약
     _print_summary(session)
