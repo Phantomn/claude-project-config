@@ -21,7 +21,7 @@ if [ ! -f "${VENV_DIR}/bin/pip" ]; then
 fi
 "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
 "${VENV_DIR}/bin/pip" install --quiet pyinstaller
-"${VENV_DIR}/bin/pip" install --quiet -r runner/requirements.txt
+"${VENV_DIR}/bin/pip" install --quiet fpdf2
 
 echo "[1.5/3] 한글 폰트 획득"
 mkdir -p runner/fonts
