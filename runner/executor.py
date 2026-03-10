@@ -5,7 +5,6 @@ import subprocess
 import time
 from pathlib import Path
 
-from .credentials import LinuxCredentials, WindowsCredentials
 from .models import CheckResult, OSKind, ResultCode, ScriptMeta
 
 TIMEOUT_MAP: dict[str, int] = {
@@ -48,20 +47,15 @@ def _decode_output(raw: bytes) -> str:
         return raw.decode("cp949", errors="replace")
 
 
-def run_script(
-    meta: ScriptMeta,
-    creds: LinuxCredentials | WindowsCredentials,
-) -> CheckResult:
+def run_script(meta: ScriptMeta) -> CheckResult:
     start = time.monotonic()
     raw_output = ""
     error_message = ""
 
     try:
         if meta.os_kind == OSKind.LINUX:
-            assert isinstance(creds, LinuxCredentials)
             proc = subprocess.run(
-                ["sudo", "-S", "bash", str(meta.path)],
-                input=f"{creds.sudo_password}\n",
+                ["bash", str(meta.path)],
                 capture_output=True,
                 timeout=meta.timeout,
                 text=True,

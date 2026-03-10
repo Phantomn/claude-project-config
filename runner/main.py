@@ -5,7 +5,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .credentials import collect_credentials
 from .detector import detect_os_kind, run_preflight
 from .executor import build_script_meta, run_script
 from .models import OSKind, ResultCode, RunSession
@@ -62,10 +61,7 @@ def main() -> None:
     for w in warnings:
         print(f"[경고] {w}")
 
-    # [3] 자격증명 수집
-    creds = collect_credentials(os_kind)
-
-    # [4] 스크립트 목록
+    # [3] 스크립트 목록
     # PyInstaller --onefile: 실행파일 위치 기준, 일반 실행: 소스 루트 기준
     if getattr(sys, "frozen", False):
         base_dir = Path(sys.executable).parent
@@ -96,7 +92,7 @@ def main() -> None:
     # [6] 스크립트 순차 실행
     for script_path in script_paths:
         meta = build_script_meta(script_path, os_kind)
-        result = run_script(meta, creds)
+        result = run_script(meta)
         session.results.append(result)
         status_icon = "✓" if result.code == ResultCode.PASS else "✗"
         print(f"  [{status_icon}] {meta.script_id:8s} {result.code.name:<8s}"
