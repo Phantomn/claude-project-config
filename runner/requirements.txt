@@ -1,3 +1,0 @@
-fpdf2>=2.7.0
-# 순수 Python, 시스템 라이브러리 의존 없음 → 에어갭/PyInstaller 환경 완전 지원
-# 한글 PDF 출력을 위해 runner/fonts/NotoSansKR.ttf 필요 (build.sh가 자동 배치)
