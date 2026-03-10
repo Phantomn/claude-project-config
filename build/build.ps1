@@ -22,7 +22,7 @@ if (-not (Test-Path $VenvDir)) {
 }
 & "$VenvDir\Scripts\pip" install --quiet --upgrade pip
 & "$VenvDir\Scripts\pip" install --quiet pyinstaller
-& "$VenvDir\Scripts\pip" install --quiet -r runner\requirements.txt
+& "$VenvDir\Scripts\pip" install --quiet fpdf2
 
 Write-Host "[2/3] PyInstaller 빌드"
 & "$VenvDir\Scripts\pyinstaller" build\os-check.spec `

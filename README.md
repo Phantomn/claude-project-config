@@ -16,7 +16,7 @@ Python 오케스트레이터(`runner/`)가 스크립트를 순차 실행하고, 
 
 ```bash
 # 1. 의존성 설치
-pip install -r runner/requirements.txt
+uv sync
 
 # 2. 실행 (관리자 권한 필수)
 sudo python -m runner.main          # Linux

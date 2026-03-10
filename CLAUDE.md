@@ -18,10 +18,10 @@ runner/
 ├── executor.py        # subprocess 실행 + 파싱
 ├── reporter_json.py   # JSON 결과 직렬화
 ├── reporter_pdf.py    # fpdf2 PDF 생성 (순수 Python)
-├── templates/
-│   └── report.html.j2
-├── main.py            # 진입점
-└── requirements.txt
+└── main.py            # 진입점
+
+pyproject.toml         # 의존성 관리 (uv)
+uv.lock                # 잠금 파일 (uv sync으로 갱신)
 
 results/               # 출력 디렉토리 (.gitignore)
 ```
@@ -29,12 +29,12 @@ results/               # 출력 디렉토리 (.gitignore)
 ## 실행 방법
 
 ```bash
-# 의존성 설치
-pip install -r runner/requirements.txt
+# 의존성 설치 (uv 사용)
+uv sync
 # PDF 라이브러리(fpdf2)는 순수 Python - 별도 시스템 패키지 불필요
 
 # 실행 (관리자 권한 필수)
-python -m runner.main
+uv run python -m runner.main
 ```
 
 ## 결과 해석
@@ -82,7 +82,7 @@ jq '.summary' results/최신.json
 
 ```bash
 # Python 구문 검증
-python -m py_compile runner/models.py runner/detector.py runner/credentials.py \
+uv run python -m py_compile runner/models.py runner/detector.py runner/credentials.py \
     runner/executor.py runner/reporter_json.py runner/reporter_pdf.py runner/main.py
 
 # Shell 스크립트 검증
@@ -177,6 +177,10 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **WSL2 `find / -perm -4000` 타임아웃 처리**: WSL2 전체 파일시스템 SUID 탐색은 180초 이상 소요될 수 있다. `timeout 180 find / -perm -4000 ...` 래퍼를 적용하고 timeout 종료 코드(124)를 정상으로 처리한다.
 - **fpdf2 긴 텍스트는 `multi_cell` 사용**: 개행 포함 장문(raw_output 등)은 `cell` 대신 `multi_cell`로 출력해야 자동 줄바꿈 처리된다. `cell`은 단일 행 고정 높이로만 렌더링.
 - **PDF 폰트명 하드코딩 금지**: `set_font("NotoSansKR", ...)` 직접 사용 시 Helvetica 폴백 환경에서 오류. 반드시 `font_name` 변수(= `"NotoSansKR" if use_korean else "Helvetica"`)를 사용한다.
+- **fpdf2 글리프 누락은 조용한 실패**: 폰트에 없는 문자(예: `⚠` U+26A0)는 stdout 경고만 출력하고 PDF 생성은 계속된다. 특수문자 사용 전 해당 폰트의 글리프 포함 여부를 확인하고, 미포함 시 ASCII 대체(`⚠ → [!]`)를 명시적으로 처리한다.
+- **fpdf2 테이블은 `pdf.table()` 컨텍스트 매니저 사용**: `cell()` 반복 대신 `with pdf.table() as table:` 패턴으로 열 너비·정렬·경계선을 선언적으로 제어한다. 셀별 색상은 `FontFace(color=..., fill_color=...)` 로 지정.
+- **fpdf2 커스텀 헤더/푸터는 FPDF 서브클래스로 구현**: `header()`/`footer()` 오버라이드 + `page_no() == 1` 조건으로 표지를 제외한다. `footer()`에서 `self.set_y(-15)`로 하단 고정 위치 지정.
+- **uv + pyproject.toml 마이그레이션 시 패키지 경로 명시**: `[tool.hatch.build.targets.wheel] packages = ["runner"]` 누락 시 `uv sync`/`uv build`가 패키지를 찾지 못한다. 빌드 스크립트(build.sh, build.ps1)는 venv + pip 기반이므로 `pip install fpdf2`로 직접 설치.
 
 ## Common Mistakes
 
@@ -184,3 +188,6 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **PyInstaller 배포 전 라이브러리 로드 경로 미검증**: WSL2처럼 동일 `.so`가 두 경로에 공존하는 환경에서 빌드는 성공하나 실행이 실패한다. 배포 전 `ldd ./binary` 또는 `LD_DEBUG=libs ./binary 2>&1 | grep struct`로 경로를 검증한다.
 - **에어갭 배포에 WeasyPrint 선택**: 시스템 패키지 의존성이 크므로 오프라인 환경에서 실패한다. 에어갭 배포는 fpdf2 또는 reportlab 등 순수 Python 라이브러리를 선택한다.
 - **프로젝트 구조 설명 미동기화**: reporter_pdf.py를 WeasyPrint → fpdf2로 교체 후 CLAUDE.md 상단 구조 주석에 남은 `WeasyPrint` 언급을 갱신하지 않아 혼란 발생. 의존성 변경 시 문서 구조 설명도 함께 수정한다.
+- **fpdf2 셀 색상 지정 후 초기화 누락**: `set_fill_color()`/`set_text_color()` 설정은 이후 모든 셀에 전파된다. 특정 셀에만 색상 적용 후 반드시 기본값(`set_text_color(0, 0, 0)`)으로 복원한다.
+- **의존성 도구 교체 후 참조 잔류**: `requirements.txt` → `pyproject.toml/uv` 전환 시 build.sh, build.ps1, README.md, SKILL.md 등의 참조를 일괄 갱신하지 않으면 혼란이 발생한다. 도구 교체 후 `grep -r "requirements.txt" .`으로 잔류 참조를 전수 확인한다.
+- **ruff 줄 길이 불일치**: ruff 기본값(88)과 `pyproject.toml [tool.ruff] line-length = 100` 설정이 다를 경우 CI/로컬 결과가 달라진다. `pyproject.toml`에 `line-length`를 명시하여 일관성을 유지한다.
