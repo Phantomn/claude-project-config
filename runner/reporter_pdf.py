@@ -2,15 +2,31 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 
 from .models import ResultCode, RunSession
 
-if TYPE_CHECKING:
-    from fpdf import FPDF as FPDFType
+# ── Design System 색상 상수 (RGB tuple) ──────────────────────────────────────
+NAVY   = (30, 55, 100)
+RED    = (200, 50, 50)
+GREEN  = (50, 150, 80)
+ORANGE = (210, 120, 30)
+LGRAY  = (245, 247, 250)
+MGRAY  = (180, 180, 180)
+DGRAY  = (80, 80, 80)
 
+MAX_OUTPUT_CHARS = 4000
 
-# Ubuntu/Windows 기본 경로 탐색 순서 (네트워크 불필요)
+CODE_COLORS: dict[str, tuple[int, int, int]] = {
+    "PASS":    GREEN,
+    "FAIL":    RED,
+    "ERROR":   ORANGE,
+    "TIMEOUT": ORANGE,
+}
+
+# ── 한글 폰트 탐색 ────────────────────────────────────────────────────────────
 _SYSTEM_FONT_CANDIDATES: list[Path] = [
     Path("/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf"),
     Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
@@ -39,181 +55,354 @@ def _get_font_path() -> Path | None:
     return None
 
 
+# ── AuditPDF ──────────────────────────────────────────────────────────────────
+
+class AuditPDF(FPDF):
+    """FPDF 서브클래스. 공통 헤더/푸터를 포함한 감사 보고서 기반 클래스."""
+
+    def __init__(self, font_name: str, report_title: str) -> None:
+        super().__init__()
+        self.font_name = font_name
+        self.report_title = report_title
+
+    def header(self) -> None:
+        """전 페이지: 보고서명(좌, 9pt) + 페이지 번호(우, 9pt) + 하단 구분선.
+
+        표지(page_no() == 1)는 헤더 출력 안 함.
+        """
+        if self.page_no() == 1:
+            return
+
+        self.set_font(self.font_name, size=9)
+        self.set_text_color(*DGRAY)
+        self.cell(0, 8, self.report_title, new_x=XPos.LMARGIN, new_y=YPos.TOP)
+        self.cell(0, 8, f"{self.page_no()}", align="R",
+                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_draw_color(*MGRAY)
+        self.set_line_width(0.3)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.set_text_color(0, 0, 0)
+        self.set_draw_color(0, 0, 0)
+        self.ln(2)
+
+    def footer(self) -> None:
+        """전 페이지: 상단 구분선 + 면책 단문(8pt, DGRAY, 중앙).
+
+        표지(page_no() == 1)는 footer 없음.
+        """
+        if self.page_no() == 1:
+            return
+
+        self.set_y(-15)
+        self.set_draw_color(*MGRAY)
+        self.set_line_width(0.3)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(1)
+        self.set_font(self.font_name, size=8)
+        self.set_text_color(*DGRAY)
+        self.cell(
+            0, 5,
+            "본 결과는 자동화 점검 참조용이며 수동 검증이 필요합니다.",
+            align="C",
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
+        self.set_text_color(0, 0, 0)
+        self.set_draw_color(0, 0, 0)
+
+
+# ── 섹션 제목 헬퍼 ────────────────────────────────────────────────────────────
+
+def _section_title(pdf: AuditPDF, title: str) -> None:
+    """섹션 제목 출력 (13pt, 좌측 정렬)."""
+    pdf.set_font(pdf.font_name, size=13)
+    pdf.set_text_color(0, 0, 0)
+    pdf.cell(0, 12, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+
+# ── 표지 ──────────────────────────────────────────────────────────────────────
+
+def _write_cover(pdf: AuditPDF, session: RunSession) -> None:
+    """표지: 네이비 헤더 블록(0~65mm) + 정보 블록(82mm~)."""
+    font_name = pdf.font_name
+
+    # 네이비 헤더 블록
+    pdf.set_fill_color(*NAVY)
+    pdf.rect(0, 0, pdf.w, 65, style="F")
+
+    # 제목 (흰색 26pt)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_y(22)
+    pdf.set_font(font_name, size=26)
+    pdf.cell(0, 14, "OS 하드닝 점검 보고서", align="C",
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # 부제 (흰색 11pt)
+    pdf.set_font(font_name, size=11)
+    pdf.cell(0, 8, "주요정보통신기반시설 기술적 취약점 분석·평가", align="C",
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # 정보 블록
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(82)
+    pdf.set_font(font_name, size=11)
+
+    info_rows = [
+        ("점검 일시",    session.started_at.strftime("%Y-%m-%d %H:%M:%S")),
+        ("대상 OS",      str(session.os_kind)),
+        ("호스트명",     session.hostname),
+        ("총 점검 항목", f"{len(session.results)}개"),
+    ]
+    for label, value in info_rows:
+        pdf.set_text_color(*DGRAY)
+        pdf.cell(45, 9, f"{label} :", new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 9, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+
+# ── 요약 대시보드 ─────────────────────────────────────────────────────────────
+
+def _write_dashboard(
+    pdf: AuditPDF,
+    pass_n: int,
+    fail_n: int,
+    error_n: int,
+    warnings: list[str],
+) -> None:
+    """요약 대시보드: 상태 카드 3개 + PASS 비율 바 + preflight warnings."""
+    font_name = pdf.font_name
+    usable_w = pdf.w - pdf.l_margin - pdf.r_margin
+    total = pass_n + fail_n + error_n
+
+    # 섹션 제목
+    pdf.set_font(font_name, size=14)
+    pdf.set_text_color(0, 0, 0)
+    pdf.cell(0, 12, "점검 결과 요약", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # 카드 3개
+    card_w = usable_w / 3
+    card_h = 32
+    cards = [
+        (pass_n,  "PASS",  "양호", GREEN),
+        (fail_n,  "FAIL",  "취약", RED),
+        (error_n, "ERROR", "오류", ORANGE),
+    ]
+    start_x = pdf.l_margin
+    card_y = pdf.get_y()
+
+    for i, (cnt, code_label, kor_label, color) in enumerate(cards):
+        x = start_x + i * card_w
+
+        pdf.set_draw_color(*MGRAY)
+        pdf.rect(x, card_y, card_w - 2, card_h, style="D")
+
+        # 숫자 (18pt, 코드 색상)
+        pdf.set_text_color(*color)
+        pdf.set_font(font_name, size=18)
+        pdf.set_xy(x, card_y + 5)
+        pdf.cell(card_w - 2, 9, str(cnt), align="C",
+                 new_x=XPos.RIGHT, new_y=YPos.TOP)
+
+        # 코드 레이블 (9pt)
+        pdf.set_font(font_name, size=9)
+        pdf.set_xy(x, card_y + 15)
+        pdf.cell(card_w - 2, 6, code_label, align="C",
+                 new_x=XPos.RIGHT, new_y=YPos.TOP)
+
+        # 한글 레이블 (9pt, DGRAY)
+        pdf.set_text_color(*DGRAY)
+        pdf.set_xy(x, card_y + 22)
+        pdf.cell(card_w - 2, 6, kor_label, align="C",
+                 new_x=XPos.RIGHT, new_y=YPos.TOP)
+
+    # PASS 비율 바
+    bar_y = card_y + card_h + 6
+    bar_h = 7
+    pass_ratio = pass_n / total if total > 0 else 0
+    pass_w = usable_w * pass_ratio
+    rest_w = usable_w - pass_w
+
+    pdf.set_fill_color(*GREEN)
+    if pass_w > 0:
+        pdf.rect(pdf.l_margin, bar_y, pass_w, bar_h, style="F")
+    pdf.set_fill_color(*LGRAY)
+    if rest_w > 0:
+        pdf.rect(pdf.l_margin + pass_w, bar_y, rest_w, bar_h, style="F")
+
+    pdf.set_y(bar_y + bar_h + 3)
+    pdf.set_text_color(*DGRAY)
+    pdf.set_font(font_name, size=9)
+    pct = int(pass_ratio * 100)
+    pdf.cell(0, 6, f"양호 {pass_n}건 / 전체 {total}건 ({pct}%)",
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(4)
+
+    # preflight warnings
+    if warnings:
+        pdf.set_font(font_name, size=10)
+        pdf.set_text_color(*ORANGE)
+        for w in warnings:
+            pdf.multi_cell(0, 6, f"  [!] {w}")
+        pdf.set_text_color(0, 0, 0)
+
+
+# ── 취약 항목 목록 (테이블) ───────────────────────────────────────────────────
+
+def _write_fail_table(pdf: AuditPDF, items: list) -> None:
+    """취약 항목 목록 테이블 (pdf.table() 사용).
+
+    열: ID(20mm), 값(15mm), 경과(s)(20mm), 비고(125mm)
+    """
+    from fpdf.enums import TableCellFillMode
+    from fpdf.fonts import FontFace
+
+    headings_style = FontFace(color=(255, 255, 255), fill_color=NAVY)
+    col_widths = (20, 15, 20, 125)
+
+    with pdf.table(
+        headings_style=headings_style,
+        cell_fill_color=LGRAY,
+        cell_fill_mode=TableCellFillMode.ROWS,
+        borders_layout="MINIMAL",
+        col_widths=col_widths,
+        line_height=7,
+    ) as table:
+        hrow = table.row()
+        for h in ["ID", "값", "경과(s)", "비고"]:
+            hrow.cell(h)
+        for r in items:
+            row = table.row()
+            note = (r.error_message or (r.raw_output or "").split("\n")[0])[:100]
+            row.cell(r.meta.script_id)
+            row.cell(str(r.parsed_value))
+            row.cell(f"{r.elapsed_sec:.1f}")
+            row.cell(note)
+
+
+# ── 취약 항목 상세 ────────────────────────────────────────────────────────────
+
+def _write_fail_details(pdf: AuditPDF, items: list) -> None:
+    """취약 항목 상세: 좌측 네이비 바 + LGRAY raw_output 박스."""
+    font_name = pdf.font_name
+    usable_w = pdf.w - pdf.l_margin - pdf.r_margin
+
+    for r in items:
+        # 페이지 넘침 방지: 최소 30mm 공간 확인
+        if pdf.get_y() > pdf.h - pdf.b_margin - 30:
+            pdf.add_page()
+
+        current_y = pdf.get_y()
+
+        # 좌측 네이비 바
+        pdf.set_fill_color(*NAVY)
+        pdf.rect(pdf.l_margin, current_y, 4, 10, style="F")
+
+        # 제목 ([U-01] FAIL)
+        pdf.set_font(font_name, size=11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_xy(pdf.l_margin + 6, current_y)
+        pdf.cell(0, 10, f"[{r.meta.script_id}] {r.code.name}",
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        # 서브텍스트 (결과값 + 경과)
+        pdf.set_font(font_name, size=9)
+        pdf.set_text_color(*DGRAY)
+        pdf.set_x(pdf.l_margin + 6)
+        pdf.cell(0, 6, f"결과값: {r.parsed_value} | 경과: {r.elapsed_sec:.1f}s",
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
+
+        # raw_output 박스
+        output = r.raw_output or "(출력 없음)"
+        if len(output) > MAX_OUTPUT_CHARS:
+            output = output[:MAX_OUTPUT_CHARS] + "\n... (이하 생략 — 전체 내용은 JSON 참조)"
+        pdf.set_fill_color(*LGRAY)
+        pdf.set_font(font_name, size=9)
+        pdf.multi_cell(usable_w, 5, output, fill=True)
+        pdf.ln(6)
+
+
+# ── 전체 항목 테이블 ──────────────────────────────────────────────────────────
+
+def _write_all_items(pdf: AuditPDF, items: list) -> None:
+    """전체 항목 테이블. ResultCode별 결과 셀 색상 적용."""
+    from fpdf.enums import TableCellFillMode
+    from fpdf.fonts import FontFace
+
+    headings_style = FontFace(color=(255, 255, 255), fill_color=NAVY)
+    col_widths = (20, 22, 15, 20, 103)
+
+    with pdf.table(
+        headings_style=headings_style,
+        cell_fill_color=LGRAY,
+        cell_fill_mode=TableCellFillMode.ROWS,
+        borders_layout="MINIMAL",
+        col_widths=col_widths,
+        line_height=6,
+    ) as table:
+        hrow = table.row()
+        for h in ["ID", "결과", "값", "경과(s)", "비고"]:
+            hrow.cell(h)
+        for r in items:
+            row = table.row()
+            code_color = CODE_COLORS.get(r.code.name, (0, 0, 0))
+            code_style = FontFace(color=code_color)
+            row.cell(r.meta.script_id)
+            row.cell(r.code.name, style=code_style)
+            row.cell(str(r.parsed_value))
+            row.cell(f"{r.elapsed_sec:.1f}")
+            row.cell((r.error_message or "")[:80])
+
+
+# ── 진입점 ────────────────────────────────────────────────────────────────────
+
 def write_pdf(session: RunSession, out_dir: Path) -> Path:
     try:
-        from fpdf import FPDF
-        from fpdf.enums import XPos, YPos
+        from fpdf import FPDF as _check  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            f"PDF 생성 의존성 오류: {exc}\n"
-            "설치: pip install fpdf2"
+            f"PDF 생성 의존성 오류: {exc}\n설치: pip install fpdf2"
         ) from exc
 
     font_path = _get_font_path()
     use_korean = font_path is not None and font_path.exists()
-    font_name = "NotoSansKR" if use_korean else "Helvetica"
+    font_name  = "NotoSansKR" if use_korean else "Helvetica"
 
-    pass_items = [r for r in session.results if r.code == ResultCode.PASS]
-    fail_items = [r for r in session.results if r.code == ResultCode.FAIL]
+    pass_items  = [r for r in session.results if r.code == ResultCode.PASS]
+    fail_items  = [r for r in session.results if r.code == ResultCode.FAIL]
     error_items = [r for r in session.results if r.code in (ResultCode.ERROR, ResultCode.TIMEOUT)]
 
-    pdf = FPDF()
+    pdf = AuditPDF(font_name=font_name, report_title="OS 하드닝 점검 보고서")
     if use_korean:
         pdf.add_font(font_name, fname=str(font_path))
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=True, margin=20)
 
-    # --- 표지 ---
+    # 표지
     pdf.add_page()
-    if not use_korean:
-        pdf.set_font(font_name, size=9)
-        pdf.set_text_color(180, 0, 0)
-        pdf.cell(0, 6, "[Korean font not found - Korean text may not render correctly]",
-                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_text_color(0, 0, 0)
-    pdf.set_font(font_name, size=20)
-    pdf.cell(0, 15, "OS 하드닝 점검 보고서", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
-    pdf.ln(5)
+    _write_cover(pdf, session)
 
-    pdf.set_font(font_name, size=11)
-    for label, value in [
-        ("점검 일시", session.started_at.strftime("%Y-%m-%d %H:%M:%S")),
-        ("대상 OS", session.os_kind),
-        ("호스트명", session.hostname),
-        ("총 점검 항목", f"{len(session.results)}개"),
-    ]:
-        pdf.cell(40, 8, f"{label}:", new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.cell(0, 8, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.ln(5)
+    # 요약 대시보드
+    pdf.add_page()
+    _write_dashboard(pdf, len(pass_items), len(fail_items), len(error_items),
+                     session.preflight_warnings or [])
 
-    # --- 요약표 ---
-    pdf.set_font(font_name, size=13)
-    pdf.cell(0, 10, "점검 요약", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font(font_name, size=11)
-
-    for label, count in [
-        ("양호 (PASS)", len(pass_items)),
-        ("취약 (FAIL)", len(fail_items)),
-        ("오류/타임아웃", len(error_items)),
-    ]:
-        pdf.cell(50, 8, label, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.cell(30, 8, str(count), border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.ln(5)
-
-    # --- 사전 점검 경고 ---
-    if session.preflight_warnings:
-        pdf.set_font(font_name, size=13)
-        pdf.cell(0, 10, "사전 점검 경고", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font(font_name, size=10)
-        for w in session.preflight_warnings:
-            pdf.multi_cell(0, 7, f"  - {w}")
-        pdf.ln(3)
-
-    # --- 취약 항목 ---
+    # 취약 항목 목록
     if fail_items:
         pdf.add_page()
-        pdf.set_font(font_name, size=13)
-        pdf.cell(0, 10, f"취약 항목 ({len(fail_items)}개)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font(font_name, size=10)
-        _write_result_table(pdf, fail_items)
+        _section_title(pdf, f"취약 항목 ({len(fail_items)}개)")
+        _write_fail_table(pdf, fail_items)
 
-    # --- 취약 항목 상세 출력 ---
+    # 취약 항목 상세
     if fail_items:
         pdf.add_page()
-        pdf.set_font(font_name, size=13)
-        pdf.cell(0, 10, f"취약 항목 상세 출력 ({len(fail_items)}개)",
-                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font(font_name, size=10)
-        _write_fail_details(pdf, fail_items, font_name)
+        _section_title(pdf, f"취약 항목 상세 출력 ({len(fail_items)}개)")
+        _write_fail_details(pdf, fail_items)
 
-    # --- 오류 항목 ---
-    if error_items:
-        pdf.add_page()
-        pdf.set_font(font_name, size=13)
-        pdf.cell(0, 10, f"오류/타임아웃 항목 ({len(error_items)}개)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font(font_name, size=10)
-        _write_result_table(pdf, error_items)
-
-    # --- 전체 항목 상세 ---
+    # 전체 항목
     pdf.add_page()
-    pdf.set_font(font_name, size=13)
-    pdf.cell(0, 10, "전체 항목 상세", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font(font_name, size=10)
-    _write_result_table(pdf, session.results)
-
-    # --- 면책 문구 ---
-    pdf.ln(8)
-    pdf.set_font(font_name, size=9)
-    pdf.multi_cell(
-        0, 6,
-        "본 결과는 자동화 점검 참조용이며 최종 판정은 수동 검증이 필요합니다.\n"
-        "자동화 점검은 설정 오류, 환경 차이, 스크립트 제한으로 인해 오탐/미탐이 발생할 수 있습니다.",
-    )
+    _section_title(pdf, f"전체 항목 ({len(session.results)}개)")
+    _write_all_items(pdf, session.results)
 
     filename = session.started_at.strftime("%Y%m%d_%H%M%S") + ".pdf"
-    out_path = out_dir / filename
+    out_path  = out_dir / filename
     pdf.output(str(out_path))
     return out_path
-
-
-MAX_OUTPUT_CHARS = 4000
-
-
-def _write_fail_details(pdf: "FPDFType", items: list, font_name: str) -> None:
-    """각 FAIL 항목의 raw_output을 상세 출력."""
-    from fpdf.enums import XPos, YPos
-
-    for r in items:
-        # 항목 헤더
-        pdf.set_fill_color(220, 220, 220)
-        pdf.set_font(font_name, size=11)
-        pdf.cell(
-            0, 8, f"[{r.meta.script_id}] {r.code.name}",
-            border=1, fill=True,
-            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
-        )
-
-        # 스크립트 출력
-        pdf.set_font(font_name, size=9)
-        output = r.raw_output or "(출력 없음)"
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + "\n... (이하 생략 — 전체 내용은 JSON 참조)"
-        pdf.multi_cell(0, 5, output)
-        pdf.ln(4)
-
-
-def _write_result_table(pdf: "FPDFType", items: list) -> None:
-    from fpdf.enums import XPos, YPos
-
-    # 유효 너비: A4 210mm - 양쪽 여백 10mm*2 = 190mm
-    usable_w = pdf.w - pdf.l_margin - pdf.r_margin
-    col_id = 20
-    col_code = 22
-    col_val = 12
-    col_elapsed = 20
-    col_err = usable_w - col_id - col_code - col_val - col_elapsed  # 116mm
-
-    # 헤더
-    pdf.set_fill_color(220, 220, 220)
-    for text, w in [("ID", col_id), ("결과", col_code), ("값", col_val), ("경과(s)", col_elapsed), ("오류", col_err)]:
-        is_last = (text == "오류")
-        pdf.cell(
-            w, 7, text, border=1, fill=True,
-            new_x=XPos.LMARGIN if is_last else XPos.RIGHT,
-            new_y=YPos.NEXT if is_last else YPos.TOP,
-        )
-
-    for r in items:
-        err_txt = r.error_message[:60] if r.error_message else ""
-        for text, w in [
-            (r.meta.script_id, col_id),
-            (r.code.name, col_code),
-            (str(r.parsed_value), col_val),
-            (f"{r.elapsed_sec:.1f}", col_elapsed),
-            (err_txt, col_err),
-        ]:
-            is_last = (w == col_err)
-            pdf.cell(
-                w, 6, text, border=1,
-                new_x=XPos.LMARGIN if is_last else XPos.RIGHT,
-                new_y=YPos.NEXT if is_last else YPos.TOP,
-            )
