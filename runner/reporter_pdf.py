@@ -74,7 +74,7 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     pdf.cell(0, 15, "OS 하드닝 점검 보고서", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
 
-    pdf.set_font("NotoSansKR", size=11)
+    pdf.set_font(font_name, size=11)
     for label, value in [
         ("점검 일시", session.started_at.strftime("%Y-%m-%d %H:%M:%S")),
         ("대상 OS", session.os_kind),
@@ -86,9 +86,9 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     pdf.ln(5)
 
     # --- 요약표 ---
-    pdf.set_font("NotoSansKR", size=13)
+    pdf.set_font(font_name, size=13)
     pdf.cell(0, 10, "점검 요약", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("NotoSansKR", size=11)
+    pdf.set_font(font_name, size=11)
 
     for label, count in [
         ("양호 (PASS)", len(pass_items)),
@@ -101,9 +101,9 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
 
     # --- 사전 점검 경고 ---
     if session.preflight_warnings:
-        pdf.set_font("NotoSansKR", size=13)
+        pdf.set_font(font_name, size=13)
         pdf.cell(0, 10, "사전 점검 경고", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("NotoSansKR", size=10)
+        pdf.set_font(font_name, size=10)
         for w in session.preflight_warnings:
             pdf.multi_cell(0, 7, f"  - {w}")
         pdf.ln(3)
@@ -128,21 +128,21 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
     # --- 오류 항목 ---
     if error_items:
         pdf.add_page()
-        pdf.set_font("NotoSansKR", size=13)
+        pdf.set_font(font_name, size=13)
         pdf.cell(0, 10, f"오류/타임아웃 항목 ({len(error_items)}개)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("NotoSansKR", size=10)
+        pdf.set_font(font_name, size=10)
         _write_result_table(pdf, error_items)
 
     # --- 전체 항목 상세 ---
     pdf.add_page()
-    pdf.set_font("NotoSansKR", size=13)
+    pdf.set_font(font_name, size=13)
     pdf.cell(0, 10, "전체 항목 상세", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("NotoSansKR", size=10)
+    pdf.set_font(font_name, size=10)
     _write_result_table(pdf, session.results)
 
     # --- 면책 문구 ---
     pdf.ln(8)
-    pdf.set_font("NotoSansKR", size=9)
+    pdf.set_font(font_name, size=9)
     pdf.multi_cell(
         0, 6,
         "본 결과는 자동화 점검 참조용이며 최종 판정은 수동 검증이 필요합니다.\n"
