@@ -65,9 +65,10 @@ fi
 echo "[2/3] PyInstaller 빌드"
 # LD_LIBRARY_PATH 우선순위로 시스템 Python 공유 라이브러리 선택
 # (비표준 위치 /usr/local/lib 에 _struct 없는 라이브러리 존재 시 오동작 방지)
+_PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 _SYS_LIB_DIR=""
 for _d in /lib/x86_64-linux-gnu /lib64 /usr/lib/x86_64-linux-gnu /usr/lib64; do
-    if [ -f "${_d}/libpython3.12.so.1.0" ]; then
+    if [ -f "${_d}/libpython${_PY_VER}.so.1.0" ]; then
         _SYS_LIB_DIR="$_d"
         break
     fi

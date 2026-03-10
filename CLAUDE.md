@@ -14,7 +14,6 @@ runner/
 ├── __init__.py
 ├── models.py          # ResultCode, OSKind, ScriptMeta, CheckResult, RunSession
 ├── detector.py        # OS 탐지 + preflight
-├── credentials.py     # 자격증명 수집 (getpass)
 ├── executor.py        # subprocess 실행 + 파싱
 ├── reporter_json.py   # JSON 결과 직렬화
 ├── reporter_pdf.py    # fpdf2 PDF 생성 (순수 Python)
@@ -82,7 +81,7 @@ jq '.summary' results/최신.json
 
 ```bash
 # Python 구문 검증
-uv run python -m py_compile runner/models.py runner/detector.py runner/credentials.py \
+uv run python -m py_compile runner/models.py runner/detector.py \
     runner/executor.py runner/reporter_json.py runner/reporter_pdf.py runner/main.py
 
 # Shell 스크립트 검증
@@ -123,6 +122,9 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **fpdf2 `table()` 가독성 옵션**: `repeat_headings=1` (페이지 넘김 시 헤더 반복), `padding=(상하, 좌우)` (셀 여백). 긴 텍스트는 표에 넣기 전 개행(`\n`)을 공백으로 치환 후 문자 수 제한 적용.
 - **빌드 스크립트는 런타임 OS 탐지 분기 수만큼 스크립트 디렉토리를 모두 배포**: `build.ps1`이 `scripts\windows_server\`만 복사하면 Windows PC 탐지 시 경로 오류 발생. 런타임에서 `OSKind`별 분기가 N개라면 배포 패키지도 N개 디렉토리를 포함해야 한다. 매개변수화(`$Target`)로 선택 배포하면 탐지 결과와 불일치가 생긴다.
 - **내부 상수 문자열을 사용자 노출 레이블로 직접 사용 금지**: `OSKind.WINDOWS_SERVER` 같은 내부 Enum 값을 `print()` 등 UI 출력에 직접 사용하면 가독성이 낮다. `{OSKind.LINUX: "Linux", OSKind.WINDOWS_SERVER: "Windows Server", ...}` dict 매핑을 별도 두고 레이블을 분리한다.
+- **PDF 폰트 크기 상수화 (`FS_*` 패턴)**: `set_font(size=12)` 하드코딩이 여러 함수에 산재하면 일관성 유지가 어렵다. 파일 상단에 `FS_TITLE = 20; FS_SECTION = 13; FS_BODY = 10` 등 상수를 정의하고 모든 `set_font` 호출에서 참조한다. 불일치 발견 시 상수 값 하나만 수정하면 전체 반영된다.
+- **관리자 쉘 전제 환경에서 자격증명 수집 불필요**: `sudo -s` / Administrator PowerShell로 실행하는 구조라면 `credentials.py` 모듈 자체가 불필요하다. 자격증명 수집 → stdin pipe 전달 구조는 비관리자 실행 경로가 있을 때만 의미 있다. 실행 컨텍스트 가정을 명확히 하고 불필요한 복잡도를 제거한다.
+- **Windows 빌드에서 한글 폰트를 명시적으로 배포 패키지에 포함**: fpdf2 Helvetica 폴백 상태에서 한글 텍스트가 있으면 `FPDFUnicodeEncodingException` 발생. `build.ps1`에 `malgun.ttf` 등 시스템 한글 폰트를 `dist\` 하위로 복사하는 단계를 반드시 추가한다. Linux 빌드는 fc-list 탐색으로 런타임 해결하지만 Windows는 빌드 타임에 폰트를 패키징해야 한다.
 
 ## Common Mistakes
 
@@ -134,3 +136,4 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **의존성 도구 교체 후 참조 잔류**: `requirements.txt` → `pyproject.toml/uv` 전환 시 build.sh, build.ps1, README.md, SKILL.md 등의 참조를 일괄 갱신하지 않으면 혼란이 발생한다. 도구 교체 후 `grep -r "requirements.txt" .`으로 잔류 참조를 전수 확인한다.
 - **ruff 줄 길이 불일치**: ruff 기본값(88)과 `pyproject.toml [tool.ruff] line-length = 100` 설정이 다를 경우 CI/로컬 결과가 달라진다. `pyproject.toml`에 `line-length`를 명시하여 일관성을 유지한다.
 - **`multi_cell` fill 전용 사용 시 테두리 누락**: `fill=True`만 설정하면 배경색만 적용되고 테두리가 없어 박스 구분이 어렵다. 내용 박스에는 `border=1`을 함께 지정한다.
+- **PowerShell `Copy-Item -Recurse` 대상 기존 디렉토리 존재 시 중첩 복사**: 대상 경로(`"build\dist\scripts\windows"`)가 이미 존재하면 소스 폴더 자체가 내부에 복사되어 `scripts\windows\windows\PC-01.ps1`처럼 중첩된다. `New-Item -ItemType Directory -Force` 로 대상 디렉토리를 먼저 생성한 뒤 `"scripts\windows\*"` 와일드카드로 내용물만 복사해야 한다.

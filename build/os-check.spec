@@ -13,7 +13,6 @@ binaries = []
 hiddenimports = [
     'runner.models',
     'runner.detector',
-    'runner.credentials',
     'runner.executor',
     'runner.reporter_json',
     'runner.reporter_pdf',
