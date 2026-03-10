@@ -15,9 +15,8 @@ Python 오케스트레이터(`runner/`)가 스크립트를 순차 실행하고, 
 ### Python이 있는 환경
 
 ```bash
-# 1. 의존성 설치 (PDF 출력 필요 시)
+# 1. 의존성 설치
 pip install -r runner/requirements.txt
-# Ubuntu: sudo apt-get install libcairo2 libpango-1.0-0 libpangocairo-1.0-0
 
 # 2. 실행 (관리자 권한 필수)
 sudo python -m runner.main          # Linux
@@ -72,13 +71,13 @@ runner/
 ├── credentials.py   자격증명 수집 (getpass, echo 없음)
 ├── executor.py      스크립트 실행 + "점검 결과: N" 파싱
 ├── reporter_json.py JSON 결과 저장
-├── reporter_pdf.py  WeasyPrint PDF 생성
-├── templates/
-│   └── report.html.j2
+├── reporter_pdf.py  fpdf2 PDF 생성 (순수 Python, 시스템 의존 없음)
+├── fonts/
+│   └── NotoSansKR.ttf  (build.sh이 자동 배치, .gitignore)
 └── main.py          진입점
 
 build/
-├── os-check.spec    PyInstaller 스펙 (템플릿 번들 포함)
+├── os-check.spec    PyInstaller 스펙 (폰트 번들 포함)
 ├── build.sh         Linux 바이너리 빌드
 ├── build.ps1        Windows 바이너리 빌드
 ├── dist/            빌드 출력 (.gitignore)

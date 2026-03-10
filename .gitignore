@@ -8,3 +8,4 @@ results/
 build/dist/
 build/work/
 build/.venv/
+runner/fonts/*.ttf

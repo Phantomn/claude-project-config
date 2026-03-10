@@ -1,12 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 # os-check PyInstaller 스펙 파일
 # 빌드: pyinstaller build/os-check.spec (프로젝트 루트에서 실행)
-
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+# 주의: /usr/local/lib 에 비표준 Python이 설치된 환경에서는 build.sh 가
+#       LD_LIBRARY_PATH 로 시스템 Python 라이브러리를 우선 선택하므로
+#       이 spec 파일은 별도 패치 없이 사용 가능합니다.
 
 datas = [
-    # Jinja2 HTML 템플릿 → 번들 내 templates/ 로 추출
-    ('../runner/templates', 'templates'),
+    # 한글 폰트 → 번들 내 fonts/ 로 추출 (sys._MEIPASS/fonts/NotoSansKR.ttf)
+    ('../runner/fonts', 'fonts'),
 ]
 binaries = []
 hiddenimports = [
@@ -16,14 +17,9 @@ hiddenimports = [
     'runner.executor',
     'runner.reporter_json',
     'runner.reporter_pdf',
+    'fpdf',
+    'fpdf.enums',
 ]
-
-# WeasyPrint 전체 수집 (데이터 파일 + 바이너리 + 숨겨진 임포트)
-for pkg in ('weasyprint', 'jinja2', 'markupsafe'):
-    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
-    datas    += pkg_datas
-    binaries += pkg_binaries
-    hiddenimports += pkg_hidden
 
 a = Analysis(
     ['../entrypoint.py'],
@@ -50,7 +46,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

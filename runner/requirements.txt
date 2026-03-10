@@ -1,6 +1,3 @@
-jinja2>=3.1.0
-weasyprint>=60.0
-# WeasyPrint 시스템 의존 (Ubuntu/Debian):
-#   sudo apt-get install libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libffi-dev shared-mime-info
-# Windows:
-#   GTK 런타임 설치 필요: https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer
+fpdf2>=2.7.0
+# 순수 Python, 시스템 라이브러리 의존 없음 → 에어갭/PyInstaller 환경 완전 지원
+# 한글 PDF 출력을 위해 runner/fonts/NotoSansKR.ttf 필요 (build.sh가 자동 배치)
