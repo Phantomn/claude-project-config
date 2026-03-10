@@ -251,6 +251,8 @@ def _write_fail_table(pdf: AuditPDF, items: list) -> None:
     """취약 항목 목록 테이블 (pdf.table() 사용).
 
     열: ID(20mm), 값(15mm), 경과(s)(20mm), 비고(125mm)
+    비고는 개행을 공백으로 치환 후 60자 제한 (표에는 간결하게).
+    페이지 넘김 시 헤더 반복(repeat_headings=1).
     """
     from fpdf.enums import TableCellFillMode
     from fpdf.fonts import FontFace
@@ -264,14 +266,17 @@ def _write_fail_table(pdf: AuditPDF, items: list) -> None:
         cell_fill_mode=TableCellFillMode.ROWS,
         borders_layout="MINIMAL",
         col_widths=col_widths,
-        line_height=7,
+        line_height=6,
+        padding=(2, 2),
+        repeat_headings=1,
     ) as table:
         hrow = table.row()
         for h in ["ID", "값", "경과(s)", "비고"]:
             hrow.cell(h)
         for r in items:
             row = table.row()
-            note = (r.error_message or (r.raw_output or "").split("\n")[0])[:100]
+            raw = r.error_message or (r.raw_output or "")
+            note = raw.replace("\n", " ").strip()[:60]
             row.cell(r.meta.script_id)
             row.cell(str(r.parsed_value))
             row.cell(f"{r.elapsed_sec:.1f}")
@@ -281,44 +286,67 @@ def _write_fail_table(pdf: AuditPDF, items: list) -> None:
 # ── 취약 항목 상세 ────────────────────────────────────────────────────────────
 
 def _write_fail_details(pdf: AuditPDF, items: list) -> None:
-    """취약 항목 상세: 좌측 네이비 바 + LGRAY raw_output 박스."""
+    """취약 항목 상세: LGRAY 헤더 블록 + 흰 배경 raw_output 박스 + 항목 간 구분선.
+
+    헤더(제목+서브텍스트) 20mm 공간을 항상 확보 후 raw_output은
+    multi_cell이 자동으로 페이지 넘김을 처리한다.
+    """
     font_name = pdf.font_name
     usable_w = pdf.w - pdf.l_margin - pdf.r_margin
+    header_h = 20  # 헤더 영역 고정 높이 (제목 10 + 서브텍스트 6 + 여백 4)
 
-    for r in items:
-        # 페이지 넘침 방지: 최소 30mm 공간 확인
-        if pdf.get_y() > pdf.h - pdf.b_margin - 30:
+    for idx, r in enumerate(items):
+        # 헤더가 들어갈 최소 공간 확보 (header_h + 최소 raw 10mm)
+        if pdf.get_y() > pdf.h - pdf.b_margin - (header_h + 10):
             pdf.add_page()
 
         current_y = pdf.get_y()
 
-        # 좌측 네이비 바
+        # 헤더 배경 (LGRAY)
+        pdf.set_fill_color(*LGRAY)
+        pdf.rect(pdf.l_margin, current_y, usable_w, header_h, style="F")
+
+        # 좌측 네이비 강조 바 (헤더 전체 높이)
         pdf.set_fill_color(*NAVY)
-        pdf.rect(pdf.l_margin, current_y, 4, 10, style="F")
+        pdf.rect(pdf.l_margin, current_y, 4, header_h, style="F")
 
         # 제목 ([U-01] FAIL)
         pdf.set_font(font_name, size=11)
         pdf.set_text_color(0, 0, 0)
-        pdf.set_xy(pdf.l_margin + 6, current_y)
-        pdf.cell(0, 10, f"[{r.meta.script_id}] {r.code.name}",
+        pdf.set_xy(pdf.l_margin + 7, current_y + 2)
+        pdf.cell(usable_w - 7, 9, f"[{r.meta.script_id}] {r.code.name}",
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
         # 서브텍스트 (결과값 + 경과)
         pdf.set_font(font_name, size=9)
         pdf.set_text_color(*DGRAY)
-        pdf.set_x(pdf.l_margin + 6)
-        pdf.cell(0, 6, f"결과값: {r.parsed_value} | 경과: {r.elapsed_sec:.1f}s",
+        pdf.set_x(pdf.l_margin + 7)
+        pdf.cell(usable_w - 7, 6, f"결과값: {r.parsed_value} | 경과: {r.elapsed_sec:.1f}s",
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_text_color(0, 0, 0)
 
-        # raw_output 박스
+        # 헤더 하단 여백
+        pdf.ln(3)
+
+        # raw_output 박스 (흰 배경 + MGRAY 테두리, multi_cell이 페이지 넘김 자동 처리)
         output = r.raw_output or "(출력 없음)"
         if len(output) > MAX_OUTPUT_CHARS:
             output = output[:MAX_OUTPUT_CHARS] + "\n... (이하 생략 — 전체 내용은 JSON 참조)"
-        pdf.set_fill_color(*LGRAY)
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_draw_color(*MGRAY)
+        pdf.set_line_width(0.3)
         pdf.set_font(font_name, size=9)
-        pdf.multi_cell(usable_w, 5, output, fill=True)
-        pdf.ln(6)
+        pdf.multi_cell(usable_w, 5, output, fill=True, border=1)
+
+        # 항목 간 구분선 (마지막 항목 제외)
+        pdf.ln(3)
+        if idx < len(items) - 1:
+            pdf.set_draw_color(*MGRAY)
+            pdf.set_line_width(0.5)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(5)
+        pdf.set_draw_color(0, 0, 0)
+        pdf.set_line_width(0.2)
 
 
 # ── 전체 항목 테이블 ──────────────────────────────────────────────────────────

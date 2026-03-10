@@ -120,6 +120,7 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **fpdf2 테이블은 `pdf.table()` 컨텍스트 매니저 사용**: `cell()` 반복 대신 `with pdf.table() as table:` 패턴으로 열 너비·정렬·경계선을 선언적으로 제어한다. 셀별 색상은 `FontFace(color=..., fill_color=...)` 로 지정.
 - **fpdf2 커스텀 헤더/푸터는 FPDF 서브클래스로 구현**: `header()`/`footer()` 오버라이드 + `page_no() == 1` 조건으로 표지를 제외한다. `footer()`에서 `self.set_y(-15)`로 하단 고정 위치 지정.
 - **uv + pyproject.toml 마이그레이션 시 패키지 경로 명시**: `[tool.hatch.build.targets.wheel] packages = ["runner"]` 누락 시 `uv sync`/`uv build`가 패키지를 찾지 못한다. 빌드 스크립트(build.sh, build.ps1)는 venv + pip 기반이므로 `pip install fpdf2`로 직접 설치.
+- **fpdf2 `table()` 가독성 옵션**: `repeat_headings=1` (페이지 넘김 시 헤더 반복), `padding=(상하, 좌우)` (셀 여백). 긴 텍스트는 표에 넣기 전 개행(`\n`)을 공백으로 치환 후 문자 수 제한 적용.
 
 ## Common Mistakes
 
@@ -130,3 +131,4 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **fpdf2 셀 색상 지정 후 초기화 누락**: `set_fill_color()`/`set_text_color()` 설정은 이후 모든 셀에 전파된다. 특정 셀에만 색상 적용 후 반드시 기본값(`set_text_color(0, 0, 0)`)으로 복원한다.
 - **의존성 도구 교체 후 참조 잔류**: `requirements.txt` → `pyproject.toml/uv` 전환 시 build.sh, build.ps1, README.md, SKILL.md 등의 참조를 일괄 갱신하지 않으면 혼란이 발생한다. 도구 교체 후 `grep -r "requirements.txt" .`으로 잔류 참조를 전수 확인한다.
 - **ruff 줄 길이 불일치**: ruff 기본값(88)과 `pyproject.toml [tool.ruff] line-length = 100` 설정이 다를 경우 CI/로컬 결과가 달라진다. `pyproject.toml`에 `line-length`를 명시하여 일관성을 유지한다.
+- **`multi_cell` fill 전용 사용 시 테두리 누락**: `fill=True`만 설정하면 배경색만 적용되고 테두리가 없어 박스 구분이 어렵다. 내용 박스에는 `border=1`을 함께 지정한다.
