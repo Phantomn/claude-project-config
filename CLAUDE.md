@@ -114,6 +114,8 @@ echo "점검 결과: N"   # N=0: 양호, N≥1: 취약
 - **에어갭 배포는 순수 Python PDF 라이브러리 선택**: WeasyPrint는 GTK·Cairo·Pango 등 시스템 라이브러리에 의존해 오프라인 환경에서 설치/실행이 실패한다. fpdf2(순수 Python) 사용 시 시스템 의존성 없이 PyInstaller 단일 바이너리 배포 가능하다.
 - **에어갭 환경 폰트 탐색은 fc-list + 하드코딩 경로 조합**: 네트워크 없이 한글 폰트를 찾을 때 `fc-list` 명령과 `/usr/share/fonts`, `/usr/local/share/fonts` 경로를 조합한다. 폰트 미발견 시 내장 Helvetica 폴백으로 항상 실행 가능성을 보장한다.
 - **WSL2 `find / -perm -4000` 타임아웃 처리**: WSL2 전체 파일시스템 SUID 탐색은 180초 이상 소요될 수 있다. `timeout 180 find / -perm -4000 ...` 래퍼를 적용하고 timeout 종료 코드(124)를 정상으로 처리한다.
+- **fpdf2 긴 텍스트는 `multi_cell` 사용**: 개행 포함 장문(raw_output 등)은 `cell` 대신 `multi_cell`로 출력해야 자동 줄바꿈 처리된다. `cell`은 단일 행 고정 높이로만 렌더링.
+- **PDF 폰트명 하드코딩 금지**: `set_font("NotoSansKR", ...)` 직접 사용 시 Helvetica 폴백 환경에서 오류. 반드시 `font_name` 변수(= `"NotoSansKR" if use_korean else "Helvetica"`)를 사용한다.
 
 ## Common Mistakes
 
