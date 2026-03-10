@@ -17,6 +17,16 @@ LGRAY  = (245, 247, 250)
 MGRAY  = (180, 180, 180)
 DGRAY  = (80, 80, 80)
 
+# ── Typography 상수 (pt) ──────────────────────────────────────────────────────
+FS_COVER_TITLE = 26   # 표지 메인 제목
+FS_COVER_SUB   = 11   # 표지 부제 / 정보 블록
+FS_SECTION     = 13   # 섹션 제목 (모든 섹션 동일)
+FS_ITEM_TITLE  = 11   # 상세 섹션 항목 헤더
+FS_CARD_NUM    = 18   # 대시보드 카드 숫자
+FS_BODY        = 10   # 본문 텍스트
+FS_SMALL       =  9   # 보조 텍스트 (헤더, 서브텍스트, 비고, 카드 레이블)
+FS_FOOTER      =  8   # 푸터 면책 문구
+
 MAX_OUTPUT_CHARS = 4000
 
 CODE_COLORS: dict[str, tuple[int, int, int]] = {
@@ -66,14 +76,14 @@ class AuditPDF(FPDF):
         self.report_title = report_title
 
     def header(self) -> None:
-        """전 페이지: 보고서명(좌, 9pt) + 페이지 번호(우, 9pt) + 하단 구분선.
+        """전 페이지: 보고서명(좌) + 페이지 번호(우) + 하단 구분선.
 
         표지(page_no() == 1)는 헤더 출력 안 함.
         """
         if self.page_no() == 1:
             return
 
-        self.set_font(self.font_name, size=9)
+        self.set_font(self.font_name, size=FS_SMALL)
         self.set_text_color(*DGRAY)
         self.cell(0, 8, self.report_title, new_x=XPos.LMARGIN, new_y=YPos.TOP)
         self.cell(0, 8, f"{self.page_no()}", align="R",
@@ -86,7 +96,7 @@ class AuditPDF(FPDF):
         self.ln(2)
 
     def footer(self) -> None:
-        """전 페이지: 상단 구분선 + 면책 단문(8pt, DGRAY, 중앙).
+        """전 페이지: 상단 구분선 + 면책 단문(중앙).
 
         표지(page_no() == 1)는 footer 없음.
         """
@@ -98,7 +108,7 @@ class AuditPDF(FPDF):
         self.set_line_width(0.3)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
         self.ln(1)
-        self.set_font(self.font_name, size=8)
+        self.set_font(self.font_name, size=FS_FOOTER)
         self.set_text_color(*DGRAY)
         self.cell(
             0, 5,
@@ -113,8 +123,8 @@ class AuditPDF(FPDF):
 # ── 섹션 제목 헬퍼 ────────────────────────────────────────────────────────────
 
 def _section_title(pdf: AuditPDF, title: str) -> None:
-    """섹션 제목 출력 (13pt, 좌측 정렬)."""
-    pdf.set_font(pdf.font_name, size=13)
+    """섹션 제목 출력 (FS_SECTION, 좌측 정렬)."""
+    pdf.set_font(pdf.font_name, size=FS_SECTION)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(0, 12, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
@@ -129,22 +139,22 @@ def _write_cover(pdf: AuditPDF, session: RunSession) -> None:
     pdf.set_fill_color(*NAVY)
     pdf.rect(0, 0, pdf.w, 65, style="F")
 
-    # 제목 (흰색 26pt)
+    # 제목 (흰색, FS_COVER_TITLE)
     pdf.set_text_color(255, 255, 255)
     pdf.set_y(22)
-    pdf.set_font(font_name, size=26)
+    pdf.set_font(font_name, size=FS_COVER_TITLE)
     pdf.cell(0, 14, "OS 하드닝 점검 보고서", align="C",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    # 부제 (흰색 11pt)
-    pdf.set_font(font_name, size=11)
+    # 부제 (흰색, FS_COVER_SUB)
+    pdf.set_font(font_name, size=FS_COVER_SUB)
     pdf.cell(0, 8, "주요정보통신기반시설 기술적 취약점 분석·평가", align="C",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    # 정보 블록
+    # 정보 블록 (FS_COVER_SUB)
     pdf.set_text_color(0, 0, 0)
     pdf.set_y(82)
-    pdf.set_font(font_name, size=11)
+    pdf.set_font(font_name, size=FS_COVER_SUB)
 
     info_rows = [
         ("점검 일시",    session.started_at.strftime("%Y-%m-%d %H:%M:%S")),
@@ -173,8 +183,8 @@ def _write_dashboard(
     usable_w = pdf.w - pdf.l_margin - pdf.r_margin
     total = pass_n + fail_n + error_n
 
-    # 섹션 제목
-    pdf.set_font(font_name, size=14)
+    # 섹션 제목 (FS_SECTION — _section_title()과 동일)
+    pdf.set_font(font_name, size=FS_SECTION)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(0, 12, "점검 결과 요약", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
@@ -195,20 +205,20 @@ def _write_dashboard(
         pdf.set_draw_color(*MGRAY)
         pdf.rect(x, card_y, card_w - 2, card_h, style="D")
 
-        # 숫자 (18pt, 코드 색상)
+        # 숫자 (FS_CARD_NUM, 코드 색상)
         pdf.set_text_color(*color)
-        pdf.set_font(font_name, size=18)
+        pdf.set_font(font_name, size=FS_CARD_NUM)
         pdf.set_xy(x, card_y + 5)
         pdf.cell(card_w - 2, 9, str(cnt), align="C",
                  new_x=XPos.RIGHT, new_y=YPos.TOP)
 
-        # 코드 레이블 (9pt)
-        pdf.set_font(font_name, size=9)
+        # 코드 레이블 (FS_SMALL)
+        pdf.set_font(font_name, size=FS_SMALL)
         pdf.set_xy(x, card_y + 15)
         pdf.cell(card_w - 2, 6, code_label, align="C",
                  new_x=XPos.RIGHT, new_y=YPos.TOP)
 
-        # 한글 레이블 (9pt, DGRAY)
+        # 한글 레이블 (FS_SMALL, DGRAY)
         pdf.set_text_color(*DGRAY)
         pdf.set_xy(x, card_y + 22)
         pdf.cell(card_w - 2, 6, kor_label, align="C",
@@ -230,15 +240,15 @@ def _write_dashboard(
 
     pdf.set_y(bar_y + bar_h + 3)
     pdf.set_text_color(*DGRAY)
-    pdf.set_font(font_name, size=9)
+    pdf.set_font(font_name, size=FS_SMALL)
     pct = int(pass_ratio * 100)
     pdf.cell(0, 6, f"양호 {pass_n}건 / 전체 {total}건 ({pct}%)",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
-    # preflight warnings
+    # preflight warnings (FS_BODY)
     if warnings:
-        pdf.set_font(font_name, size=10)
+        pdf.set_font(font_name, size=FS_BODY)
         pdf.set_text_color(*ORANGE)
         for w in warnings:
             pdf.multi_cell(0, 6, f"  [!] {w}")
@@ -251,7 +261,7 @@ def _write_fail_table(pdf: AuditPDF, items: list) -> None:
     """취약 항목 목록 테이블 (pdf.table() 사용).
 
     열: ID(20mm), 값(15mm), 경과(s)(20mm), 비고(125mm)
-    비고는 개행을 공백으로 치환 후 60자 제한 (표에는 간결하게).
+    비고는 개행을 공백으로 치환 후 60자 제한.
     페이지 넘김 시 헤더 반복(repeat_headings=1).
     """
     from fpdf.enums import TableCellFillMode
@@ -286,11 +296,7 @@ def _write_fail_table(pdf: AuditPDF, items: list) -> None:
 # ── 취약 항목 상세 ────────────────────────────────────────────────────────────
 
 def _write_fail_details(pdf: AuditPDF, items: list) -> None:
-    """취약 항목 상세: LGRAY 헤더 블록 + 흰 배경 raw_output 박스 + 항목 간 구분선.
-
-    헤더(제목+서브텍스트) 20mm 공간을 항상 확보 후 raw_output은
-    multi_cell이 자동으로 페이지 넘김을 처리한다.
-    """
+    """취약 항목 상세: LGRAY 헤더 블록 + 흰 배경 raw_output 박스 + 항목 간 구분선."""
     font_name = pdf.font_name
     usable_w = pdf.w - pdf.l_margin - pdf.r_margin
     header_h = 20  # 헤더 영역 고정 높이 (제목 10 + 서브텍스트 6 + 여백 4)
@@ -310,15 +316,15 @@ def _write_fail_details(pdf: AuditPDF, items: list) -> None:
         pdf.set_fill_color(*NAVY)
         pdf.rect(pdf.l_margin, current_y, 4, header_h, style="F")
 
-        # 제목 ([U-01] FAIL)
-        pdf.set_font(font_name, size=11)
+        # 제목 ([U-01] FAIL) — FS_ITEM_TITLE
+        pdf.set_font(font_name, size=FS_ITEM_TITLE)
         pdf.set_text_color(0, 0, 0)
         pdf.set_xy(pdf.l_margin + 7, current_y + 2)
         pdf.cell(usable_w - 7, 9, f"[{r.meta.script_id}] {r.code.name}",
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-        # 서브텍스트 (결과값 + 경과)
-        pdf.set_font(font_name, size=9)
+        # 서브텍스트 (결과값 + 경과) — FS_SMALL
+        pdf.set_font(font_name, size=FS_SMALL)
         pdf.set_text_color(*DGRAY)
         pdf.set_x(pdf.l_margin + 7)
         pdf.cell(usable_w - 7, 6, f"결과값: {r.parsed_value} | 경과: {r.elapsed_sec:.1f}s",
@@ -328,14 +334,14 @@ def _write_fail_details(pdf: AuditPDF, items: list) -> None:
         # 헤더 하단 여백
         pdf.ln(3)
 
-        # raw_output 박스 (흰 배경 + MGRAY 테두리, multi_cell이 페이지 넘김 자동 처리)
+        # raw_output 박스 (흰 배경 + MGRAY 테두리) — FS_SMALL
         output = r.raw_output or "(출력 없음)"
         if len(output) > MAX_OUTPUT_CHARS:
             output = output[:MAX_OUTPUT_CHARS] + "\n... (이하 생략 — 전체 내용은 JSON 참조)"
         pdf.set_fill_color(255, 255, 255)
         pdf.set_draw_color(*MGRAY)
         pdf.set_line_width(0.3)
-        pdf.set_font(font_name, size=9)
+        pdf.set_font(font_name, size=FS_SMALL)
         pdf.multi_cell(usable_w, 5, output, fill=True, border=1)
 
         # 항목 간 구분선 (마지막 항목 제외)
