@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
@@ -80,6 +83,10 @@
       {
         "matcher": "",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/skills/suggest-skill/scripts/suggest-skill.py"
+          },
           {
             "type": "command",
             "command": "VAULT_DIR='/mnt/c/Users/tmdsv/Documents/Obsidian Vault' python3 .claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",

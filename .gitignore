@@ -1,4 +1,5 @@
 CLAUDE.local.md
+findings/*/notebook.json
 .claude/settings.local.json
 .claude/logs/*.jsonl
 __pycache__/
