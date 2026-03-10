@@ -37,4 +37,11 @@ case "$ext" in
             fi
         fi
         ;;
+    ps1)
+        # PowerShell은 'elif' 미지원 → 'elseif' 필수
+        if grep -qn '\belif\b' "$file_path" 2>/dev/null; then
+            lines=$(grep -n '\belif\b' "$file_path" | head -3 | tr '\n' ' ')
+            log_warning "PowerShell 문법 오류: 'elif' → 'elseif' 사용 필요: $lines"
+        fi
+        ;;
 esac
