@@ -128,7 +128,7 @@ jq empty .claude/*.json
 
 ### 훅 스크립트 전역 경로 사용
 - **함정**: `settings.json`에서 `~/.claude/hooks/` 절대 경로 사용 → 다른 환경 복사 시 파일 없음 오류
-- **대안**: 훅 스크립트는 `.claude/hooks/scripts/`에 배치, `settings.json`에서 `.claude/` 상대 경로로 참조
+- **대안**: 훅 스크립트는 `.claude/hooks/scripts/`에 배치, `settings.json`에서 `${CLAUDE_PROJECT_DIR}/.claude/` 패턴으로 참조. 상대 경로(`.claude/`)는 worktree 환경에서 cwd가 달라질 때 실패함
 
 ### 전역 settings.json 중복 설정
 - **함정**: `~/.claude/settings.json`에 훅/권한을 정의하면 프로젝트 settings.json과 중복 적용
@@ -139,7 +139,7 @@ jq empty .claude/*.json
 - **passive 모드 vs active 스킬**: `extensions/modes/`는 자동 활성화 행동 변화, `skills/`는 명시적 호출 플로우. 동일 기능처럼 보여도 역할이 다르므로 두 파일에 상호 참조를 명시한다.
 - **git worktree 기반 역할 분리**: 카테고리별 Claude 환경 분리 시 git worktree 사용. CLAUDE.md/skills는 git으로 공유, 세션 메모리는 경로별 자동 분리 (컨텍스트 오염 없음).
 - **공통 업데이트 전파**: main 수정 후 각 worktree에서 `git rebase main` (merge 아닌 rebase로 선형 히스토리 유지).
-- **훅 스크립트 경로는 프로젝트 로컬로**: `settings.json` 훅에서 `~/.claude/` 전역 경로 사용 시 다른 환경 복사 후 파일 없음 오류 발생. 훅 스크립트는 `.claude/hooks/scripts/`에 배치하고 `.claude/` 상대 경로로 참조한다.
+- **훅 스크립트 경로는 `${CLAUDE_PROJECT_DIR}` 기준으로**: `settings.json` 훅에서 `~/.claude/` 전역 경로나 `.claude/` 상대 경로 모두 부적합. 전역 경로는 다른 환경 복사 시 실패, 상대 경로는 worktree 환경(cwd 불일치)에서 실패. `bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/scripts/foo.sh"` 패턴이 유일하게 안전. 단, 출력 경로(`~/.claude/qmd-sessions` 등)는 홈 기준 유지.
 - **`cp -r` 대신 `cp -rL`**: 심볼릭 링크를 포함한 디렉토리 복사 시 `cp -r`은 링크 자체를 복사해 dangling symlink를 유발한다. `cp -rL`로 링크를 실제 파일로 해소하여 복사한다.
 - **UserPromptSubmit 훅 stdout → Claude 컨텍스트 주입**: UserPromptSubmit 훅에서 stdout으로 출력한 내용은 Claude 컨텍스트에 자동 주입된다. 스킬 추천, 자동 컨텍스트 로딩 등에 활용 가능하다.
 
