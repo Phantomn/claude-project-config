@@ -19,6 +19,8 @@ hiddenimports = [
     'runner.reporter_pdf',
     'fpdf',
     'fpdf.enums',
+    'fpdf.fonts',
+    'fpdf.table',
 ]
 
 a = Analysis(

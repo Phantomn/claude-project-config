@@ -50,7 +50,12 @@ def main() -> None:
         print(f"[오류] {exc}")
         sys.exit(1)
 
-    print(f"[정보] 탐지된 OS: {os_kind}")
+    _os_label = {
+        OSKind.LINUX:          "Linux",
+        OSKind.WINDOWS_SERVER: "Windows Server",
+        OSKind.WINDOWS:        "Windows (PC)",
+    }.get(os_kind, os_kind)
+    print(f"[정보] 탐지된 OS: {_os_label}")
 
     # [2] Preflight (관리자 권한 없으면 exit(1))
     warnings = run_preflight(os_kind)
