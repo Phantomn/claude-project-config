@@ -10,11 +10,33 @@ if TYPE_CHECKING:
     from fpdf import FPDF as FPDFType
 
 
-def _get_font_path() -> Path:
-    """PyInstaller --onefile 번들과 일반 실행 모두 대응."""
+# Ubuntu/Windows 기본 경로 탐색 순서 (네트워크 불필요)
+_SYSTEM_FONT_CANDIDATES: list[Path] = [
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
+    Path("/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"),
+    Path("/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf"),
+    Path("C:/Windows/Fonts/malgun.ttf"),   # Windows Malgun Gothic
+    Path("C:/Windows/Fonts/gulim.ttc"),
+]
+
+
+def _get_font_path() -> Path | None:
+    """한글 폰트 경로 반환. 없으면 None (내장 폰트 폴백)."""
+    # 1. PyInstaller 번들
     if getattr(sys, "frozen", False):
-        return Path(sys._MEIPASS) / "fonts" / "NotoSansKR.ttf"  # type: ignore[attr-defined]
-    return Path(__file__).parent / "fonts" / "NotoSansKR.ttf"
+        p = Path(sys._MEIPASS) / "fonts" / "NotoSansKR.ttf"  # type: ignore[attr-defined]
+        return p if p.exists() else None
+    # 2. runner/fonts/ 로컬 배치 파일
+    local = Path(__file__).parent / "fonts" / "NotoSansKR.ttf"
+    if local.exists():
+        return local
+    # 3. 시스템 기본 경로 탐색
+    for p in _SYSTEM_FONT_CANDIDATES:
+        if p.exists():
+            return p
+    return None
 
 
 def write_pdf(session: RunSession, out_dir: Path) -> Path:
@@ -28,24 +50,27 @@ def write_pdf(session: RunSession, out_dir: Path) -> Path:
         ) from exc
 
     font_path = _get_font_path()
-    if not font_path.exists():
-        raise RuntimeError(
-            f"한글 폰트 없음: {font_path}\n"
-            "빌드 시 build.sh가 자동으로 배치합니다.\n"
-            "수동: runner/fonts/NotoSansKR.ttf 파일을 배치하세요."
-        )
+    use_korean = font_path.exists()
+    font_name = "NotoSansKR" if use_korean else "Helvetica"
 
     pass_items = [r for r in session.results if r.code == ResultCode.PASS]
     fail_items = [r for r in session.results if r.code == ResultCode.FAIL]
     error_items = [r for r in session.results if r.code in (ResultCode.ERROR, ResultCode.TIMEOUT)]
 
     pdf = FPDF()
-    pdf.add_font("NotoSansKR", fname=str(font_path))
+    if use_korean:
+        pdf.add_font(font_name, fname=str(font_path))
     pdf.set_auto_page_break(auto=True, margin=15)
 
     # --- 표지 ---
     pdf.add_page()
-    pdf.set_font("NotoSansKR", size=20)
+    if not use_korean:
+        pdf.set_font(font_name, size=9)
+        pdf.set_text_color(180, 0, 0)
+        pdf.cell(0, 6, "[Korean font not found - Korean text may not render correctly]",
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
+    pdf.set_font(font_name, size=20)
     pdf.cell(0, 15, "OS 하드닝 점검 보고서", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(5)
 
