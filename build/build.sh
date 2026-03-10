@@ -27,32 +27,40 @@ echo "[1.5/3] 한글 폰트 획득"
 mkdir -p runner/fonts
 if [ ! -f "runner/fonts/NotoSansKR.ttf" ]; then
     FONT_PATH=""
+
+    # 1) fc-list 탐색 (한글 TTF 우선, fontconfig 없으면 건너뜀)
     if command -v fc-list >/dev/null 2>&1; then
-        # NotoSansKR Regular 우선 탐색 (grep 실패 시 빈 값 유지)
-        FONT_PATH=$(fc-list :lang=ko | grep -i 'NotoSansKR.*Regular' | grep -i '\.ttf' | head -1 | cut -d: -f1 | tr -d ' ' || true)
-        if [ -z "$FONT_PATH" ]; then
-            # 임의 한글 TTF 폴백
-            FONT_PATH=$(fc-list :lang=ko | grep -i '\.ttf' | head -1 | cut -d: -f1 | tr -d ' ' || true)
-        fi
+        FONT_PATH=$(fc-list :lang=ko | grep -i '\.ttf' | head -1 | cut -d: -f1 | tr -d ' ' || true)
+    fi
+
+    # 2) Ubuntu/Debian 기본 경로 직접 탐색 (네트워크 불필요)
+    if [ -z "$FONT_PATH" ]; then
+        for _p in \
+            /usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf \
+            /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+            /usr/share/fonts/truetype/nanum/NanumGothic.ttf \
+            /usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf \
+            /usr/share/fonts/truetype/unfonts-core/UnDotum.ttf \
+            /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; do
+            if [ -f "$_p" ]; then
+                FONT_PATH="$_p"
+                break
+            fi
+        done
     fi
 
     if [ -n "$FONT_PATH" ] && [ -f "$FONT_PATH" ]; then
         echo "  시스템 폰트 복사: $FONT_PATH"
         cp "$FONT_PATH" runner/fonts/NotoSansKR.ttf
     else
-        echo "  시스템 한글 폰트 없음 → NotoSansKR 다운로드 중..."
-        python3 -c "
-import urllib.request, sys
-url = 'https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansKR/NotoSansKR-Regular.ttf'
-try:
-    urllib.request.urlretrieve(url, 'runner/fonts/NotoSansKR.ttf')
-    print('  다운로드 완료')
-except Exception as e:
-    print(f'  오류: {e}', file=sys.stderr)
-    sys.exit(1)"
+        echo "  ⚠ 한글 폰트를 찾지 못함 → PDF는 내장 폰트로 생성됩니다 (한글 깨짐)"
+        echo "    한글 PDF 필요 시: sudo apt install fonts-nanum"
+        echo "                   또는 runner/fonts/NotoSansKR.ttf 직접 배치"
     fi
 fi
-echo "  폰트: runner/fonts/NotoSansKR.ttf ($(du -sh runner/fonts/NotoSansKR.ttf | cut -f1))"
+if [ -f "runner/fonts/NotoSansKR.ttf" ]; then
+    echo "  폰트: runner/fonts/NotoSansKR.ttf ($(du -sh runner/fonts/NotoSansKR.ttf | cut -f1))"
+fi
 
 echo "[2/3] PyInstaller 빌드"
 # LD_LIBRARY_PATH 우선순위로 시스템 Python 공유 라이브러리 선택
