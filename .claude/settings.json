@@ -62,7 +62,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/scripts/workflow-reminder.sh"
+            "command": "bash .claude/hooks/scripts/workflow-reminder.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/skills/suggest-skill/scripts/suggest-skill.py"
           }
         ]
       }
@@ -73,12 +82,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "VAULT_DIR='/mnt/c/Users/tmdsv/Documents/Obsidian Vault' python3 ~/.claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",
+            "command": "VAULT_DIR='/mnt/c/Users/tmdsv/Documents/Obsidian Vault' python3 .claude/skills/sync-claude-sessions/scripts/claude-sessions sync 2>/dev/null || true",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions --days 9999 && qmd update 2>/dev/null || true",
+            "command": "python3 .claude/skills/recall/scripts/extract-sessions.py --output ~/.claude/qmd-sessions --days 9999 && qmd update 2>/dev/null || true",
             "timeout": 60
           }
         ]
@@ -94,6 +103,7 @@
     "rust-analyzer-lsp@claude-plugins-official": true,
     "team-assemble@team-attention-plugins": true
   },
+  "model": "sonnet",
   "language": "Korean",
   "spinnerVerbs": {
     "mode": "replace",
