@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 .DS_Store
 results/
+*.pdf
 build/dist/
 build/work/
 build/.venv/
