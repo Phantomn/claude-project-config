@@ -6,6 +6,11 @@ import sys
 from typing import Optional
 
 RULES: list[tuple[list[str], list[str]]] = [
+    # Pentest / 취약점 분석
+    (["취약점", "모의해킹", "pentest", "바이너리 분석", "binary analysis", "웹 취약점", "apk 분석", "ipa 분석", "ida", "분석 시작", "대상 분석"], ["/pentest"]),
+    (["다음 세션", "세션 이어서", "분석 재개", "세션 로드"], ["/recall", "/pentest"]),
+    (["rca", "근본 원인", "발견사항", "취약점 발견", "분석 완료"], ["/wrap", "/pentest"]),
+    # General
     (["코드", "수정", "변경", "구현", "작성", "완료", "fix", "edit"], ["/verify"]),
     (["아이디어", "막연", "모르겠", "뭘 만들", "어떻게 시작", "기획"], ["/brainstorm"]),
     (["계획", "단계", "분해", "태스크", "todo"], ["/breakdown"]),
@@ -33,15 +38,42 @@ def get_suggestions(prompt: str) -> list[str]:
     return list(dict.fromkeys(suggestions))[:3]
 
 
+def last_user_prompt(transcript_path: str) -> str:
+    """Stop 훅: transcript에서 마지막 사용자 메시지 추출"""
+    import pathlib
+    try:
+        lines = pathlib.Path(transcript_path).read_text().strip().splitlines()
+        for line in reversed(lines):
+            entry = json.loads(line)
+            if entry.get("type") == "user":
+                for block in entry.get("message", {}).get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return block["text"]
+    except Exception:
+        pass
+    return ""
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
-        prompt = data.get("prompt", "")
     except Exception:
+        return
+
+    if "transcript_path" in data:
+        # Stop 훅
+        prompt = last_user_prompt(data["transcript_path"])
+        label = "다음 단계"
+    else:
+        # UserPromptSubmit 훅
+        prompt = data.get("prompt", "")
+        label = "추천 스킬"
+
+    if not prompt:
         return
     suggestions = get_suggestions(prompt)
     if suggestions:
-        print(f"💡 추천 스킬: {' | '.join(suggestions)}")
+        print(f"💡 {label}: {' | '.join(suggestions)}")
 
 
 if __name__ == "__main__":
