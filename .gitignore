@@ -2,6 +2,10 @@ CLAUDE.local.md
 findings/*/notebook.json
 .claude/settings.local.json
 .claude/logs/*.jsonl
+.claude/config.toml
+.codex/config.toml
+.codex/logs/
+.codex/qmd-sessions/
 __pycache__/
 *.pyc
 .DS_Store
