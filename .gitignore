@@ -9,3 +9,6 @@ findings/*/notebook.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# exclude embedded repo
+/references/
