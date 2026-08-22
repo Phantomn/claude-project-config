@@ -1,0 +1,16 @@
+{
+  "name": "phantomn-harness",
+  "owner": { "name": "Ph4nt0m" },
+  "metadata": {
+    "description": "크로스프로젝트 공유 하네스 자산의 단일 배포 SSOT. 각 프로젝트가 ref-pin으로 설치(격리) — 글로벌 무결합.",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "graphify",
+      "source": "graphify",
+      "description": "임의 입력을 조회가능 지식그래프로 (로컬 AST, 벡터스토어 없음)",
+      "version": "0.1.0"
+    }
+  ]
+}

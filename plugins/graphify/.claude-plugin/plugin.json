@@ -1,0 +1,6 @@
+{
+  "name": "graphify",
+  "description": "임의 입력(코드·문서·스키마·PDF)을 조회가능 지식그래프로. 로컬 결정론 AST, 벡터스토어 없음.",
+  "version": "0.1.0",
+  "author": { "name": "Ph4nt0m" }
+}
