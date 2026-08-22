@@ -11,6 +11,12 @@
       "source": "graphify",
       "description": "임의 입력을 조회가능 지식그래프로 (로컬 AST, 벡터스토어 없음)",
       "version": "0.1.0"
+    },
+    {
+      "name": "akm-eval",
+      "source": "akm-eval",
+      "description": "AKM Index — 에이전트 지식관리 성숙도 평가 (업스트림 johnfkoo951 기반)",
+      "version": "0.1.0"
     }
   ]
 }
