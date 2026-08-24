@@ -1,0 +1,13 @@
+{
+  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·선택적 코드읽기 가드).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-approve-readonly.sh\"", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

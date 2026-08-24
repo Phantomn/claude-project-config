@@ -1,11 +1,19 @@
 {
   "name": "phantomn-harness",
-  "owner": { "name": "Ph4nt0m" },
+  "owner": {
+    "name": "Ph4nt0m"
+  },
   "metadata": {
     "description": "크로스프로젝트 공유 하네스 자산의 단일 배포 SSOT. 각 프로젝트가 ref-pin으로 설치(격리) — 글로벌 무결합.",
     "pluginRoot": "./plugins"
   },
   "plugins": [
+    {
+      "name": "harness-core",
+      "source": "harness-core",
+      "description": "공유 하네스 코어 — teeth 보유 훅만. 프로젝트별 값은 env 노브.",
+      "version": "0.1.0"
+    },
     {
       "name": "graphify",
       "source": "graphify",
