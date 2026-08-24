@@ -12,7 +12,7 @@
       "name": "harness-core",
       "source": "harness-core",
       "description": "공유 하네스 코어 — teeth 보유 훅만. 프로젝트별 값은 env 노브.",
-      "version": "0.1.1"
+      "version": "0.1.2"
     },
     {
       "name": "graphify",
