@@ -65,7 +65,12 @@ CASES = [
 
 
 def decide(cmd: str, env: dict | None = None) -> str:
-    e = {**os.environ, **(env or {})}
+    # ★HARNESS_* 는 주변 환경에서 **상속하지 않는다**. 실제 운영에서 프로젝트가 이 노브를
+    #   settings.json env 로 항상 설정하므로, 상속하면 "기본 프로파일" 케이스가 조용히
+    #   프로젝트 프로파일로 바뀌어 검증이 무의미해진다(2026-08-24 실측: export 한 셸에서
+    #   3건이 거짓 실패했고, 그게 곧 거짓 통과도 가능하다는 뜻이다).
+    base = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    e = {**base, **(env or {})}
     p = subprocess.run(
         ["bash", HOOK],
         capture_output=True,

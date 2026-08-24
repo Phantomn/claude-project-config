@@ -1,9 +1,15 @@
 {
   "name": "harness-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "크로스프로젝트 공유 하네스 코어 — 검증된(teeth 보유) 훅만 담는다. 프로젝트별 값은 env 노브로 주입한다.",
-  "author": { "name": "Ph4nt0m" },
+  "author": {
+    "name": "Ph4nt0m"
+  },
   "repository": "https://github.com/Phantomn/claude-project-config",
-  "keywords": ["hooks", "guardrails", "claude-code"],
+  "keywords": [
+    "hooks",
+    "guardrails",
+    "claude-code"
+  ],
   "hooks": "./hooks/hooks.json"
 }
