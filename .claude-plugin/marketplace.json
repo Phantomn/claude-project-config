@@ -24,7 +24,7 @@
       "name": "akm-eval",
       "source": "akm-eval",
       "description": "AKM Index — 에이전트 지식관리 성숙도 평가 (업스트림 johnfkoo951 기반)",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }
