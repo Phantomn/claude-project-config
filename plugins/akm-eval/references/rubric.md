@@ -478,6 +478,7 @@ AKM Index는 "노트를 얼마나 잘 쓰는가"를 측정하지 않는다. **AI
 - **평가 직전 벼락치기**: 아티팩트 날짜를 확인한다. 평가 7일 전 일괄 생성된 리뷰·로그는 L 필러 증거로 인정하지 않는다.
 - **도구 수집가**: MCP 서버 20개 설치는 H1의 증거가 아니다. 지식 기반과 결합되어 "사용된" 흔적이 증거다.
 - **평가자 이해충돌**: 자기 시스템을 자기가 평가할 때는 반드시 감점 사유를 기준마다 1개 이상 기록하게 한다 (강제 결점 탐색).
+- **absence를 generic-probe 침묵으로 채점 금지 (Silence)**: "X 없음/미백업/미색인/미실행"을 결론짓기 전, 범용 프로브(`git -C`·grep·find·search)의 빈 결과·에러는 **absence가 아니라 UNKNOWN**이다 — *도달실패(unreachable)*와 *진짜 빈 것(empty)*을 구분하는 authoritative oracle을 인용해야 한다(백업→VCS status 커맨드, 색인멤버십→인덱스의 get 등). 흔한 함정: bare/detached git-dir·비표준 백업 토폴로지에서 `git -C <dir>`가 "not a git repository"를 내는데 그 침묵을 "미백업"으로 오독. expected place를 oracle로 확인하지 않은 negative는 감점 근거로 인정하지 않으며, 교차검증은 *같은 프로브 재실행*이 아니라 다른 oracle/방법으로 한다.
 
 ---
 

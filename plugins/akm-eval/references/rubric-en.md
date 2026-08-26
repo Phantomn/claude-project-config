@@ -473,6 +473,7 @@ Collect the following from the evaluee, or inspect it directly. For remote evalu
 - **Last-minute cramming before the evaluation**: check artifact dates. Reviews and logs batch-created within 7 days of the evaluation are not accepted as L-pillar evidence.
 - **Tool collectors**: 20 installed MCP servers are not evidence for H1. Evidence is traces of the tools "being used" in combination with the knowledge base.
 - **Evaluator conflict of interest**: when self-evaluating one's own system, require at least one deduction reason to be recorded per criterion (a forced flaw search).
+- **Do not score absence from a generic probe's silence (Silence)**: before concluding "X is missing / not backed up / not indexed / never ran", an empty result or error from a generic probe (`git -C`, grep, find, search) is **UNKNOWN, not absence** — you must cite an authoritative oracle that distinguishes *unreachable* from *genuinely empty* (backup → a VCS status command, index membership → the index's own get, etc.). Common trap: with a bare/detached git-dir or a non-standard backup topology, `git -C <dir>` returns "not a git repository" and that silence is misread as "not backed up". A negative not confirmed at the expected place via an oracle is not accepted as a deduction, and cross-checking uses a different oracle/method, not a re-run of the same probe.
 
 ---
 

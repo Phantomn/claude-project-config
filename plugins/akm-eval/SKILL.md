@@ -1,7 +1,7 @@
 ---
 name: akm-eval
-version: 1.2.2
-updated: 2026-08-03
+version: 1.2.3
+updated: 2026-08-26
 description: "Self-assess your agentic knowledge management system against the AKM Index v1.2 (scoring anchors unchanged since v1.1) — a universal 5-pillar × 25-criterion rubric (Prompt / Context / Harness / Loop engineering + Interop & Governance), scored 0-100 with behaviorally anchored levels and mandatory artifact evidence. Produces a standardized akm-report.json (v1.2: includes the S/A/O descriptive dimensions profile alongside the score) you can submit to the public assessment board at akm.cmdspace.work. Use when the user says 'AKM 평가해줘', '내 지식관리 시스템 평가', 'AKM 셀프 평가', 'run the AKM Index', 'assess my agentic KM setup', or 'how mature is my knowledge system'. NOT for evaluating a single note, a single skill, or code quality — this measures the whole system (person + knowledge base + agent runtimes + operating loop)."
 ---
 
@@ -34,7 +34,7 @@ description: "Self-assess your agentic knowledge management system against the A
 
 ### 2. 채점 (25개 기준, 레벨 0-4)
 - 앵커 문언과 증거를 대조해 판정. **기준마다 증거 경로 1개 이상 + 감점 사유 1개 이상 기록** (자기 시스템 평가는 강제 결점 탐색).
-- 절대 규칙: ⓐ 증거 없으면 상한 1 ⓑ 애매하면 낮은 쪽 ⓒ 레벨 4는 "시스템이 시스템을 고친 기록" 없으면 불가 ⓓ L 필러는 최근 30일 가동 증거 없으면 상한 2 ⓔ 평가 직전 일괄 생성된 아티팩트는 루프 증거 불인정.
+- 절대 규칙: ⓐ 증거 없으면 상한 1 ⓑ 애매하면 낮은 쪽 ⓒ 레벨 4는 "시스템이 시스템을 고친 기록" 없으면 불가 ⓓ L 필러는 최근 30일 가동 증거 없으면 상한 2 ⓔ 평가 직전 일괄 생성된 아티팩트는 루프 증거 불인정 ⓕ **absence는 generic-probe 침묵으로 채점 금지** — "미백업/미색인/미실행"은 authoritative oracle(백업→VCS status, 색인→인덱스 get)로만 확정, 범용 프로브(`git -C`·find·search)의 빈 결과·에러는 UNKNOWN이다(rubric §8.4 Silence). 특히 bare/detached git-dir에서 `git -C`가 "not a git repository"를 내는 걸 "미백업"으로 오독 금지.
 - 환산: (레벨÷4)×배점 (P·H·L 각 4.0 / C 각 5.0 / X 각 3.0) → 총점 0-100, 밴드 M0~M4.
 - **캘리브레이션**: 기준 사례 CMDS = 72.0/M3 (https://akm.cmdspace.work/report.html?id=cmds-2026-07). 예: negative trigger가 스킬의 ~10%뿐이면 P3=2, 쓰기 차단 훅이 있으면 P2=4 후보, 주간 리뷰 실행률 10%면 L2=2.
 
@@ -96,6 +96,7 @@ description: "Self-assess your agentic knowledge management system against the A
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| 1.2.3 | 2026-08-26 | 안티게이밍 Silence 조항 추가 (rubric §8.4 ko/en + 채점 절대규칙 ⓕ) — absence/negative 주장은 authoritative oracle로만 확정, generic-probe(`git -C`·find·search) 침묵=UNKNOWN. bare/detached git-dir "not a git repository"를 "미백업"으로 오독하는 실사고 방지. 채점 앵커·배점 불변(rubricVersion 1.2.0 유지), 절차 patch |
 | 1.2.2 | 2026-08-03 | 버전 라벨 v1.2 통일 — 루브릭 미러·README·본문의 v1.1 표기를 프레임워크 버전 v1.2로 정리 (채점 앵커는 v1.1.0 이후 불변 명시), rubricVersion 1.2.0 |
 | 1.2.1 | 2026-08-02 | dimensions.commentary 추가 — 프로파일을 점수와 연결해 읽는 정성 해설 3-5문장 (성적표 서술 축 카드에 표시). 작성 지침 references/dimensions.md §코멘터리 |
 | 1.2.0 | 2026-08-02 | 서술 축(Dimensions) 도입 — S 규모 · A 자율운영도 · O 산출 결합도 실측(4.5단계, references/dimensions.md), report-schema 1.2(선택 dimensions 블록, 하위 호환). 채점 루브릭은 v1.1 불변 — 점수 보정이 아닌 규준 참조(norming) |
