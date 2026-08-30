@@ -1,0 +1,16 @@
+{
+  "name": "superpowers",
+  "version": "6.3.0-phantomn.1",
+  "description": "superpowers fork — SessionStart 주입을 압축(830→450토큰). upstream: github.com/obra/superpowers (MIT, Jesse Vincent). 스킬 14종은 원본 그대로.",
+  "author": {
+    "name": "Jesse Vincent (upstream)",
+    "url": "https://github.com/obra/superpowers"
+  },
+  "repository": "https://github.com/Phantomn/claude-project-config",
+  "keywords": [
+    "skills",
+    "workflow",
+    "claude-code",
+    "fork"
+  ]
+}
