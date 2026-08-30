@@ -1,6 +1,6 @@
 {
   "name": "harness-core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "크로스프로젝트 공유 하네스 코어 — 검증된(teeth 보유) 훅만 담는다. 프로젝트별 값은 env 노브로 주입한다.",
   "author": {
     "name": "Ph4nt0m"

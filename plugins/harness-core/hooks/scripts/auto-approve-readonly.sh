@@ -166,8 +166,15 @@ DANGEROUS_PATTERNS=(
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
     if printf '%s' "$CMD" | grep -qiE "$pattern"; then
-        # PreToolUse 공식 포맷: 사용자에게 확인 요청
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"위험 패턴 감지: %s"}}\n' "$pattern"
+        # PreToolUse 공식 포맷: 사용자에게 확인 요청.
+        # ★사유에 **정규식을 그대로 넣는다** — 문자열 연결로 조립하면 JSON 이 깨진다.
+        #   실측 2026-08-30: `perl -e` 가 패턴 `perl\s+-e` 에 매치되자 `\s` 가 JSON 에 박혀
+        #   "Invalid escape character s" 로 훅 출력이 통째 폐기됐다. 26패턴 중 9개가 같은
+        #   상태였다(`\s` 7 · `\.` 1 등). 하필 **위험 매치 시에만** 깨지므로 가드가 가장
+        #   필요한 순간에만 증발했다(미매치 경로의 allow 는 리터럴이라 멀쩡했다 = 무증상).
+        #   ⇒ 값이 데이터일 때는 인코더에 맡긴다. 위 _deny_codegraph 와 같은 관용구다.
+        jq -n --arg p "$pattern" \
+          '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":("위험 패턴 감지: " + $p)}}'
         exit 0
     fi
 done
