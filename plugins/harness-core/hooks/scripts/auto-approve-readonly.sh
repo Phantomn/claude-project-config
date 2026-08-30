@@ -30,13 +30,36 @@ fi
 #   ★재도입한다면 명령 위치로 앵커할 것(줄 시작·체인 구분자 뒤·서브쉘 여는 괄호 뒤).
 #     아래 재귀삭제 가드가 그 형태다 — 판정 축을 문자열이 아니라 대상에 둔다.
 
-# --- 코드 파일 읽기 차단 (cat/head/tail/sed -n) ---
+# --- 코드 파일 읽기 → codegraph/serena 유도 (cat/head/tail/sed -n/grep) ---
 CODE_EXT='\.(ts|tsx|py|js|jsx|mjs|cjs|go|rs|java|kt|cpp|c|h)([[:space:]]|$)'
-CODEGRAPH_HINT="[BLOCKED] bash 코드 읽기 차단. 의도에 맞는 도구: codegraph_search(심볼 위치) | codegraph_node(파일 읽기) | codegraph_callers(호출자) | codegraph_callees(피호출자) | codegraph_impact(변경 영향) | codegraph_context(영역 파악) | codegraph_files(디렉토리) | serena find_symbol(심볼 조회)"
+CODE_EXT_TOK='\.(ts|tsx|py|js|jsx|mjs|cjs|go|rs|java|kt|cpp|c|h)$'   # 토큰 추출용(줄 끝 앵커)
+CODEGRAPH_HINT="의도에 맞는 도구: codegraph_search(심볼 위치) | codegraph_node(파일 읽기) | codegraph_callers(호출자) | codegraph_callees(피호출자) | codegraph_impact(변경 영향) | codegraph_context(영역 파악) | codegraph_files(디렉토리) | serena find_symbol(심볼 조회)"
+CODEREAD_N=3   # 이 횟수 이상이면 넛지 대신 deny. codegraph/serena 호출 시 리셋(reset-coderead-count.sh).
 
-_deny_codegraph() {
-    jq -n --arg r "$CODEGRAPH_HINT" \
-      '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$r}}'
+# 명령에서 코드파일 토큰 하나 추출(첫 매치) — deny/넛지 사유에 정확한 대체명령을 채우기 위함.
+_extract_codefile() {
+    printf '%s' "$1" | tr ' \t|;&' '\n' | grep -oE '[^[:space:]]+'"$CODE_EXT_TOK" | head -1
+}
+
+# 코드읽기 게이트: N회 미만은 additionalContext 넛지(allow), N회 이상은 deny. 둘 다 정확한
+#   codegraph 대체명령을 사유에 채운다. 상태는 세션 카운터(리셋은 PostToolUse 훅).
+# ponytail: 카운터 write 는 병렬 훅 간 race 를 무시한다 — 근사치면 충분하다(정확성 필요 시 flock).
+_coderead_gate() {
+    local file="$1" cf cnt=0 root tool_hint
+    root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+    cf="$root/.claude/logs/coderead-count"
+    if [ -f "$cf" ]; then cnt="$(tr -dc '0-9' < "$cf" 2>/dev/null || true)"; fi
+    [ -n "$cnt" ] || cnt=0
+    tool_hint="→ 이 파일은 codegraph_node ${file:-<file>} (또는 serena find_symbol). $CODEGRAPH_HINT"
+    if [ "$cnt" -ge "$CODEREAD_N" ]; then
+        jq -n --arg r "[BLOCKED] bash 코드읽기 ${cnt}회 — codegraph/serena 로 전환하세요. $tool_hint" \
+          '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$r}}'
+        exit 0
+    fi
+    mkdir -p "$(dirname "$cf")" 2>/dev/null || true
+    printf '%s\n' "$((10#$cnt + 1))" > "$cf" 2>/dev/null || true
+    jq -n --arg c "🔍 코드읽기 $((10#$cnt + 1))/${CODEREAD_N} — codegraph 권장. $tool_hint" \
+      '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":$c}}'
     exit 0
 }
 
@@ -44,15 +67,14 @@ _deny_codegraph() {
 #   켜면 "없는 도구를 쓰라"며 bash 를 막는다(헌장: 없는 것을 지시하지 않는다).
 #   켜기: 프로젝트 settings.json 의 env 에 HARNESS_CODEREAD_GUARD=1
 if [ "${HARNESS_CODEREAD_GUARD:-0}" = "1" ]; then
-# cat/head/tail 직접 인자에 코드 파일이 올 때만 차단 (파이프라인 내 .py 경로 오탐 방지)
-if printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])(cat|head|tail)(\s+-\S+)*\s+[^|;&]*'"$CODE_EXT"; then
-    _deny_codegraph
-fi
-
-# sed -n 직접 인자에 코드 파일이 올 때만 차단
-if printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])sed\s+(-n|-[a-zA-Z]*n)\s+[^|;&]*'"$CODE_EXT"; then
-    _deny_codegraph
-fi
+    # cat/head/tail·sed -n·grep 이 **코드파일을 직접 인자로** 받을 때만 유도(파이프·텍스트필터 통과).
+    #   ★grep 은 앞경계에서 `|` 를 뺀다 — `cmd | grep p`(필터)는 통과, 줄시작·;·& 뒤 grep 만.
+    #     cat/sed 는 `| cat file` 도 코드읽기라 `|` 포함 앞경계 유지.
+    if printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])(cat|head|tail)([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^|;&]*'"$CODE_EXT" \
+    || printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])sed[[:space:]]+(-n|-[a-zA-Z]*n)[[:space:]]+[^|;&]*'"$CODE_EXT" \
+    || printf '%s' "$CMD" | grep -qE '(^|[;&][[:space:]]*)grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^|;&]*'"$CODE_EXT"; then
+        _coderead_gate "$(_extract_codefile "$CMD")"
+    fi
 fi  # HARNESS_CODEREAD_GUARD
 
 # --- 재귀 삭제: **경로**로 판정한다 (2026-08-05) ------------------------------
