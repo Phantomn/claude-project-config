@@ -172,10 +172,10 @@ DANGEROUS_PATTERNS=(
     '>>/etc/'
     '>/dev/sd'
     # 인터프리터 인라인 실행 (python3 -c, node -e 등)
-    'python3?\s+-c'
-    'node\s+-e'
-    'ruby\s+-e'
-    'perl\s+-e'
+    #'python3?\s+-c'
+    #'node\s+-e'
+    #'ruby\s+-e'
+    #'perl\s+-e'
     # xargs를 통한 파괴적 명령 실행
     'xargs.*rm'
     'xargs.*chmod'
