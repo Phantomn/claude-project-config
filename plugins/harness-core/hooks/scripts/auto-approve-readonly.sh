@@ -51,7 +51,10 @@ _coderead_gate() {
     if [ -f "$cf" ]; then cnt="$(tr -dc '0-9' < "$cf" 2>/dev/null || true)"; fi
     [ -n "$cnt" ] || cnt=0
     tool_hint="→ 이 파일은 codegraph_node ${file:-<file>} (또는 serena find_symbol). $CODEGRAPH_HINT"
-    if [ "$cnt" -ge "$CODEREAD_N" ]; then
+    # ★fail-open(2026-09-20): codegraph 인덱스(.codegraph)가 실재할 때만 deny. 부재 시 넛지만 —
+    #   env=1 이어도 인덱스가 없으면 "없는 도구 쓰라며 bash 차단"이 된다(66행 opt-in 의도의 정밀화).
+    #   serena-only 는 훅이 MCP 연결을 확인 못 하므로, deny 판정축은 인덱스 유무 하나로 둔다.
+    if [ -d "$root/.codegraph" ] && [ "$cnt" -ge "$CODEREAD_N" ]; then
         jq -n --arg r "[BLOCKED] bash 코드읽기 ${cnt}회 — codegraph/serena 로 전환하세요. $tool_hint" \
           '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$r}}'
         exit 0
