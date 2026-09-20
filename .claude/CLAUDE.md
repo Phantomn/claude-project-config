@@ -280,7 +280,6 @@ jq empty .claude/*.json
     ├── recall/         # /recall 세션/문서 컨텍스트 로드
     ├── sync-claude-sessions/ # /sync-claude-sessions Obsidian 동기화
     ├── tasknotes/      # /tasknotes 작업 관리
-    ├── team-assemble/  # /team-assemble 에이전트 팀 조립
     ├── thinking/       # /thinking 구조적 사고 전략 (9가지)
     ├── verify/         # /verify 언어별 검증 스크립트
     ├── wrap/           # /wrap 학습 추출
