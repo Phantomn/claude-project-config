@@ -19,6 +19,8 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 **2) `skills/spec-driven-development/` 추가** (2026-09-20, `phantomn.2`) — upstream엔 없는 우리 고유 스킬. spec/plan 워크플로우가 3계보(canon `spec-driven-development`·openspec·superpowers)로 분산된 것을 이 fork로 수렴한 **통합 정본**. superpowers 파이프라인(brainstorming→writing-plans→subagent-driven)의 최상위 진입점이며, spec 생명주기·`validate_spec.py`(openspec validator의 CLI-less thin port)를 자체 소유한다. 신규 스킬이라 upstream divergence 아님. 설계·근거는 같은 디렉토리 `CONSOLIDATION-DESIGN.md`.
 
+**3) `skills/spec-audit/`·`skills/team-assemble/` 추가** (2026-09-20, `phantomn.3`) — spec 파이프라인 완결. spec-audit(SPEC Self-Contained 게이트)·team-assemble(적대 감사팀 스폰)은 `spec-driven-development → plan → 감사 → 스폰` 흐름의 뒷단이라 단일 계보로 편입했다. 둘 다 우리 canon 저작(native 아님). team-assemble의 bare 하드참조(`suggest-skill.py`)는 `/superpowers:team-assemble`로 갱신. 이로써 원본 14종 + 우리 고유 3종.
+
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 
 남긴 것 — 규칙의 실질:
