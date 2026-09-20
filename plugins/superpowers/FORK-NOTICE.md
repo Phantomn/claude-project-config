@@ -15,7 +15,9 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 ## 무엇을 바꿨나
 
-**`skills/using-superpowers/SKILL.md` 한 파일만.** 나머지 13개 스킬·훅 스크립트는 원본 그대로다.
+**1) `skills/using-superpowers/SKILL.md` 압축** (원본 수정 1파일). 나머지 13개 원본 스킬·훅은 그대로.
+
+**2) `skills/spec-driven-development/` 추가** (2026-09-20, `phantomn.2`) — upstream엔 없는 우리 고유 스킬. spec/plan 워크플로우가 3계보(canon `spec-driven-development`·openspec·superpowers)로 분산된 것을 이 fork로 수렴한 **통합 정본**. superpowers 파이프라인(brainstorming→writing-plans→subagent-driven)의 최상위 진입점이며, spec 생명주기·`validate_spec.py`(openspec validator의 CLI-less thin port)를 자체 소유한다. 신규 스킬이라 upstream divergence 아님. 설계·근거는 같은 디렉토리 `CONSOLIDATION-DESIGN.md`.
 
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 

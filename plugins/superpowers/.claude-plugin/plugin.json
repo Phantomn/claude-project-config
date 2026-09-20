@@ -1,7 +1,7 @@
 {
   "name": "superpowers",
-  "version": "6.3.0-phantomn.1",
-  "description": "superpowers fork — SessionStart 주입을 압축(830→450토큰). upstream: github.com/obra/superpowers (MIT, Jesse Vincent). 스킬 14종은 원본 그대로.",
+  "version": "6.3.0-phantomn.2",
+  "description": "superpowers fork — SessionStart 주입 압축(830→450토큰) + spec-driven-development(spec 통합 정본) 추가. upstream: github.com/obra/superpowers (MIT, Jesse Vincent). 원본 스킬 14종 유지.",
   "author": {
     "name": "Jesse Vincent (upstream)",
     "url": "https://github.com/obra/superpowers"
