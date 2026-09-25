@@ -1,6 +1,6 @@
 {
   "name": "superpowers",
-  "version": "6.3.0-phantomn.3",
+  "version": "6.3.0-phantomn.4",
   "description": "superpowers fork — SessionStart 압축 + spec 파이프라인 3스킬(spec-driven-development·spec-audit·team-assemble) 추가. upstream: github.com/obra/superpowers (MIT, Jesse Vincent). 원본 스킬 14종 유지.",
   "author": {
     "name": "Jesse Vincent (upstream)",

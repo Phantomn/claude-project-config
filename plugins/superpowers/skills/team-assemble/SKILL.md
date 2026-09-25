@@ -27,6 +27,10 @@ Agent teams must be enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`. See
 
 **Do NOT use for:** single-file edits, simple questions, purely sequential work
 
+**SPEC/PLAN audits → `superpowers:spec-audit`.** It owns a fixed 3-auditor team. If invoked together
+with `/spec-audit`, follow spec-audit's execution model (skip Phase 1–3 confirmations here, and do
+not read this skill as "spawn an implementation team after the audit passes").
+
 ---
 
 ## Core Principles
