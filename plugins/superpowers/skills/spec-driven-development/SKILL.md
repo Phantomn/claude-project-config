@@ -133,6 +133,8 @@ With the validated spec, produce a technical implementation plan by **delegating
 
 Task decomposition is part of `superpowers:writing-plans` (bite-sized steps, acceptance criteria, verification per task, dependency ordering, ≤~5 files per task). Review the generated tasks against the spec before implementing.
 
+**Gate before Implement: `superpowers:spec-audit`.** Run it on the spec + plan. It spawns its own adversarial audit team (refs / Self-Contained / root-cause). Advance to Phase 4 only when it reports ❌ 0 **and** the human explicitly approves implementation — a passed audit is not that approval.
+
 ### Phase 4: Implement
 
 Execute the plan by **delegating to `superpowers:subagent-driven-development`** (recommended — fresh subagent per task + review) or `superpowers:executing-plans` (inline batch). Cross-cutting skills apply throughout: `test-driven-development`, `using-git-worktrees`, and `requesting-code-review`/`receiving-code-review` for the reviews.
@@ -183,3 +185,4 @@ Before proceeding to implementation, confirm:
 - [ ] Success criteria are specific and testable
 - [ ] Boundaries (Always/Ask First/Never) are defined
 - [ ] The spec is saved to a file in the repository
+- [ ] `superpowers:spec-audit` passed (❌ 0) on spec + plan, and the human approved implementation

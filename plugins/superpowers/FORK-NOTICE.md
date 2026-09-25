@@ -21,6 +21,8 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 **3) `skills/spec-audit/`·`skills/team-assemble/` 추가** (2026-09-20, `phantomn.3`) — spec 파이프라인 완결. spec-audit(SPEC Self-Contained 게이트)·team-assemble(적대 감사팀 스폰)은 `spec-driven-development → plan → 감사 → 스폰` 흐름의 뒷단이라 단일 계보로 편입했다. 둘 다 우리 canon 저작(native 아님). team-assemble의 bare 하드참조(`suggest-skill.py`)는 `/superpowers:team-assemble`로 갱신. 이로써 원본 14종 + 우리 고유 3종.
 
+**4) 감사팀 소유권을 spec-audit으로** (2026-09-25, `phantomn.4`) — 항목3은 team-assemble을 "감사팀"이라 했지만 spec-audit 본문은 "합격 후 스폰(+`/build`, 부재)"으로 정반대 기술했고, sdd는 두 스킬을 참조조차 안 했다. 결과: 사용자가 두 명령을 240회+ 수동 짝 호출, 단독 시 리드 혼자 감사·무승인 구현 착수(51세션 실측). spec-audit에 고정 3축 opus 감사팀(refs/selfcontained/rootcause)과 "합격≠구현 승인" 정지를 내장하고, team-assemble엔 SPEC 감사 라우팅, sdd엔 Tasks→Implement 게이트를 연결했다.
+
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 
 남긴 것 — 규칙의 실질:

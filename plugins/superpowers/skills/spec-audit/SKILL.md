@@ -1,6 +1,6 @@
 ---
 name: spec-audit
-description: SPEC 문서의 심볼/파일 참조를 실제 소스와 교차 검증. 팀 스폰 전 Self-Contained 품질 게이트.
+description: SPEC/PLAN을 3인 적대 감사팀(병렬 opus teammate)으로 실제 소스와 교차 검증해 Self-Contained·근본성까지 엄격 판정하는 구현 전 게이트. 감사팀이 이 스킬에 내장돼 있어 /team-assemble 병행 호출이 필요 없다. 감사만 하며 구현은 착수하지 않는다.
 triggers:
   - /spec-audit
   - spec audit
@@ -8,12 +8,16 @@ triggers:
   - self-contained 검토
 ---
 
-# /spec-audit — SPEC Cross-Document Audit
+# /spec-audit — SPEC 적대 감사팀
 
 ## 목적
 
-SPEC/plan/todo 다중 문서를 팀 스폰 전에 실제 소스 대비 교차 검증.
-심볼 누락, 경로 오류, 의존성 누락, 문서 간 충돌을 사전 탐지.
+SPEC/plan/todo를 구현 전에 **감사팀으로** 실제 소스 대비 교차 검증한다. 참조 오류뿐 아니라
+"맥락 없는 구현자가 이 문서만으로 완성할 수 있는가(Self-Contained)"와 "임시 처방이 아닌가(근본성)"를 판정한다.
+
+> 왜 팀이 내장인가(2026-09-25 실측, 51세션·28프로젝트): 사용자가 `/team-assemble`+`/spec-audit`을 같은
+> 인자로 240회+ 짝 호출했고, 단독 실행 시 리드가 혼자 grep 감사 후 합격 선언·승인 없는 구현 착수가 반복됐다.
+> 팀이 잡은 FAIL(placeholder·실행·근본성)은 정적 Step 1–6 밖에 있었다. 그래서 감사팀이 이 스킬의 본체다.
 
 ## 트리거
 
@@ -21,7 +25,32 @@ SPEC/plan/todo 다중 문서를 팀 스폰 전에 실제 소스 대비 교차 �
 /spec-audit <spec-file> [plan-file] [todo-file]
 ```
 
-## 검증 파이프라인 (순서 고정)
+인자가 없으면 최근 변경된 SPEC/PLAN을 찾아 대상으로 삼고, 보고서 머리에 대상 목록을 적는다.
+SPEC과 PLAN이 모두 있으면 **둘 다** 감사한다.
+
+## 실행 모델 (고정 — 생략 불가)
+
+**기본 자세(인자 없이도 적용):** 순차적으로 단계를 나눠 사고, 임시 처방이 아닌 근본 원인 기준,
+Self-Contained 엄격 판정. 사용자가 매번 이 문장을 붙일 필요가 없다.
+
+1. **리드(나)는 감사하지 않는다.** 대상 문서 확정 → 감사팀 병렬 스폰 → 종합만 한다.
+   리드가 직접 grep/Bash로 감사해 결론을 내면 이 스킬 위반이다.
+2. **팀 구성 확인 질문 없이 바로 스폰한다**(실측 62건 중 48건 권장안 그대로 승인 — 형식적 마찰).
+   사용자가 "넓게"를 요구하면 축을 쪼개 4–7명으로 늘린다.
+3. `Agent` 도구로 **한 메시지에 3명 병렬**: `subagent_type: "general-purpose"`, `model: "opus"`,
+   `name` 필수(없으면 SendMessage 재질의 불가). 프롬프트에 대상 문서 전 경로·자기 축·
+   **"파일 수정 금지(read-only)"**·출력 형식(항목별 ✅/❌/⚠️ + 근거 `file:line` + 권장 조치)을 넣는다.
+
+| name | 축 | 체크 |
+|------|----|------|
+| `auditor-refs` | 참조 실존·문서 정합 | 아래 정적 Step 1–6 |
+| `auditor-selfcontained` | 맥락 없는 구현 가능성 | placeholder 0(TBD·TODO·"적절히"·"등"), 인터페이스·타입·시그니처 명세, 요건→태스크 커버리지(누락 요건), **문서 속 명령·코드 실제 실행** |
+| `auditor-rootcause` | 근본성·반증 | 임시 처방 여부, 과소범위(같은 병리의 다른 발생지 누락), 전제 반증, 회귀·동시성·보안 |
+
+**실행 검증 규칙:** 문서의 명령·코드 블록은 스크래치 디렉토리에서 실제로 돌린다. 못 돌렸으면
+"⚠️ 미검증(사유)"이지 ✅가 아니다. 정적 대조만으로 실행 축을 ✅ 처리하지 않는다.
+
+## auditor-refs 체크리스트 — 정적 Step 1–6 (순서 고정)
 
 ### Step 1: 심볼 존재 검증
 SPEC에 언급된 모든 심볼(함수명, 클래스명, 상수명)을 Serena `find_symbol`로 실제 소스에서 확인.
@@ -68,10 +97,16 @@ grep -oE '[A-Za-z0-9_./-]+\.(py|c|xml|conf|json|sh|txt|pem|tle|bin)|fixtures/|_s
 - 전 참조 파일 트리 등재 → ✅
 - §Command/§Interface가 참조하나 트리 미기재 → ❌ (트리에 추가). wt-sat 사례: `fixtures/`·`_stub_base.py` 2R 연속 검출(동형 재발).
 
+## 종합 (리드)
+
+세 보고서를 합친다. 중복 제거, 감사자 간 판정이 갈리면 근거(`file:line`·실행 출력)가 있는 쪽을 채택하고
+판단이 안 서면 ⚠️로 둔다. 각 항목에 출처 감사자를 붙인다.
+
 ## 출력 형식
 
 ```markdown
 # SPEC Audit 결과
+대상: [감사한 문서 경로] · 감사팀: auditor-refs / auditor-selfcontained / auditor-rootcause
 
 ## ✅ 통과 (N개)
 - [심볼/파일]: 확인됨
@@ -86,14 +121,19 @@ grep -oE '[A-Za-z0-9_./-]+\.(py|c|xml|conf|json|sh|txt|pem|tle|bin)|fixtures/|_s
 - [Task A] → [Task B]: ✅ 올바름 / ❌ 역전 위험
 
 ## 결론
-[팀 스폰 가능 여부] + [해소 필요 항목 수]
+[감사 합격 여부] + [해소 필요 항목 수] + [미검증 항목과 사유]
 ```
 
 ## 합격 기준
 
-- ❌ 0개 → 팀 스폰 허용
-- ❌ 1개 이상 → 해소 후 재감사 필수
+- ❌ 0개 → 감사 합격
+- ❌ 1개 이상 → 문서 수정 후 **같은 3축 팀으로 재감사**(이전 ❌ 해소 여부부터 확인)
 - ⚠️ 3개 이상 → 사용자 확인 후 진행
+
+## 합격 후 — 여기서 멈춘다
+
+**감사 합격 ≠ 구현 승인.** 보고서를 내고 종료한다. 구현은 사용자가 명시적으로 승인할 때
+`superpowers:spec-driven-development` Phase 4(Implement)로 진행한다. 승인 없이 구현에 착수하지 않는다.
 
 ## 합격 후 구버전 심볼 일괄 교체 (CTF 저작 — `challenges/` 프로젝트 한정)
 
@@ -123,4 +163,6 @@ python3 .claude/scripts/doc-replace.py --map map.json \
 ## 연관 스킬
 
 - `/thinking --panel`: 다중 관점 교차 검증 (이 스킬 실행 전 선행 권장)
-- `/superpowers:team-assemble` (+ `/build`): 이 스킬 합격 후 스폰
+- `/superpowers:team-assemble`: 범용 동적 팀 구성기. SPEC 감사에는 쓰지 않는다(감사팀은 위에 내장).
+  함께 호출돼도 이 스킬의 실행 모델을 따른다.
+- `/superpowers:spec-driven-development`: 이 감사는 그 파이프라인의 Tasks→Implement 사이 게이트다.

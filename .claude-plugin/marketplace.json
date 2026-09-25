@@ -30,7 +30,7 @@
       "name": "superpowers",
       "source": "superpowers",
       "description": "superpowers fork — SessionStart 압축 + spec 파이프라인 3스킬(spec-driven·spec-audit·team-assemble) 추가. upstream MIT/Jesse Vincent. 원본 스킬 14종 유지.",
-      "version": "6.3.0-phantomn.3"
+      "version": "6.3.0-phantomn.4"
     }
   ]
 }
