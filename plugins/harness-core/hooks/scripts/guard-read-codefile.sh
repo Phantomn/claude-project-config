@@ -16,6 +16,7 @@ FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 # 코드파일 확장자만 — 문서·설정·비코드는 무개입(exit 0 = allow as-is).
 printf '%s' "$FP" | grep -qE '\.(ts|tsx|py|js|jsx|mjs|cjs|go|rs|java|kt|cpp|c|h)$' || exit 0
 
-jq -n --arg c "🔍 코드파일 Read — codegraph_node $FP (또는 serena find_symbol) 가 심볼 단위로 더 정확·효율적입니다. 전체 파일 통독이 목적이 아니면 codegraph 를 권장합니다." \
+# ★도구명: codegraph 1.6 은 codegraph_explore 하나만 기본 노출한다(codegraph_node 등은 CODEGRAPH_MCP_TOOLS 로만).
+jq -n --arg c "🔍 코드파일 Read — 전체 통독이 목적이 아니면 심볼 단위가 더 정확·효율적입니다: serena get_symbols_overview(relative_path) → find_symbol(name_path_pattern, include_body=true), 인덱스(.codegraph)가 있으면 codegraph_explore(query=\"$FP\")." \
   '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":$c}}'
 exit 0

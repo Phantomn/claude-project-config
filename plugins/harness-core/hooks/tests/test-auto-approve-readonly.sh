@@ -112,29 +112,29 @@ d="$(run "find . -not -path '*/.git/*' && rm -rf /tmp/x" | decision)"
 [ "$d" = "allow" ] && ok "타 명령 인자의 .git 리터럴 → allow" || fail "타 명령 인자의 .git → $d (allow 여야)"
 
 echo
-echo "== ⑤ 코드읽기 → codegraph 유도 (HARNESS_CODEREAD_GUARD, 소프트 카운터) =="
-# 카운터는 훅 CWD 의 git toplevel/.claude/logs 에 쓰므로 임시 repo 로 격리(실 카운터 무오염).
-CRTMP="$(mktemp -d)"; ( cd "$CRTMP" && git init -q )
-CF="$CRTMP/.claude/logs/coderead-count"
+echo "== ⑤ 코드읽기 → serena 전환 차단 (HARNESS_CODEREAD_GUARD, code-read-guard.py) =="
+# 판정은 git 저장소 안에서만 한다 → 임시 repo 로 격리. 세부 판정(45케이스)은 test_code_read_guard.py.
+CRTMP="$(mktemp -d)"; ( cd "$CRTMP" && git init -q && printf 'def f():\n  pass\n' > x.py && echo t > a.txt )
 crund() { ( cd "$CRTMP" && mkin "$1" | HARNESS_CODEREAD_GUARD=1 bash "$HOOK" 2>/dev/null ) | decision; }
 
-rm -f "$CF"
-d="$(crund 'cat x.py')"; [ "$d" = allow ] && ok "cat 코드파일 1회 → allow(넛지)" || fail "cat 코드파일 1회 → $d (allow 여야)"
-crund 'cat x.py' >/dev/null; crund 'cat x.py' >/dev/null    # 2,3회 소진(카운터=3)
-d="$(crund 'cat x.py')"; [ "$d" = deny ] && ok "코드읽기 4회째 → deny(3회 넛지 후)" || fail "코드읽기 4회째 → $d (deny 여야)"
-
-rm -f "$CF"
-d="$(crund 'grep pat x.py')";       [ "$d" = allow ] && ok "grep 코드파일 직접 → allow(넛지)" || fail "grep 코드파일 직접 → $d (allow 여야)"
+d="$(crund 'cat x.py')";             [ "$d" = deny ]  && ok "cat 코드파일 첫 시도 → deny" || fail "cat 코드파일 → $d (deny 여야)"
+d="$(crund 'grep pat x.py')";        [ "$d" = deny ]  && ok "grep 코드파일 → deny" || fail "grep 코드파일 → $d (deny 여야)"
+d="$(crund 'sed -n 1,5p x.py')";     [ "$d" = deny ]  && ok "sed -n 코드파일 → deny" || fail "sed -n 코드파일 → $d (deny 여야)"
+d="$(crund 'grep -rn pat .')";       [ "$d" = deny ]  && ok "코드 있는 트리 재귀 grep → deny" || fail "재귀 grep → $d (deny 여야)"
 d="$(crund 'cat a.txt | grep pat')"; [ "$d" = allow ] && ok "파이프필터 grep → allow(통과)" || fail "파이프필터 grep → $d (allow 여야)"
-
-rm -f "$CF"
-d="$(crund 'sed -n 1,5p x.py')"; [ "$d" = allow ] && ok "sed -n 코드파일 → allow(넛지)" || fail "sed -n 코드파일 → $d (allow 여야)"
-d="$(crund 'cat x.txt')";        [ "$d" = allow ] && ok "비코드파일 cat → allow(무개입)" || fail "비코드 cat → $d (allow 여야)"
+d="$(crund 'cat a.txt')";            [ "$d" = allow ] && ok "비코드파일 cat → allow(무개입)" || fail "비코드 cat → $d (allow 여야)"
+d="$(crund 'sed -i s/a/b/ x.py')";   [ "$d" = allow ] && ok "sed -i 편집 → allow" || fail "sed -i → $d (allow 여야)"
+r="$( ( cd "$CRTMP" && mkin 'cat x.py' | HARNESS_CODEREAD_GUARD=1 bash "$HOOK" 2>/dev/null ) )"
+printf '%s' "$r" | grep -q 'mcp__serena__get_symbols_overview' && ok "deny 사유에 serena 대체 호출" || fail "deny 사유에 serena 호출 없음"
 
 # opt-in OFF → 코드파일도 무개입(allow). GUARD 미설정.
 d="$( ( cd "$CRTMP" && mkin 'cat x.py' | bash "$HOOK" 2>/dev/null ) | decision )"
 [ "$d" = allow ] && ok "GUARD off → 코드파일 cat allow(무개입)" || fail "GUARD off → $d (allow 여야)"
-rm -rf "$CRTMP"
+# git 저장소 밖 → serena 가 못 보는 곳이라 무개입
+NG="$(mktemp -d)"; echo x > "$NG/y.py"
+d="$( ( cd "$NG" && mkin 'cat y.py' | HARNESS_CODEREAD_GUARD=1 bash "$HOOK" 2>/dev/null ) | decision )"
+[ "$d" = allow ] && ok "git 밖 → allow(무개입)" || fail "git 밖 → $d (allow 여야)"
+rm -rf "$CRTMP" "$NG"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "✓ auto-approve-readonly teeth ALL PASS"; exit 0; fi
