@@ -20,7 +20,7 @@ agent·analysis·bounty, **셋 다 내용 상이**), 하네스 파일 98개 중 
 | 노브 | 기본 | 뜻 |
 |---|---|---|
 | `HARNESS_RM_REPO_DIRS` | `src\|lib\|app\|docs\|scripts\|.claude` | 재귀삭제 시 ask 로 올릴 저장소 추적 트리. 저장소마다 다르다 |
-| `HARNESS_CODEREAD_GUARD` | `0`(끔) | bash 코드읽기 차단. **codegraph/serena 가 실제로 붙은 프로젝트에서만 켠다** — 없는 프로젝트에서 켜면 없는 도구를 권하며 막는다 |
+| `HARNESS_CODEREAD_GUARD` | `0`(끔) | bash 로 코드 읽기(grep·sed·awk·cat 등에 코드파일 인자, 코드 트리 재귀 검색)를 **첫 시도부터 차단**하고 사유에 serena 대체 호출을 적는다(`code-read-guard.py`). git 저장소 밖·비코드·파이프 입력은 무개입. **serena 가 실제로 붙은 프로젝트에서만 켠다** — 없는 프로젝트에서 켜면 없는 도구를 권하며 막는다 |
 
 ## 자기검증
 
