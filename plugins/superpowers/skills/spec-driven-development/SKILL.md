@@ -137,7 +137,7 @@ Task decomposition is part of `superpowers:writing-plans` (bite-sized steps, acc
 
 ### Phase 4: Implement
 
-Execute the plan by **delegating to `superpowers:subagent-driven-development`** (recommended — fresh subagent per task + review) or `superpowers:executing-plans` (inline batch). Cross-cutting skills apply throughout: `test-driven-development`, `using-git-worktrees`, and `requesting-code-review`/`receiving-code-review` for the reviews.
+Execute the plan by **delegating to `superpowers:subagent-driven-development`** (fresh subagent per task + per-task review) or `superpowers:executing-plans` (Native: the session implements every task itself, then one whole-branch review at the end — cheapest). `writing-plans`' handoff compares the two and recommends one for the plan; follow that recommendation unless the human already chose. Cross-cutting skills apply throughout: `test-driven-development`, `using-git-worktrees`, and `requesting-code-review`/`receiving-code-review` for the reviews.
 
 ## Keeping the Spec Alive (생명주기)
 
