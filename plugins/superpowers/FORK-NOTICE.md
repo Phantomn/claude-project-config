@@ -1,7 +1,7 @@
 # superpowers fork — 변경점
 
 Upstream: <https://github.com/obra/superpowers> (MIT, Copyright (c) 2025 Jesse Vincent)
-기준 버전: **6.3.0** · fork: `6.3.0-phantomn.1` (2026-08-30)
+기준 버전: **6.4.2** · fork: `6.4.2-phantomn.5` (2026-10-01; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
 
 ## 왜 fork 했나
 
@@ -22,6 +22,8 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 **3) `skills/spec-audit/`·`skills/team-assemble/` 추가** (2026-09-20, `phantomn.3`) — spec 파이프라인 완결. spec-audit(SPEC Self-Contained 게이트)·team-assemble(적대 감사팀 스폰)은 `spec-driven-development → plan → 감사 → 스폰` 흐름의 뒷단이라 단일 계보로 편입했다. 둘 다 우리 canon 저작(native 아님). team-assemble의 bare 하드참조(`suggest-skill.py`)는 `/superpowers:team-assemble`로 갱신. 이로써 원본 14종 + 우리 고유 3종.
 
 **4) 감사팀 소유권을 spec-audit으로** (2026-09-25, `phantomn.4`) — 항목3은 team-assemble을 "감사팀"이라 했지만 spec-audit 본문은 "합격 후 스폰(+`/build`, 부재)"으로 정반대 기술했고, sdd는 두 스킬을 참조조차 안 했다. 결과: 사용자가 두 명령을 240회+ 수동 짝 호출, 단독 시 리드 혼자 감사·무승인 구현 착수(51세션 실측). spec-audit에 고정 3축 opus 감사팀(refs/selfcontained/rootcause)과 "합격≠구현 승인" 정지를 내장하고, team-assemble엔 SPEC 감사 라우팅, sdd엔 Tasks→Implement 게이트를 연결했다.
+
+**5) upstream 6.3.0 → 6.4.2 재기반** (2026-10-01, `phantomn.5`) — 방법: 로컬 fork 가 v6.3.0 원본과 우리 변경점(위 1)~4): 1파일+고유 3종)만 다름을 `diff -r` 로 확인한 뒤, 원본 경로(`skills/<upstream 15종>`·`hooks/`·`LICENSE`·`package.json`)를 v6.4.2 로 교체하고 우리 것만 재적용했다. 신규 원본 스킬 `diagnosing-superpowers` 로 **원본 15종 + 고유 3종**. 재적용 내역: ① `using-superpowers` 압축본 유지 + upstream 이 추가한 Claude Code·Muse reference 2개를 플랫폼 줄에 병합 ② sdd Phase 4 의 `executing-plans` 설명을 "inline batch" → Native(세션이 전 태스크 직접 구현 후 브랜치 전체 리뷰 1회)로 갱신 — 6.4.1 에서 체크포인트 방식이 폐지됐다. 다음 재기반도 같은 절차: `diff -r <local> <upstream 기준태그>` 로 변경점이 이 문서 목록과 일치하는지 먼저 확인.
 
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 

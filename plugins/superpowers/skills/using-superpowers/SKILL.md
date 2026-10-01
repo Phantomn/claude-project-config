@@ -35,6 +35,6 @@ scope, minimalism, and when to ask before acting.
 
 ## Platform Adaptation
 
-If your harness appears here, read its reference file: Codex `references/codex-tools.md` ·
-Pi `references/pi-tools.md` · Antigravity `references/antigravity-tools.md` ·
-Hermes `references/hermes-tools.md`.
+If your harness appears here, read its reference file: Claude Code `references/claude-code-tools.md` ·
+Codex `references/codex-tools.md` · Pi `references/pi-tools.md` · Antigravity `references/antigravity-tools.md` ·
+Hermes `references/hermes-tools.md` · Muse `references/muse-tools.md`.
