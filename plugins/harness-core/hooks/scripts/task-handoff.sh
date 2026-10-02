@@ -1,53 +1,51 @@
 #!/usr/bin/env bash
-# task-handoff.sh — SessionStart: /wrap 이 맡겨 둔 미완료 태스크를 이 세션 목록으로 가져온다.
+# task-handoff.sh — SessionStart: /wrap 이 맡겨 둔 미완료 태스크를 이 세션에 넘긴다(모델이 TaskCreate 로 등록).
 #
-# 왜: 태스크 목록은 세션마다 따로다(~/.claude/tasks/session-<세션ID 앞 8자리>, 공식 agent-teams 문서).
-#   저장소 고정 ID(CLAUDE_CODE_TASK_LIST_ID)로 잇자 동시에 연 세션끼리 목록이 섞였다(2026-10-02).
-#   그래서 목록은 세션별로 두고, 넘기기만 한다: /wrap 이 handoff/<저장소>/<세션목록>/ 에 맡기고,
-#   다음에 시작하는 세션 하나가 가장 최근 묶음을 mv(원자적)로 가져간다 — 동시 세션은 못 받는다.
-# 또 Bash 에는 세션 ID 가 없어 /wrap 이 자기 목록을 못 찾으므로 HARNESS_TASK_LIST_DIR 로 넘긴다.
+# 왜 이런 구조인가(2026-10-02 실측):
+#   - 태스크 목록은 세션마다 따로다. 저장소 고정 CLAUDE_CODE_TASK_LIST_ID 로 잇자 동시 세션끼리 섞였다 → 폐기.
+#   - 목록 폴더를 직접 옮기려 했으나, resume 하면 Claude Code 가 목록 ID 를 새로 발급하면서 hook·Bash·
+#     ~/.claude/sessions/<pid>.json 어디에도 알려 주지 않는다(전부 대화 ID). 그래서 폴더 경로로는 resume 에서
+#     엉뚱한 목록에 넣게 된다. 실제 목록을 확실히 아는 것은 Task 도구뿐이다.
+#   → /wrap 이 TaskList/TaskGet 으로 읽은 미완료를 handoff/<저장소키>/<묶음>.json 에 맡기고, 이 hook 은 묶음을
+#     mv(원자적)로 하나 가져가 내용을 세션 첫 맥락에 넣는다. 모델이 TaskCreate 로 등록 → 어느 세션 ID 체계든 맞는 목록.
+# 묶음 형식: [{"subject","description","status"}] JSON 배열. 예전 형식(태스크 JSON 파일들이 든 폴더)도 받는다.
+# 대화형(CLAUDE_CODE_ENTRYPOINT=cli)만 가져간다 — cron·SDK 의 -p 세션이 사람 몫을 가로채지 않게.
 set -uo pipefail
 command -v jq >/dev/null 2>&1 || { echo "task-handoff: jq 없음 — 건너뜀" >&2; exit 0; }
+[ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ] || { cat >/dev/null; exit 0; }
 
 in="$(cat)"
-sid="$(jq -r '.session_id // empty' <<<"$in")"
 cwd="$(jq -r '.cwd // empty' <<<"$in")"; cwd="${cwd:-$PWD}"
-[ -n "$sid" ] || exit 0
-
 T="${HARNESS_TASKS_ROOT:-$HOME/.claude/tasks}"    # 시험용 덮어쓰기
-# 목록 이름(실측 2026-10-02): 명시 ID > 대화형+agent teams 면 팀 이름 session-<앞 8자리> > 그 밖(-p 등)은 세션 UUID 전체
-interactive=0; [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ] && interactive=1
-if [ -n "${CLAUDE_CODE_TASK_LIST_ID:-}" ]; then name="$CLAUDE_CODE_TASK_LIST_ID"
-elif [ "$interactive" = 1 ] && [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}" = 1 ]; then name="session-${sid:0:8}"
-else name="$sid"; fi
-list="$T/$name"
-[ -n "${CLAUDE_ENV_FILE:-}" ] && printf 'export HARNESS_TASK_LIST_DIR=%q\n' "$list" >> "$CLAUDE_ENV_FILE"
-# 가져가기는 대화형만 — cron·SDK 의 -p 세션이 사람의 다음 세션 몫을 가로채지 않게
-[ "$interactive" = 1 ] || exit 0
 
-# 저장소 키 = git 메인 저장소(worktree 공유), git 밖이면 cwd — 영숫자 외 '-' (메모리 폴더와 같은 규칙)
+# 저장소 키 = git 메인 저장소(worktree 공유), git 밖이면 cwd — 영숫자 외 '-' (메모리 폴더·/wrap 과 같은 규칙)
 g="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && root="${g%/.git}" || root="$cwd"
 box="$T/handoff/$(printf %s "$root" | sed 's/[^A-Za-z0-9]/-/g')"
 [ -d "$box" ] || exit 0
 
-# shellcheck disable=SC2012  # 묶음 이름은 session-<hex> 뿐 — mtime 정렬에 ls 가 가장 짧다
-src="$(ls -dt "$box"/*/ 2>/dev/null | head -1)"; src="${src%/}"
-[ -n "$src" ] || exit 0
-claim="$T/handoff/.claim-${box##*/}-${src##*/}-$$"   # box 밖 — 다른 세션이 claim 을 묶음으로 오인하지 않게
-mv "$src" "$claim" 2>/dev/null || exit 0      # 동시에 시작한 다른 세션이 먼저 가져갔다
-rmdir "$box" 2>/dev/null
-
-mkdir -p "$list"
-n=0; skip=""
-for f in "$claim"/[0-9]*.json; do
-    [ -e "$f" ] || continue
-    b="$(basename "$f")"
-    if [ -e "$list/$b" ]; then skip="$skip ${b%.json}"; continue; fi
-    cp "$f" "$list/" && n=$((n + 1))
+while :; do
+    # shellcheck disable=SC2012  # 묶음 이름은 우리가 만든 것뿐 — mtime 정렬에 ls 가 가장 짧다
+    src="$(ls -dt "$box"/* 2>/dev/null | head -1)"
+    [ -n "$src" ] || { rmdir "$box" 2>/dev/null; exit 0; }
+    claim="$T/handoff/.claim-${box##*/}-$(basename "$src")-$$"   # box 밖 — 다른 세션이 claim 을 묶음으로 오인하지 않게
+    # 실패 사유가 "다른 세션이 먼저 가져감"이면 src 가 사라져 있다 → 다음 묶음. 그대로면 다른 이유(권한 등) — 반복하지 않고 멈춘다.
+    mv "$src" "$claim" 2>/dev/null || { [ -e "$src" ] && { echo "task-handoff: 묶음을 가져올 수 없음 — $src" >&2; exit 0; }; continue; }
+    if [ -d "$claim" ]; then
+        tasks="$(find "$claim" -maxdepth 1 -name '[0-9]*.json' -exec cat {} + 2>/dev/null \
+                 | jq -s '[.[] | select(.status != "completed") | {subject, description, status}]' 2>/dev/null)"
+    else
+        tasks="$(jq '[.[] | select(.status != "completed") | {subject, description, status}]' "$claim" 2>/dev/null)"
+    fi
+    n="$(jq 'length' <<<"${tasks:-[]}" 2>/dev/null || echo 0)"
+    if [ -z "$tasks" ] || [ "$n" = 0 ]; then
+        if [ -z "$tasks" ]; then echo "task-handoff: 읽을 수 없는 묶음 — 원본 보존 $claim" >&2; else rm -rf "$claim"; fi
+        continue                                                  # 빈·깨진 묶음은 건너뛰고 다음 것
+    fi
+    rm -rf "$claim"
+    rmdir "$box" 2>/dev/null
+    break
 done
-[ -z "$skip" ] && rm -rf "$claim"            # 겹친 번호가 있으면 claim 폴더를 남겨 수동 복구
 
-msg="이전 세션(${src##*/})이 /wrap 으로 넘긴 미완료 태스크 ${n}건을 이 세션 목록에 가져왔다 — TaskList 로 확인."
-[ -n "$skip" ] && msg="$msg 번호가 겹쳐 못 가져온 것:${skip} (원본 $claim)"
-jq -n --arg c "$msg" '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":$c}}'
+ctx="$(jq -r --arg n "$n" '"이전 세션이 /wrap 으로 넘긴 미완료 작업 \($n)건이다. 사용자 요청을 처리하기 전에 아래 각 항목을 TaskCreate 로 등록하라(subject·description 그대로, status 가 in_progress 면 등록 후 TaskUpdate 로 in_progress). 등록했다고 한 줄로 알려라.\n\n" + ([to_entries[] | "\(.key + 1). [\(.value.status)] \(.value.subject)\n   \((.value.description // "") | gsub("\n"; "\n   "))"] | join("\n"))' <<<"$tasks")"
+jq -n --arg c "$ctx" '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":$c}}'
 exit 0
