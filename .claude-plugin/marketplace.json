@@ -4,7 +4,7 @@
     "name": "Ph4nt0m"
   },
   "metadata": {
-    "description": "크로스프로젝트 공유 하네스 자산의 단일 배포 SSOT. 각 프로젝트가 ref-pin으로 설치(격리) — 글로벌 무결합.",
+    "description": "크로스프로젝트 공유 하네스 자산의 단일 배포 SSOT. 로컬 directory 소스로 제자리 로드, user 스코프로 켜고 프로젝트는 env 스위치로 동작을 고른다.",
     "pluginRoot": "./plugins"
   },
   "plugins": [
