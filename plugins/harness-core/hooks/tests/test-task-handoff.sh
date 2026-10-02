@@ -10,7 +10,10 @@ ok() { if eval "$2"; then pass=$((pass + 1)); else echo "FAIL: $1"; fail=$((fail
 export HARNESS_TASKS_ROOT="$W/tasks" CLAUDE_CODE_ENTRYPOINT=cli
 repo="$W/repo"; mkdir -p "$repo"; key="$(printf %s "$repo" | sed 's/[^A-Za-z0-9]/-/g')"
 box="$HARNESS_TASKS_ROOT/handoff/$key"
-run() { echo "{\"session_id\":\"x\",\"cwd\":\"$repo\",\"source\":\"${1:-startup}\"}" | bash "$S"; }
+# 새 세션 하나 = SessionStart(arm) 뒤 첫 입력(claim). 세션마다 다른 ID.
+n_run=0
+run() { n_run=$((n_run + 1)); local in="{\"session_id\":\"r$n_run\",\"cwd\":\"$repo\",\"source\":\"${1:-startup}\"}"
+        echo "$in" | bash "$S" arm; echo "$in" | bash "$S" claim; }
 ctx() { jq -r '.hookSpecificOutput.additionalContext' <<<"$1"; }
 
 # 1) 맡긴 것이 없으면 출력 없음
@@ -55,7 +58,7 @@ out="$(CLAUDE_CODE_ENTRYPOINT=sdk-cli run)"; ok "-p 는 안 가져감" '[ -z "$o
 mode() { local m="$1" sid="$2"; shift 2; jq -nc --arg s "$sid" --arg c "$repo" '{session_id:$s, cwd:$c} + ($ARGS.named)' "$@" | bash "$S" "$m"; }
 rm -rf "$box" "$HARNESS_TASKS_ROOT/handoff/.pending"; mkdir -p "$box"
 echo '[{"subject":"t1","description":"","status":"pending"},{"subject":"t1","description":"","status":"pending"},{"subject":"t2","description":"","status":"in_progress"}]' > "$box/e.json"
-mode start S1 >/dev/null
+mode arm S1; mode claim S1 >/dev/null
 P="$HARNESS_TASKS_ROOT/handoff/.pending/S1.json"
 ok "start 가 대기 목록 기록" '[ "$(jq -c .left "$P")" = "[\"t1\",\"t1\",\"t2\"]" ]'
 out="$(mode stop S1)"; ok "남으면 stop 이 막음" '[ "$(jq -r .decision <<<"$out")" = block ] && [[ $(jq -r .reason <<<"$out") == *"- t2"* ]]'
@@ -65,18 +68,30 @@ mode created S2 --arg task_subject t2 >/dev/null
 ok "다른 세션 created 는 무관" '[ "$(jq -c .left "$P")" = "[\"t1\",\"t2\"]" ]'
 out="$(mode stop S1)"; ok "두 번째도 막음" '[ "$(jq -r .decision <<<"$out")" = block ]'
 out="$(mode stop S1 2>/dev/null)"; ok "세 번째는 포기·대기 목록 삭제" '[ -z "$out" ] && [ ! -e "$P" ]'
-mkdir -p "$box"; echo '[{"subject":"u1","description":"","status":"pending"}]' > "$box/f.json"; mode start S3 >/dev/null
+mkdir -p "$box"; echo '[{"subject":"u1","description":"","status":"pending"}]' > "$box/f.json"; mode arm S3; mode claim S3 >/dev/null
 ok "S3 대기 목록 생성" '[ -e "$HARNESS_TASKS_ROOT/handoff/.pending/S3.json" ]'
 mode created S3 --arg task_subject u1 >/dev/null
 out="$(mode stop S3)"; ok "다 등록하면 막지 않음" '[ -z "$out" ] && [ ! -e "$HARNESS_TASKS_ROOT/handoff/.pending/S3.json" ]'
 out="$(mode stop S9)"; ok "받은 게 없으면 stop 무동작" '[ -z "$out" ]'
 
-# 8) 등록 — hooks.json 이 가리키는 모든 스크립트가 존재하고 git 에 추적된다(PR #10: 새 파일이 경로 지정 커밋에서 빠져 훅이 없는 파일을 가리켰다)
+# 8) 수령 시점 — 앱 안 /resume(startup 새 ID·resume 대화 ID 둘 다 arm, 첫 입력은 대화 ID), 이미 돌던 세션, 두 번째 입력
+rm -rf "$box" "$HARNESS_TASKS_ROOT/handoff/.pending" "$HARNESS_TASKS_ROOT/handoff/.armed"; mkdir -p "$box"
+mode claim OLD >/dev/null                                   # 이미 돌던 세션: arm 없이 입력 → 아무것도 안 함
+echo '[{"subject":"r1","description":"","status":"pending"}]' > "$box/g.json"
+out="$(mode claim OLD)"; ok "이미 돌던 세션은 새 묶음을 못 가로챔" '[ -z "$out" ] && [ -e "$box/g.json" ]'
+mode arm NEWX; mode arm CONVY                               # 새 세션 startup → 앱 안 /resume
+out="$(mode claim CONVY)"; ok "/resume 뒤 첫 입력(대화 ID)이 수령" '[[ $(ctx "$out") == *r1* ]] && [ -e "$HARNESS_TASKS_ROOT/handoff/.pending/CONVY.json" ]'
+ok "UserPromptSubmit 출력 형식" '[ "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")" = UserPromptSubmit ]'
+ok "대기 표시는 대화 ID 로" '[ ! -e "$HARNESS_TASKS_ROOT/handoff/.pending/NEWX.json" ]'
+mkdir -p "$box"; echo '[{"subject":"r2","description":"","status":"pending"}]' > "$box/h.json"
+out="$(mode claim CONVY)"; ok "같은 세션의 두 번째 입력은 수령 안 함" '[ -z "$out" ] && [ -e "$box/h.json" ]'
+
+# 9) 등록 — hooks.json 이 가리키는 모든 스크립트가 존재하고 git 에 추적된다(PR #10: 새 파일이 경로 지정 커밋에서 빠져 훅이 없는 파일을 가리켰다)
 H="$(dirname "$S")/.."
-reg=""; for m in "SessionStart start" "TaskCreated created" "Stop stop"; do
+reg=""; for m in "SessionStart arm" "UserPromptSubmit claim" "TaskCreated created" "Stop stop"; do
     jq -e --arg e "${m% *}" --arg m "${m#* }" '[.hooks[$e][].hooks[].command] | any(endswith("task-handoff.sh\" " + $m))' "$H/hooks.json" >/dev/null || reg="$reg ${m% *}"
 done
-ok "hooks.json 에 task-handoff 3모드 등록(누락:${reg:- 없음})" '[ -z "$reg" ]'
+ok "hooks.json 에 task-handoff 4모드 등록(누락:${reg:- 없음})" '[ -z "$reg" ]'
 miss=""; for f in $(jq -r '.. | .command? // empty' "$H/hooks.json" | grep -o 'hooks/scripts/[A-Za-z0-9._-]*' | sort -u); do
     p="$H/../$f"; [ -f "$p" ] && git -C "$H" ls-files --error-unmatch "$p" >/dev/null 2>&1 || miss="$miss $f"
 done
