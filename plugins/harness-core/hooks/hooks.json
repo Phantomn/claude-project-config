@@ -1,5 +1,5 @@
 {
-  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·코드읽기 serena/codegraph 전환 차단) + Read 코드파일 넛지 + serena·codegraph 연동(HARNESS_CODEREAD_GUARD=1).",
+  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·코드읽기 serena/codegraph 전환 차단) + Read 코드파일 넛지 + serena·codegraph 연동(HARNESS_CODEREAD_GUARD=1). + /wrap 태스크 인계(SessionStart).",
   "hooks": {
     "PreToolUse": [
       {
@@ -46,6 +46,16 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/symbol-tools.sh\" rule",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/task-handoff.sh\"",
+            "timeout": 10
           }
         ]
       }
