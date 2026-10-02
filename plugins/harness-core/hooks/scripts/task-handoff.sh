@@ -10,6 +10,10 @@
 #     mv(원자적)로 하나 가져가 내용을 세션 첫 맥락에 넣는다. 모델이 TaskCreate 로 등록 → 어느 세션 ID 체계든 맞는 목록.
 # 묶음 형식: [{"subject","description","status"}] JSON 배열. 예전 형식(태스크 JSON 파일들이 든 폴더)도 받는다.
 # 대화형(CLAUDE_CODE_ENTRYPOINT=cli)만 가져간다 — cron·SDK 의 -p 세션이 사람 몫을 가로채지 않게.
+# 강제(2026-10-02 실측: haiku 가 TaskCreate 없이 "등록 완료"라고 거짓 보고): 모드 3개 —
+#   start(SessionStart) 가 받은 제목을 .pending/<session_id>.json 에 남기고, created(TaskCreated) 가 실제 등록된 제목을
+#   지우며, stop(Stop) 이 남은 게 있으면 종료를 막는다(최대 2회, 그 뒤엔 보관본으로 복구). hook 끼리는 같은 session_id 를
+#   받으므로 실제 목록 폴더를 몰라도 된다.
 set -uo pipefail
 command -v jq >/dev/null 2>&1 || { echo "task-handoff: jq 없음 — 건너뜀" >&2; exit 0; }
 [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ] || { cat >/dev/null; exit 0; }
@@ -17,6 +21,26 @@ command -v jq >/dev/null 2>&1 || { echo "task-handoff: jq 없음 — 건너뜀" 
 in="$(cat)"
 cwd="$(jq -r '.cwd // empty' <<<"$in")"; cwd="${cwd:-$PWD}"
 T="${HARNESS_TASKS_ROOT:-$HOME/.claude/tasks}"    # 시험용 덮어쓰기
+sid="$(jq -r '.session_id // empty' <<<"$in")"
+pend="$T/handoff/.pending/${sid:-none}.json"     # 받은 뒤 아직 TaskCreate 안 한 제목
+
+case "${1:-start}" in
+    created)   # TaskCreated: 실제로 등록된 제목을 대기 목록에서 하나 지운다
+        [ -f "$pend" ] || exit 0
+        subj="$(jq -r '.task_subject // empty' <<<"$in")"
+        left="$(jq --arg s "$subj" '.left |= (index($s) as $i | if $i == null then . else del(.[$i]) end)' "$pend")" || exit 0
+        if [ "$(jq '.left | length' <<<"$left")" = 0 ]; then rm -f "$pend"; else printf '%s\n' "$left" > "$pend"; fi
+        exit 0 ;;
+    stop)      # Stop: 등록 안 한 인계 작업이 남았으면 끝내지 못하게 한다(최대 2회)
+        [ -f "$pend" ] || exit 0
+        if [ "$(jq '.blocks' "$pend")" -ge 2 ]; then
+            echo "task-handoff: 인계 작업 등록을 2회 요구했으나 남음 — 원본 보관 $(jq -r '.kept' "$pend")" >&2
+            rm -f "$pend"; exit 0
+        fi
+        jq '.blocks += 1' "$pend" > "$pend.tmp" && mv "$pend.tmp" "$pend"
+        jq '{decision: "block", reason: ("인계받은 작업 중 아직 TaskCreate 로 등록하지 않은 것이 있다. 등록했다고 말하기 전에 실제로 TaskCreate 를 호출하라(subject 그대로):\n" + ([.left[] | "- " + .] | join("\n")))}' "$pend"
+        exit 0 ;;
+esac
 
 # 저장소 키 = git 메인 저장소(worktree 공유), git 밖이면 cwd — 영숫자 외 '-' (메모리 폴더·/wrap 과 같은 규칙)
 g="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && root="${g%/.git}" || root="$cwd"
@@ -46,6 +70,9 @@ while :; do
     kept="$done_dir/${box##*/}-$(basename "$src")-$(date +%Y%m%d%H%M%S)"
     mv "$claim" "$kept" 2>/dev/null || kept="$claim"
     find "$done_dir" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + 2>/dev/null
+    mkdir -p "$T/handoff/.pending"
+    jq --arg kept "$kept" '{left: [.[].subject], blocks: 0, kept: $kept}' <<<"$tasks" > "$pend"
+    find "$T/handoff/.pending" -mindepth 1 -maxdepth 1 -mtime +7 -delete 2>/dev/null
     rmdir "$box" 2>/dev/null
     break
 done
