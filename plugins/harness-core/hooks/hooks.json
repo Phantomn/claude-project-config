@@ -1,5 +1,5 @@
 {
-  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·코드읽기 serena/codegraph 전환 차단) + Read 코드파일 넛지 + serena·codegraph 연동(HARNESS_CODEREAD_GUARD=1). + /wrap 태스크 인계(SessionStart).",
+  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·코드읽기 serena/codegraph 전환 차단) + Read 코드파일 넛지 + serena·codegraph 연동(HARNESS_CODEREAD_GUARD=1). + /wrap 태스크 인계(SessionStart). + qmd MCP query rerank 끔(임시, tobi/qmd#1031).",
   "hooks": {
     "PreToolUse": [
       {
@@ -29,6 +29,16 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/symbol-tools.sh\" allow",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__qmd__query",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/qmd-no-rerank.sh\"",
+            "timeout": 5
           }
         ]
       }
