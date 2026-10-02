@@ -15,8 +15,15 @@ cwd="$(jq -r '.cwd // empty' <<<"$in")"; cwd="${cwd:-$PWD}"
 [ -n "$sid" ] || exit 0
 
 T="${HARNESS_TASKS_ROOT:-$HOME/.claude/tasks}"    # 시험용 덮어쓰기
-list="$T/${CLAUDE_CODE_TASK_LIST_ID:-session-${sid:0:8}}"
+# 목록 이름(실측 2026-10-02): 명시 ID > 대화형+agent teams 면 팀 이름 session-<앞 8자리> > 그 밖(-p 등)은 세션 UUID 전체
+interactive=0; [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ] && interactive=1
+if [ -n "${CLAUDE_CODE_TASK_LIST_ID:-}" ]; then name="$CLAUDE_CODE_TASK_LIST_ID"
+elif [ "$interactive" = 1 ] && [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-0}" = 1 ]; then name="session-${sid:0:8}"
+else name="$sid"; fi
+list="$T/$name"
 [ -n "${CLAUDE_ENV_FILE:-}" ] && printf 'export HARNESS_TASK_LIST_DIR=%q\n' "$list" >> "$CLAUDE_ENV_FILE"
+# 가져가기는 대화형만 — cron·SDK 의 -p 세션이 사람의 다음 세션 몫을 가로채지 않게
+[ "$interactive" = 1 ] || exit 0
 
 # 저장소 키 = git 메인 저장소(worktree 공유), git 밖이면 cwd — 영숫자 외 '-' (메모리 폴더와 같은 규칙)
 g="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && root="${g%/.git}" || root="$cwd"

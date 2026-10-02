@@ -7,7 +7,7 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 pass=0; fail=0
 ok() { if eval "$2"; then pass=$((pass + 1)); else echo "FAIL: $1"; fail=$((fail + 1)); fi; }
 
-export HARNESS_TASKS_ROOT="$W/tasks"; unset CLAUDE_CODE_TASK_LIST_ID
+export HARNESS_TASKS_ROOT="$W/tasks" CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1; unset CLAUDE_CODE_TASK_LIST_ID
 repo="$W/repo"; mkdir -p "$repo"; key="$(printf %s "$repo" | sed 's/[^A-Za-z0-9]/-/g')"
 box="$HARNESS_TASKS_ROOT/handoff/$key"
 run() { echo "{\"session_id\":\"$1\",\"cwd\":\"$repo\",\"source\":\"startup\"}" | CLAUDE_ENV_FILE="$W/env.$1" bash "$S"; }
@@ -45,7 +45,15 @@ rm -rf "$box"; task "$box/session-y0000000" 1 named
 CLAUDE_CODE_TASK_LIST_ID=named run ffffffff-6 >/dev/null
 ok "명시 ID 목록" '[ -e "$HARNESS_TASKS_ROOT/named/1.json" ]'
 
-# 6) hooks.json 등록
+# 6) 비대화형(-p·SDK)은 가져가지 않고, 목록 경로는 세션 UUID 전체 · agent teams 꺼진 대화형도 UUID 전체
+rm -rf "$box"; task "$box/session-z0000000" 1 keep
+out="$(CLAUDE_CODE_ENTRYPOINT=sdk-cli run 11111111-7)"
+ok "-p 는 안 가져감" '[ -z "$out" ] && [ -e "$box/session-z0000000/1.json" ]'
+ok "-p 목록 = UUID 전체" 'grep -q "HARNESS_TASK_LIST_DIR=.*/11111111-7\$" "$W/env.11111111-7"'
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 run 22222222-8 >/dev/null
+ok "teams 꺼진 대화형 = UUID 전체" '[ -e "$HARNESS_TASKS_ROOT/22222222-8/1.json" ]'
+
+# 7) hooks.json 등록
 ok "hooks.json 등록" 'jq -e "[.hooks.SessionStart[].hooks[].command] | any(test(\"task-handoff.sh\"))" "$(dirname "$S")/../hooks.json" >/dev/null'
 
 echo "task-handoff: PASS $pass / FAIL $fail"
