@@ -41,11 +41,15 @@ while :; do
         if [ -z "$tasks" ]; then echo "task-handoff: 읽을 수 없는 묶음 — 원본 보존 $claim" >&2; else rm -rf "$claim"; fi
         continue                                                  # 빈·깨진 묶음은 건너뛰고 다음 것
     fi
-    rm -rf "$claim"
+    # 지우지 않고 보관 — 받은 세션이 등록 전에 끝나도(resume 직후 종료 등) 되살릴 수 있게. 30일 지나면 정리.
+    done_dir="$T/handoff/.done"; mkdir -p "$done_dir"
+    kept="$done_dir/${box##*/}-$(basename "$src")-$(date +%Y%m%d%H%M%S)"
+    mv "$claim" "$kept" 2>/dev/null || kept="$claim"
+    find "$done_dir" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + 2>/dev/null
     rmdir "$box" 2>/dev/null
     break
 done
 
-ctx="$(jq -r --arg n "$n" '"이전 세션이 /wrap 으로 넘긴 미완료 작업 \($n)건이다. 사용자 요청을 처리하기 전에 아래 각 항목을 TaskCreate 로 등록하라(subject·description 그대로, status 가 in_progress 면 등록 후 TaskUpdate 로 in_progress). 등록했다고 한 줄로 알려라.\n\n" + ([to_entries[] | "\(.key + 1). [\(.value.status)] \(.value.subject)\n   \((.value.description // "") | gsub("\n"; "\n   "))"] | join("\n"))' <<<"$tasks")"
+ctx="$(jq -r --arg n "$n" --arg kept "$kept" '"이전 세션이 /wrap 으로 넘긴 미완료 작업 \($n)건이다. 사용자 요청을 처리하기 전에 아래 각 항목을 TaskCreate 로 등록하라(subject·description 그대로, status 가 in_progress 면 등록 후 TaskUpdate 로 in_progress). 등록했다고 한 줄로 알려라. (원본 보관: \($kept))\n\n" + ([to_entries[] | "\(.key + 1). [\(.value.status)] \(.value.subject)\n   \((.value.description // "") | gsub("\n"; "\n   "))"] | join("\n"))' <<<"$tasks")"
 jq -n --arg c "$ctx" '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":$c}}'
 exit 0

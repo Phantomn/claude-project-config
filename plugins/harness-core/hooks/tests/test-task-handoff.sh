@@ -26,10 +26,13 @@ ok "완료 항목 제외·건수" '[[ $(ctx "$out") != *new-done* ]] && [[ $(ctx
 ok "TaskCreate 지시" '[[ $(ctx "$out") == *TaskCreate* ]]'
 ok "in_progress 표시" '[[ $(ctx "$out") == *"[in_progress] new-b"* ]]'
 ok "수령분 제거·옛 묶음 보존" '[ ! -e "$box/2-new.json" ] && [ -e "$box/1-old.json" ]'
+ok "수령분은 보관함에 원본 보존" 'jq -e ".[0].subject==\"new-a\"" "$HARNESS_TASKS_ROOT"/handoff/.done/*2-new.json* >/dev/null && [[ $(ctx "$out") == *"원본 보관"* ]]'
+mkdir -p "$HARNESS_TASKS_ROOT/handoff/.done/old-archive"; touch -d '40 days ago' "$HARNESS_TASKS_ROOT/handoff/.done/old-archive"
 
 # 3) 다음 세션이 남은 묶음을 받는다(resume 포함) — 다 받으면 box 정리, 재수령 없음
 out="$(run resume)"; ok "resume 도 수령" '[[ $(ctx "$out") == *old-task* ]]'
 ok "box 정리" '[ ! -e "$box" ]'
+ok "30일 지난 보관분 정리" '[ ! -e "$HARNESS_TASKS_ROOT/handoff/.done/old-archive" ]'
 out="$(run)"; ok "재수령 없음" '[ -z "$out" ]'
 
 # 4) 예전 형식(태스크 JSON 파일 폴더)도 받는다
