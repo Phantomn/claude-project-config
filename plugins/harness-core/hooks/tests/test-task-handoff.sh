@@ -51,9 +51,32 @@ ok "깨진 묶음 원본 보존" 'ls "$HARNESS_TASKS_ROOT"/handoff/.claim-*9-bro
 mkdir -p "$box"; echo '[{"subject":"keep","description":"","status":"pending"}]' > "$box/k.json"
 out="$(CLAUDE_CODE_ENTRYPOINT=sdk-cli run)"; ok "-p 는 안 가져감" '[ -z "$out" ] && [ -e "$box/k.json" ]'
 
-# 7) 등록 — hooks.json 이 가리키는 모든 스크립트가 존재하고 git 에 추적된다(PR #10: 새 파일이 경로 지정 커밋에서 빠져 훅이 없는 파일을 가리켰다)
+# 7) 강제 — start 가 대기 목록, created 가 하나씩 지움, stop 이 남으면 막음(최대 2회), 다른 세션은 무관
+mode() { local m="$1" sid="$2"; shift 2; jq -nc --arg s "$sid" --arg c "$repo" '{session_id:$s, cwd:$c} + ($ARGS.named)' "$@" | bash "$S" "$m"; }
+rm -rf "$box" "$HARNESS_TASKS_ROOT/handoff/.pending"; mkdir -p "$box"
+echo '[{"subject":"t1","description":"","status":"pending"},{"subject":"t1","description":"","status":"pending"},{"subject":"t2","description":"","status":"in_progress"}]' > "$box/e.json"
+mode start S1 >/dev/null
+P="$HARNESS_TASKS_ROOT/handoff/.pending/S1.json"
+ok "start 가 대기 목록 기록" '[ "$(jq -c .left "$P")" = "[\"t1\",\"t1\",\"t2\"]" ]'
+out="$(mode stop S1)"; ok "남으면 stop 이 막음" '[ "$(jq -r .decision <<<"$out")" = block ] && [[ $(jq -r .reason <<<"$out") == *"- t2"* ]]'
+mode created S1 --arg task_subject t1 >/dev/null
+ok "created 가 같은 제목 하나만 지움" '[ "$(jq -c .left "$P")" = "[\"t1\",\"t2\"]" ]'
+mode created S2 --arg task_subject t2 >/dev/null
+ok "다른 세션 created 는 무관" '[ "$(jq -c .left "$P")" = "[\"t1\",\"t2\"]" ]'
+out="$(mode stop S1)"; ok "두 번째도 막음" '[ "$(jq -r .decision <<<"$out")" = block ]'
+out="$(mode stop S1 2>/dev/null)"; ok "세 번째는 포기·대기 목록 삭제" '[ -z "$out" ] && [ ! -e "$P" ]'
+mkdir -p "$box"; echo '[{"subject":"u1","description":"","status":"pending"}]' > "$box/f.json"; mode start S3 >/dev/null
+ok "S3 대기 목록 생성" '[ -e "$HARNESS_TASKS_ROOT/handoff/.pending/S3.json" ]'
+mode created S3 --arg task_subject u1 >/dev/null
+out="$(mode stop S3)"; ok "다 등록하면 막지 않음" '[ -z "$out" ] && [ ! -e "$HARNESS_TASKS_ROOT/handoff/.pending/S3.json" ]'
+out="$(mode stop S9)"; ok "받은 게 없으면 stop 무동작" '[ -z "$out" ]'
+
+# 8) 등록 — hooks.json 이 가리키는 모든 스크립트가 존재하고 git 에 추적된다(PR #10: 새 파일이 경로 지정 커밋에서 빠져 훅이 없는 파일을 가리켰다)
 H="$(dirname "$S")/.."
-ok "hooks.json 에 task-handoff 등록" 'jq -e "[.hooks.SessionStart[].hooks[].command] | any(test(\"task-handoff.sh\"))" "$H/hooks.json" >/dev/null'
+reg=""; for m in "SessionStart start" "TaskCreated created" "Stop stop"; do
+    jq -e --arg e "${m% *}" --arg m "${m#* }" '[.hooks[$e][].hooks[].command] | any(endswith("task-handoff.sh\" " + $m))' "$H/hooks.json" >/dev/null || reg="$reg ${m% *}"
+done
+ok "hooks.json 에 task-handoff 3모드 등록(누락:${reg:- 없음})" '[ -z "$reg" ]'
 miss=""; for f in $(jq -r '.. | .command? // empty' "$H/hooks.json" | grep -o 'hooks/scripts/[A-Za-z0-9._-]*' | sort -u); do
     p="$H/../$f"; [ -f "$p" ] && git -C "$H" ls-files --error-unmatch "$p" >/dev/null 2>&1 || miss="$miss $f"
 done
