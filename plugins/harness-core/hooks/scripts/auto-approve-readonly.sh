@@ -38,7 +38,11 @@ fi
 #   같은 훅 안에서 호출한다 — 별도 훅이면 이 훅의 기본 allow 와 결정 순서를 따져야 한다.
 # ★opt-in — serena 가 실제로 붙은 프로젝트에서만 옳다(헌장: 없는 것을 지시하지 않는다).
 #   켜기: 프로젝트 settings.json 의 env 에 HARNESS_CODEREAD_GUARD=1
-if [ "${HARNESS_CODEREAD_GUARD:-0}" = "1" ] && command -v python3 >/dev/null 2>&1; then
+#   ★스위치는 세션 env 가 아니라 **읽는 대상의 저장소** 설정으로 판정한다(2026-10-04, code-read-guard.py).
+#   세션 env 로 입구를 막으면 홈에서 연 세션이 스위치 저장소에 cd 해도 차단이 꺼진다. 여기선 읽기 도구
+#   이름이 보이는 명령만 넘겨 python 기동을 줄인다(정밀 판정은 guard 가 한다).
+if printf '%s' "$INPUT" | grep -qE '(grep|rg|ug|ag|ack|awk|sed|cat|head|tail|nl|less|more|bat|tac)\b' \
+        && command -v python3 >/dev/null 2>&1; then
     CR_OUT="$(printf '%s' "$INPUT" | python3 "$(dirname "$0")/code-read-guard.py" 2>/dev/null || true)"
     if [ -n "$CR_OUT" ]; then
         printf '%s\n' "$CR_OUT"

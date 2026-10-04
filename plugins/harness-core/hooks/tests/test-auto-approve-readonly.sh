@@ -134,6 +134,17 @@ d="$( ( cd "$CRTMP" && mkin 'cat x.py' | bash "$HOOK" 2>/dev/null ) | decision )
 NG="$(mktemp -d)"; echo x > "$NG/y.py"
 d="$( ( cd "$NG" && mkin 'cat y.py' | HARNESS_CODEREAD_GUARD=1 bash "$HOOK" 2>/dev/null ) | decision )"
 [ "$d" = allow ] && ok "git 밖 → allow(무개입)" || fail "git 밖 → $d (allow 여야)"
+# ★2026-10-04: 스위치는 대상 저장소 settings 로 판정 — 세션 env 없이, 홈(저장소 밖)에서 연 세션도 막는다
+mkdir -p "$CRTMP/.claude" && printf '{"env":{"HARNESS_CODEREAD_GUARD":"1"}}' > "$CRTMP/.claude/settings.json"
+d="$( ( cd "$CRTMP" && mkin 'cat x.py' | bash "$HOOK" 2>/dev/null ) | decision )"
+[ "$d" = deny ] && ok "저장소 settings 스위치(세션 env 없음) → deny" || fail "settings 스위치 → $d (deny 여야)"
+d="$( ( cd "$NG" && mkin "cd $CRTMP && sed -n 1,3p x.py" | CLAUDE_PROJECT_DIR="$NG" bash "$HOOK" 2>/dev/null ) | decision )"
+[ "$d" = deny ] && ok "홈 세션에서 cd 후 코드읽기 → deny" || fail "홈 세션 cd → $d (deny 여야)"
+# Read 넛지도 같은 정의(code-read-guard.py --root-if-guarded)
+RN="$(dirname "$HOOK")/guard-read-codefile.sh"
+rn() { printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$1" | ( cd "$NG" && bash "$RN" 2>/dev/null ) | jq -r '.hookSpecificOutput.additionalContext // empty' | head -c 10; }
+[ -n "$(rn "$CRTMP/x.py")" ] && ok "Read 넛지: 스위치 저장소 코드파일 → 안내" || fail "Read 넛지 스위치 저장소 → 무응답"
+[ -z "$(rn "$NG/y.py")" ] && ok "Read 넛지: 저장소 밖 → 무개입" || fail "Read 넛지 저장소 밖 → 개입"
 rm -rf "$CRTMP" "$NG"
 
 echo

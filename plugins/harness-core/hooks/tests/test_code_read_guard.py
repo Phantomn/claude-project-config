@@ -67,10 +67,13 @@ ALLOW = [
 ]
 
 
-def make_repo():
+def make_repo(switch=True):
     root = os.path.realpath(tempfile.mkdtemp())
-    for rel, body in {"src/a.py": "def foo():\n  pass\n", "logs/x.log": "foo\n",
-                      "docs/readme.md": "foo\n", "conf/c.yaml": "foo: 1\n"}.items():
+    files = {"src/a.py": "def foo():\n  pass\n", "logs/x.log": "foo\n",
+             "docs/readme.md": "foo\n", "conf/c.yaml": "foo: 1\n"}
+    if switch:
+        files[".claude/settings.json"] = '{"env": {"HARNESS_CODEREAD_GUARD": "1"}}'
+    for rel, body in files.items():
         p = os.path.join(root, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "w").write(body)
@@ -78,10 +81,12 @@ def make_repo():
     return root
 
 
-def run_hook(cmd, cwd):
+def run_hook(cmd, cwd, env=None):
+    e = {k: v for k, v in os.environ.items() if k not in ("HARNESS_CODEREAD_GUARD", "CLAUDE_PROJECT_DIR")}
+    e.update(env or {})
     r = subprocess.run([sys.executable, SCRIPT], input=json.dumps(
         {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd}),
-        capture_output=True, text=True, timeout=30)
+        capture_output=True, text=True, timeout=30, env=e)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout) if r.stdout.strip() else None
 
@@ -90,10 +95,10 @@ def main():
     root = make_repo()
     fails = []
     for cmd in BLOCK:
-        if not g.judge_command(cmd, root, root):
+        if not g.judge_command(cmd, root):
             fails.append(f"막아야 하는데 통과: {cmd!r}")
     for cmd in ALLOW:
-        hit = g.judge_command(cmd, root, root)
+        hit = g.judge_command(cmd, root)
         if hit:
             fails.append(f"통과해야 하는데 막음: {cmd!r} → {hit}")
 
@@ -106,14 +111,40 @@ def main():
     cg = run_hook("rg foo", root)
     assert cg and "codegraph_explore" in cg["hookSpecificOutput"]["permissionDecisionReason"]
     # git 저장소 밖 cwd 는 전부 통과
-    assert run_hook("cat a.py", os.path.realpath(tempfile.mkdtemp())) is None
+    home = os.path.realpath(tempfile.mkdtemp())
+    with open(os.path.join(home, "a.py"), "w") as f:
+        f.write("x\n")
+    assert run_hook("cat a.py", home) is None
     # 다른 도구·깨진 입력은 무시
     assert run_hook("cat logs/x.log", root) is None
+
+    # ★2026-10-04 회귀: 홈(저장소 밖)에서 연 세션이 스위치 저장소를 읽으면 막는다 — 세션 env 없이
+    env_home = {"CLAUDE_PROJECT_DIR": home}
+    out = run_hook(f"cd {root} && sed -n 1,5p src/a.py", home, env_home)
+    assert out and out["hookSpecificOutput"]["permissionDecision"] == "deny", out
+    why = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert f'activate_project(project="{root}")' in why, why  # 세션 프로젝트가 아니니 활성화부터
+    assert f'projectPath="{root}"' in why, why
+    assert run_hook(f"cat {root}/src/a.py", home, env_home)  # 절대경로
+    assert run_hook(f"grep -rn foo {root}", home, env_home)  # 재귀
+    # 스위치 없는 저장소는 통과 — 세션이 스위치 저장소여도
+    off = make_repo(switch=False)
+    assert run_hook(f"cat {off}/src/a.py", root, {"CLAUDE_PROJECT_DIR": root}) is None
+    assert run_hook("cat src/a.py", off, {"CLAUDE_PROJECT_DIR": off}) is None
+    # 세션 env 스위치(=1)는 세션 프로젝트에만 적용 — 다른 저장소로 번지지 않는다
+    assert run_hook("cat src/a.py", off, {"CLAUDE_PROJECT_DIR": off, "HARNESS_CODEREAD_GUARD": "1"})
+    assert run_hook(f"cat {off}/src/a.py", home, {"CLAUDE_PROJECT_DIR": home, "HARNESS_CODEREAD_GUARD": "1"}) is None
+    # --root-if-guarded (guard-read-codefile.sh 가 쓰는 같은 정의)
+    cli = lambda p: subprocess.run([sys.executable, SCRIPT, "--root-if-guarded", p], capture_output=True,
+                                   text=True, env={"PATH": os.environ["PATH"]}, cwd=home, check=False)
+    r = cli(os.path.join(root, "src/a.py"))
+    assert r.returncode == 0 and r.stdout.strip() == root, r
+    assert cli(os.path.join(off, "src/a.py")).returncode == 1
 
     if fails:
         print("\n".join(fails))
         sys.exit(1)
-    print(f"OK — BLOCK {len(BLOCK)} / ALLOW {len(ALLOW)} / 종단 4")
+    print(f"OK — BLOCK {len(BLOCK)} / ALLOW {len(ALLOW)} / 종단 14")
 
 
 if __name__ == "__main__":
