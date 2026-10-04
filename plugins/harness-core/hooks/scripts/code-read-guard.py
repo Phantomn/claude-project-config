@@ -14,12 +14,16 @@
 계약:
   - 막는 것: grep/rg/ugrep/ag/ack/awk/sed/cat/head/tail/nl/less/more/bat/tac 가
     (a) 코드 확장자 파일을 인자로 받거나, (b) 코드가 있는 디렉터리를 재귀 검색(grep -r, rg, git grep,
-    find -exec grep)할 때. 단 대상이 현재 git 저장소 안일 때만 — serena(--project-from-cwd)가 그곳만 본다.
+    find -exec grep)할 때. 단 대상이 **차단이 켜진 git 저장소** 안일 때만 — 그 저장소의 .claude/settings(.local).json
+    env 에 HARNESS_CODEREAD_GUARD=1 (또는 세션 env 가 1 이고 대상이 세션 프로젝트).
+    ★대상 경로마다 저장소를 구한다(2026-10-04). 이전엔 세션 env + 세션 cwd 의 저장소 하나로만 판정해서, 홈에서 연
+    세션은 스위치 저장소에 cd 해도 차단이 꺼졌다(사용자는 주로 홈에서 연다 — 실측 이 세션 ~/.agents 에서 sed -n 통과).
   - 통과: 파이프 입력(cmd | grep), 비코드 파일(로그·설정·문서), --include/-g/-t 로 비코드만 지정한 검색,
-    sed -i(편집), 저장소 밖 경로, cwd 가 git 저장소가 아닐 때, 명령 해석 실패(fail-open).
-호출: auto-approve-readonly.sh 가 HARNESS_CODEREAD_GUARD=1 일 때 stdin 을 넘겨 부른다(단독 등록 안 함 —
+    sed -i(편집), 스위치 없는 저장소·저장소 밖 경로, 명령 해석 실패(fail-open).
+호출: auto-approve-readonly.sh 가 읽기 도구 이름이 보이는 Bash 명령마다 stdin 을 넘겨 부른다(단독 등록 안 함 —
   같은 훅 안에서 판정해야 그 훅의 기본 allow 와 순서 경합이 없다).
 종료: 항상 0 — 차단은 stdout hookSpecificOutput.permissionDecision=deny 로 낸다.
+보조: `code-read-guard.py --root-if-guarded <경로>` → 차단이 켜진 저장소면 루트 출력(guard-read-codefile.sh 가 같은 정의를 쓴다).
 테스트: python3 hooks/tests/test_code_read_guard.py
 """
 from __future__ import annotations
@@ -28,7 +32,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 
 CODE_EXTS = {
@@ -206,23 +209,51 @@ def parse_reader(prog: str, args: list[str]):
     return files, includes, types, recursive, sed_inplace
 
 
-def git_root(cwd: str) -> str | None:
-    try:
-        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=3)
-    except (OSError, subprocess.TimeoutExpired):
+def repo_root(path: str) -> str | None:
+    """경로에서 위로 올라가며 .git(디렉터리 또는 worktree 의 파일)이 있는 첫 디렉터리. 없으면 None."""
+    d = path if os.path.isdir(path) else os.path.dirname(path)
+    while d and not os.path.isdir(d):
+        d = os.path.dirname(d)
+    while d:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+    return None
+
+
+def switch_on(root: str) -> bool:
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            with open(os.path.join(root, ".claude", name)) as f:
+                if (json.load(f).get("env") or {}).get("HARNESS_CODEREAD_GUARD") == "1":
+                    return True
+        except (OSError, ValueError, AttributeError):
+            pass
+    return False
+
+
+SESSION_ROOT: str | None = None  # main 이 채운다 — 세션 env 스위치가 덮는 저장소
+_guarded: dict[str, str | None] = {}
+
+
+def guarded_root(path: str) -> str | None:
+    """path 가 차단이 켜진 저장소 안이면 그 루트, 아니면 None."""
+    root = repo_root(path)
+    if root is None:
         return None
-    return os.path.realpath(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    if root not in _guarded:
+        on = switch_on(root) or (os.environ.get("HARNESS_CODEREAD_GUARD") == "1" and root == SESSION_ROOT)
+        _guarded[root] = root if on else None
+    return _guarded[root]
 
 
 def resolve(path: str, cwd: str) -> str:
     p = os.path.expandvars(os.path.expanduser(path))
     p = re.split(r"[*?\[{]", p, maxsplit=1)[0] or "."  # 글롭은 고정 접두 디렉터리로
     return os.path.realpath(os.path.join(cwd, p))
-
-
-def inside(path: str, root: str) -> bool:
-    return path == root or path.startswith(root + os.sep)
 
 
 def dir_has_code(d: str) -> bool:
@@ -238,7 +269,7 @@ def dir_has_code(d: str) -> bool:
     return False
 
 
-def judge_segment(tokens, piped, rin, cwd, root, whole_cmd):
+def judge_segment(tokens, piped, rin, cwd, whole_cmd):
     """차단 사유가 되는 (명령 문자열, 대상 경로) 또는 None."""
     toks, via_xargs = unwrap(tokens)
     if not toks:
@@ -249,14 +280,14 @@ def judge_segment(tokens, piped, rin, cwd, root, whole_cmd):
     if prog in ("bash", "sh", "zsh") and "-c" in args:
         i = args.index("-c")
         if i + 1 < len(args):
-            return judge_command(args[i + 1], cwd, root)
+            return judge_command(args[i + 1], cwd)
         return None
 
     if prog == "git" and args[:1] == ["grep"]:
         prog, args = "rg", args[1:]  # git grep = 저장소 재귀 검색
 
     if prog == "find":
-        return judge_find(args, cwd, root)
+        return judge_find(args, cwd)
 
     if prog not in READERS or prog == "rg" and "--files" in args:  # rg --files = 목록만, 내용 안 읽음
         return None
@@ -267,33 +298,33 @@ def judge_segment(tokens, piped, rin, cwd, root, whole_cmd):
     files += rin
 
     for f in files:
-        if has_code_ext(f) and inside(resolve(f, cwd), root):
-            return f
-    if via_xargs and has_code_ext(whole_cmd):  # find -name '*.py' | xargs grep
-        return "(xargs 입력)"
+        if has_code_ext(f) and guarded_root(resolve(f, cwd)):
+            return resolve(f, cwd)
+    if via_xargs and has_code_ext(whole_cmd) and guarded_root(os.path.realpath(cwd)):  # find -name '*.py' | xargs grep
+        return os.path.realpath(cwd)
     if not recursive:
         return None
     if piped and not files and prog in ALWAYS_RECURSIVE:
         return None  # cmd | rg pat — stdin 검색
-    return judge_recursive(files, includes, types, cwd, root)
+    return judge_recursive(files, includes, types, cwd)
 
 
-def judge_recursive(paths, includes, types, cwd, root):
+def judge_recursive(paths, includes, types, cwd):
     if includes or types:
         if any(has_code_ext(g) for g in includes) or any(t.lower() in CODE_TYPES for t in types):
             targets = [resolve(p, cwd) for p in paths] or [os.path.realpath(cwd)]
-            return next((p for p in targets if inside(p, root)), None)
+            return next((p for p in targets if guarded_root(p)), None)
         return None  # 비코드만 지정
     targets = [resolve(p, cwd) for p in paths] or [os.path.realpath(cwd)]
     for t in targets:
-        if not inside(t, root):
+        if not guarded_root(t):
             continue
         if os.path.isdir(t) and dir_has_code(t):
             return t
     return None
 
 
-def judge_find(args, cwd, root):
+def judge_find(args, cwd):
     """find … -exec/-execdir <reader> … — 시작 디렉터리를 재귀 검색으로 본다."""
     for flag in ("-exec", "-execdir"):
         if flag in args:
@@ -306,34 +337,36 @@ def judge_find(args, cwd, root):
             starts = pre[:k]  # find 의 시작 경로 = 첫 식(expression) 앞의 인자들
             names = [pre[n + 1] for n, a in enumerate(pre[:-1])
                      if a in ("-name", "-iname", "-path", "-ipath", "-regex")]
-            return judge_recursive(starts, names, [], cwd, root)
+            return judge_recursive(starts, names, [], cwd)
     return None
 
 
-def judge_command(cmd: str, cwd: str, root: str):
+def judge_command(cmd: str, cwd: str):
     try:
         segs = split_segments(cmd)
     except ValueError:
         return None  # 해석 실패 → fail-open
     for tokens, piped, rin in segs:
-        if tokens[:1] in (["cd"], ["pushd"]):  # 명령 안 cd 로 바뀐 위치 기준으로 판정 — 저장소 밖이면 통과
+        if tokens[:1] in (["cd"], ["pushd"]):  # 명령 안 cd 로 바뀐 위치 기준으로 판정
             cwd = resolve(tokens[1] if len(tokens) > 1 else "~", cwd)
             continue
-        hit = judge_segment(tokens, piped, rin, cwd, root, cmd)
+        hit = judge_segment(tokens, piped, rin, cwd, cmd)
         if hit:
             return hit
     return None
 
 
 def reason(cmd: str, hit: str, root: str) -> str:
-    rel = os.path.relpath(hit, root) if os.path.isabs(hit) else hit
+    rel = os.path.relpath(hit, root)
     has_cg = os.path.isdir(os.path.join(root, ".codegraph"))
     lines = [
-        f"[code-read-guard] 셸 텍스트 도구로 소스코드를 읽는 호출이라 차단됨: `{cmd[:160]}` (대상: {rel})",
+        f"[code-read-guard] 셸 텍스트 도구로 소스코드를 읽는 호출이라 차단됨: `{cmd[:160]}` (대상: {rel}, 저장소 {root})",
         "이 저장소에서 코드는 심볼 도구로 읽는다(grep/sed 는 문자열 일치라 정의·호출 관계를 놓친다):",
     ]
+    if root != SESSION_ROOT:  # 세션 프로젝트가 아니면 serena 는 그 저장소를 먼저 활성화해야 본다
+        lines.append(f'- 먼저: mcp__serena__activate_project(project="{root}") — relative_path 는 이 저장소 기준')
     if has_cg:
-        lines.append('- 영역·흐름 파악: mcp__codegraph__codegraph_explore(query="<심볼명 또는 질문>")'
+        lines.append(f'- 영역·흐름 파악: mcp__codegraph__codegraph_explore(query="<심볼명 또는 질문>", projectPath="{root}")'
                      ' — 셸이면 `codegraph explore "<질의>"`')
     lines += [
         f'- 파일 구조: mcp__serena__get_symbols_overview(relative_path="{rel}")',
@@ -347,6 +380,13 @@ def reason(cmd: str, hit: str, root: str) -> str:
 
 
 def main() -> None:
+    global SESSION_ROOT
+    if sys.argv[1:2] == ["--root-if-guarded"] and len(sys.argv) > 2:
+        SESSION_ROOT = repo_root(os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
+        root = guarded_root(os.path.realpath(sys.argv[2]))
+        if root:
+            print(root)
+        sys.exit(0 if root else 1)
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -355,11 +395,12 @@ def main() -> None:
         return
     cmd = (data.get("tool_input") or {}).get("command") or ""
     cwd = data.get("cwd") or os.getcwd()
-    root = git_root(cwd)
-    if not cmd or not root:
+    if not cmd:
         return
-    hit = judge_command(cmd, cwd, root)
-    if not hit:
+    SESSION_ROOT = repo_root(os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or cwd))
+    hit = judge_command(cmd, cwd)
+    root = hit and guarded_root(hit)
+    if not root:
         return
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
