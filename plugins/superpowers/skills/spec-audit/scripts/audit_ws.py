@@ -253,6 +253,30 @@ def snapshot_targets(R: Path, tree: Path, docs: list[tuple[Path, str]]) -> list[
 
 # ---- 명령(4.7) ----
 
+_ROOT_MARKERS = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+_TICK_RE = re.compile(r"`([^`]+)`")
+
+
+def collect_canon(doc: Path, tree: Path, exclude: set[Path]) -> list[Path]:
+    """4.7 C1 정본 자동 수집. 정본/canonical 줄의 백틱 .md 토큰을 4.4.2 후보 ①②③에서 찾는다."""
+    d = doc.resolve().parent
+    root = next((c for c in (d, *d.parents) if any((c / m).exists() for m in _ROOT_MARKERS)), None)
+    bases = [b for b in (tree, root, d) if b is not None]
+    found: dict[Path, None] = {}
+    for line in doc.read_text(errors="replace").splitlines():
+        if "정본" not in line and "canonical" not in line:
+            continue
+        for tok in _TICK_RE.findall(line):
+            tok = tok.split()[0] if tok.split() else ""
+            if not tok.endswith(".md"):
+                continue
+            p = Path(tok).expanduser()
+            for c in ([p] if p.is_absolute() else [b / p for b in bases]):
+                if c.is_file() and c.resolve() not in exclude:
+                    found[c.resolve()] = None
+    return list(found)
+
+
 def cmd_init_round1(a: argparse.Namespace) -> dict:
     if a.skill_version != skill_hash():
         die("스킬 버전 불일치: `/reload-plugins`(A2 불성립이면 세션 재시작) 필요")
@@ -272,7 +296,9 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
         shutil.rmtree(d, ignore_errors=True)
     ws.mkdir(parents=True)
     (ws.parent / ".gitignore").write_text("*\n")
-    docs = ([(plan, "plan")] if plan else []) + [(s, "spec") for s in specs]
+    exclude = {p for p in [plan, *specs] if p}
+    canon = sorted({c for p in exclude for c in collect_canon(p, tree, exclude)}, key=str)
+    docs = ([(plan, "plan")] if plan else []) + [(s, "spec") for s in specs] + [(c, "other") for c in canon]
     targets = snapshot_targets(ws / "round-1", tree, docs)
     ranges = {ax: axis_lines(targets, ax) for ax in AXES}
     if not any(t["role"] == "spec" and oracle_needed(Path(t["path"]).read_text()) for t in targets):

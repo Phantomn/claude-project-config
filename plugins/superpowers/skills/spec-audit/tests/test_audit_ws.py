@@ -399,5 +399,86 @@ class C1Test(Base):
                 audit_ws.parse_range(bad)
 
 
+class CanonTest(Base):
+    FILES = {"docs/canon/a.md": "# A\n", "docs/canon/b.md": "# B\n", "docs/canon/d.md": "# D\n",
+             "config.json": "{}\n", "D.md": "# D\n", "docs/specs/D.md": "# D2\n"}
+
+    def others(self, spec_text: str, extra: dict | None = None, plan: str | None = None) -> tuple[Path, list[dict]]:
+        files = {**self.FILES, "docs/specs/s.md": spec_text, **(extra or {})}
+        if plan is not None:
+            files["docs/plans/p.md"] = plan
+        d = self.repo(files)
+        args = ["--spec", str(d / "docs/specs/s.md")]
+        if plan is not None:
+            args += ["--plan", str(d / "docs/plans/p.md")]
+        rc, out, err = self.c1(*args)
+        self.assertEqual(rc, 0, err)
+        tj = json.loads((self.ws / "round-1/targets.json").read_text())
+        return d, tj["targets"]
+
+    def other_rels(self, targets: list[dict]) -> set[str]:
+        return {t["rel"] for t in targets if t["role"] == "other"}
+
+    def test_T23_cases(self):
+        cases = [("상위 정본: `docs/canon/a.md`", {"docs/canon/a.md"}),
+                 ("정본: `config.json`", set()),
+                 ("정본: `docs/canon/none.md`", set()),
+                 ("XML 정본 = `docs/canon/b.md §A`", {"docs/canon/b.md"}),
+                 ("canonical: `docs/canon/d.md`", {"docs/canon/d.md"}),
+                 ("정본 = `D.md`", {"D.md", "docs/specs/D.md"})]
+        for line, want in cases:
+            with self.subTest(line=line):
+                _, t = self.others(f"# S\n{line}\n")
+                self.assertEqual(self.other_rels(t), want)
+
+    def test_T23_home(self):
+        ext = Path(os.environ["HOME"]) / "ext" / "c.md"
+        ext.parent.mkdir()
+        ext.write_text("# C\n")
+        _, t = self.others("# S\n정본: `~/ext/c.md`\n")
+        self.assertEqual(self.other_rels(t), {str(ext.resolve())})
+
+    def test_T21_outside(self):
+        d = self.repo({"docs/specs/s.md": "# S\n정본: `../ext/c.md`\n"})
+        ext = d.parent / "ext" / "c.md"
+        ext.parent.mkdir(exist_ok=True)
+        ext.write_text("# C\n")
+        rc, out, err = self.c1("--spec", str(d / "docs/specs/s.md"))
+        self.assertEqual(rc, 0, err)
+        tj = json.loads((self.ws / "round-1/targets.json").read_text())
+        o = [t for t in tj["targets"] if t["role"] == "other"]
+        self.assertEqual([t["rel"] for t in o], [str(ext.resolve())])
+        self.assertTrue((self.ws / "round-1/snapshot" / o[0]["snapshot"]).is_file())
+
+    def test_T01_canon(self):
+        d = self.repo({**self.FILES, "docs/specs/s.md": "# S\nx\n"})
+        spec = d / "docs/specs/s.md"
+        rc, out, err = self.c1("--spec", str(spec))
+        self.assertEqual(rc, 0, err)
+        before = out["ws"]
+        spec.write_text("# S\nx\n정본: `docs/canon/a.md`\n")
+        rc, out, err = self.c1("--spec", str(spec))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out["ws"], before)
+        tj = json.loads((self.ws / "round-1/targets.json").read_text())
+        self.assertEqual(self.other_rels(tj["targets"]), {"docs/canon/a.md"})
+
+    def test_T23_target_excluded(self):
+        _, t = self.others("# S\n정본: `docs/plans/p.md`\n", plan="# P\n")
+        self.assertEqual(len(t), 2)
+        self.assertEqual(self.other_rels(t), set())
+
+    def test_T23_shared_canon(self):
+        line = "# S\n정본: `docs/canon/a.md`\n"
+        _, t = self.others(line, plan=line.replace("S", "P"))
+        self.assertEqual(len([x for x in t if x["role"] == "other"]), 1)
+
+    def test_T07_c1_other_present(self):
+        # C1Test.test_T07_c1 후반이 other 대상을 실제로 갖는지 고정
+        _, t = self.others("# S\n상위 정본: `docs/canon/a.md`\n",
+                           {"docs/canon/a.md": "# C\n## Reference Oracle\n\n원본 legacy/p.c v1 전체\n"})
+        self.assertEqual(self.other_rels(t), {"docs/canon/a.md"})
+
+
 if __name__ == "__main__":
     unittest.main()
