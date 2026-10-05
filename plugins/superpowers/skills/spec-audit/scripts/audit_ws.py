@@ -325,10 +325,8 @@ def parse_report(text: str) -> dict[str, list[str]]:
             for m in _FENCE_RE.finditer(text) if m.group(1) in BLOCKS}
 
 
-def to_range(s: object, ctx: dict) -> Range:
+def to_range(s: str, ctx: dict) -> Range:
     """범위 문자열 → (i, a, b). 라운드 ≠ N·모르는 스냅샷·줄 초과면 ValueError."""
-    if not isinstance(s, str):
-        raise ValueError(f"범위가 문자열이 아님: {s!r}")
     n, snap, a, b = parse_range(s)
     if n != ctx["n"]:
         raise ValueError(f"라운드가 {ctx['n']}이 아님: {s!r}")
@@ -340,14 +338,24 @@ def to_range(s: object, ctx: dict) -> Range:
     raise ValueError(f"모르는 스냅샷: {s!r}")
 
 
+def _typed(k: str, v: object) -> bool:
+    """4.5.1 키별 타입: affected = 문자열 배열, unverified_reason·check = null 또는 문자열, 나머지 = 문자열."""
+    if k == "affected":
+        return isinstance(v, list) and all(isinstance(r, str) for r in v)
+    return isinstance(v, str) or (v is None and k in ("unverified_reason", "check"))
+
+
 def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     if not isinstance(f, dict):
         return ["finding이 객체가 아님"]
     miss = [k for k in KEYS if k not in f]
     if miss:
         return [f"키 누락 {miss}"]
+    wrong = [k for k in KEYS if not _typed(k, f[k])]
+    if wrong:  # 타입이 틀리면 어휘·형식 검사를 하지 않는다(보고 = 신뢰 경계 입력)
+        return [f"{k} 타입 오류: {f[k]!r}" for k in wrong]
     bad = []
-    if not (isinstance(f["id"], str) and re.fullmatch(re.escape(name) + r"-\d{3}", f["id"])):
+    if not re.fullmatch(re.escape(name) + r"-\d{3}", f["id"]):
         bad.append(f"id {f['id']!r}")
     if f["verdict"] not in ("fail", "unverified"):
         bad.append(f"verdict {f['verdict']!r}")
@@ -358,26 +366,21 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     if f["fix_class"] not in ("align", "requirement"):
         bad.append(f"fix_class {f['fix_class']!r}")
     for k in ("claim", "evidence", "recommended"):
-        if not (isinstance(f[k], str) and f[k]):
+        if not f[k]:
             bad.append(f"{k} 빈 값")
     want = REASONS if f["verdict"] == "unverified" else {None}
     if f["unverified_reason"] not in want:
         bad.append(f"verdict {f['verdict']!r}에 unverified_reason {f['unverified_reason']!r}")
-    if f["check"] is not None and not isinstance(f["check"], str):
-        bad.append("check가 null도 문자열도 아님")
     try:
         if not overlaps([to_range(f["target"], ctx)], ctx["axis_lines"][axis]):
             bad.append(f"target {f['target']!r}이 {axis} 축의 대상 줄과 겹치지 않음")
     except ValueError as e:
         bad.append(f"target: {e}")
-    if not isinstance(f["affected"], list):
-        bad.append("affected가 배열이 아님")
-    else:
-        for r in f["affected"]:
-            try:
-                to_range(r, ctx)
-            except ValueError as e:
-                bad.append(f"affected: {e}")
+    for r in f["affected"]:
+        try:
+            to_range(r, ctx)
+        except ValueError as e:
+            bad.append(f"affected: {e}")
     return [f"{f.get('id')}: {b}" for b in bad]
 
 
@@ -393,6 +396,8 @@ def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]
             continue
         bad += validate_finding(f, name, item["axis"], ctx)
         fid = f.get("id") if isinstance(f, dict) else None
+        if not isinstance(fid, str):
+            continue
         if fid in ids:
             bad.append(f"id 중복 {fid!r}")
         ids.add(fid)
@@ -451,8 +456,14 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
     for orig in (a for a in agents if not a["name"].endswith("-retry")):
         item = by_name.get(orig["name"] + "-retry", orig)
         p = R / "reports" / f"{item['name']}.md"
-        blocks = parse_report(p.read_text()) if p.is_file() else None
-        bad = validate_report(item["name"], blocks, item, ctx) if blocks is not None else ["보고 파일 없음"]
+        if not p.is_file():
+            bad = ["보고 파일 없음"]
+        else:
+            try:
+                blocks = parse_report(p.read_text(encoding="utf-8"))
+                bad = validate_report(item["name"], blocks, item, ctx)
+            except (OSError, UnicodeDecodeError) as e:
+                bad = [f"보고 읽기 실패: {e}"]
         if bad:
             retry = None if item is not orig else make_retry(ws, n, orig, targets)
             invalid.append({"reason": f"{item['name']}: " + "; ".join(bad), "retry": retry})

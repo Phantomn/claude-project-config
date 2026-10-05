@@ -506,8 +506,9 @@ class C3Test(Base):
         self.assertEqual((rc, out), (0, {}), err)
         return json.loads((self.ws / "round-1/aggregate.json").read_text())
 
-    def raw(self, name: str, text: str) -> None:
-        (self.ws / "round-1/reports" / f"{name}.md").write_text(text)
+    def raw(self, name: str, text: str | bytes) -> None:
+        p = self.ws / "round-1/reports" / f"{name}.md"
+        p.write_bytes(text if isinstance(text, bytes) else text.encode())
 
     def test_T13(self):
         self.start()
@@ -547,13 +548,18 @@ class C3Test(Base):
             ("target 라운드 round-2", R1, [f(R1, 1, target="round-2/snapshot/1-s.md:1")], None),
             ("affected 라운드 round-2", R1, [f(R1, 1, affected=["round-2/snapshot/1-s.md:1"])], None),
             ("보고 파일 없음", R1, None, None),
+            ("class [\"x\"]", R1, [f(R1, 1, **{"class": ["x"]})], None),
+            ("unverified_reason {}", R1, [f(R1, 1, unverified_reason={})], None),
+            ("id [\"a\"]", R1, [f(R1, 1, id=["a"])], None),
+            ("비 UTF-8 보고", R1, None, b"\xff\xfe```findings\n```\n"),
         ]
 
     def test_T10(self):
         d = self.repo(self.FILES)
         self.start(d=d)
         keys = ["evidence", "'warn'", "'typo'", "'minor'", "None", "'tool'", "id 'refs-r1-s1-1'", "중복", "axis",
-                "claim", "coverage 블록", "findings 블록", "겹치지", "target: 라운드", "affected: 라운드", "보고 파일 없음"]
+                "claim", "coverage 블록", "findings 블록", "겹치지", "target: 라운드", "affected: 라운드", "보고 파일 없음",
+                "class", "unverified_reason", "id", "보고 읽기 실패"]
         for (label, victim, findings, raw), key in zip(self.cases(), keys, strict=True):
             with self.subTest(label):
                 self.start(d=d)
@@ -588,6 +594,19 @@ class C3Test(Base):
         self.assertEqual(rc, 3)
         self.assertEqual(len(out["invalid"]), 1)
         self.assertIsNone(out["invalid"][0]["retry"])
+
+    def test_T11_retry_report_missing(self):
+        self.start()
+        self.write_all({R1: [self.finding(R1, 1, verdict="warn")]})
+        rc, out, _ = self.agg()
+        self.assertEqual(rc, 3)
+        rc, out, err = self.agg()
+        self.assertEqual(rc, 3, err)
+        self.assertEqual(len(out["invalid"]), 1)
+        self.assertIsNone(out["invalid"][0]["retry"])
+        self.assertIn("보고 파일 없음", out["invalid"][0]["reason"])
+        agents = json.loads((self.ws / "round-1/assign.json").read_text())["agents"]
+        self.assertEqual([a["name"] for a in agents].count(R1 + "-retry"), 1)
 
     def test_T12(self):
         self.start()
