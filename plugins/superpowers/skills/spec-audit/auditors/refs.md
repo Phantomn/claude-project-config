@@ -15,7 +15,7 @@
 
 | 종류 | 수단(사용 가능한 첫 것) |
 |---|---|
-| 코드 심볼 | serena `find_symbol` 또는 codegraph `codegraph_explore`(ToolSearch, 프로젝트에 붙어 있을 때) → `git grep -n -w` → Read |
+| 코드 심볼 | serena `find_symbol` 또는 codegraph `codegraph_explore`(세션에 그 MCP 서버가 붙어 있을 때) → `git grep -n -w` → Read |
 | 파일 경로 | `git ls-files` / `ls` + PLAN Create 합집합 |
 | 문서 링크 `[[Note]]`, `[x](a.md#sec)` | 파일 존재 + 앵커 제목 존재(Read) |
 | 설정 키 | JSON: `jq` / YAML·TOML: Read |
