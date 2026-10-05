@@ -29,6 +29,8 @@ class Base(unittest.TestCase):
         env = {
             "HOME": str(self.tmp / "home"),
             "SUPERPOWERS_AUDIT_TMPROOT": str(self.tmp / "tmproot"),
+            "SUPERPOWERS_AUDIT_STATE": str(self.tmp / "state"),
+            "CLAUDE_CODE_SESSION_ID": "sess-test",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
@@ -116,6 +118,95 @@ class Base(unittest.TestCase):
         rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
         self.assertEqual(rc, 0, err)
         return ws
+
+
+class OpenStateTest(Base):
+    FILES = {"plans/p.md": "# p\n`a.txt`\n", "a.txt": "x\n"}
+
+    def open_json(self, ws: Path) -> Path:
+        return audit_ws.open_path(ws)
+
+    def start(self) -> Path:
+        d = self.repo(self.FILES)
+        rc, out, err = self.c1("--plan", str(d / "plans/p.md"))
+        self.assertEqual(rc, 0, err)
+        self.d = d
+        return Path(out["ws"])
+
+    def test_c1_writes_open(self):
+        ws = self.start()
+        o = json.loads(self.open_json(ws).read_text())
+        self.assertEqual((o["round"], o["session"], o["ws"]), (1, "sess-test", str(ws)))
+        self.assertEqual(o["tree"], str(self.d.resolve()))
+        self.assertIn(str((self.d / "plans/p.md").resolve()), o["targets"])
+        self.assertTrue(all(Path(t).is_absolute() for t in o["targets"]))
+
+    def test_session_null_without_env(self):
+        os.environ.pop("CLAUDE_CODE_SESSION_ID")
+        ws = self.start()
+        self.assertIsNone(json.loads(self.open_json(ws).read_text())["session"])
+
+    def test_c3_exit0_removes_open(self):
+        ws = self.round1_done(self.FILES)
+        self.assertFalse(self.open_json(ws).exists())
+
+    def test_c3_target_modified_removes_open(self):
+        ws = self.start()
+        (self.d / "plans/p.md").write_text("changed\n")
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("target_modified", out)
+        self.assertFalse(self.open_json(ws).exists())
+
+    def test_c3_invalid_keeps_open(self):
+        ws = self.start()
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("invalid", out)
+        self.assertTrue(self.open_json(ws).exists())
+
+    def test_c2_writes_open_round2(self):
+        ws = self.round1_done(self.FILES)
+        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(self.open_json(ws).read_text())["round"], 2)
+
+    def test_clean_while_open_aborts(self):
+        ws = self.start()
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        self.assertTrue((ws / audit_ws.ABORTED).exists())
+        self.assertFalse((audit_ws.tmproot() / "spec-audit" / ws.name).exists())
+
+    def test_clean_after_close_no_abort(self):
+        ws = self.round1_done(self.FILES)
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        self.assertFalse((ws / audit_ws.ABORTED).exists())
+
+    def aborted_round2(self) -> Path:
+        ws = self.round1_done(self.FILES)
+        self.assertEqual(self.cli("init", "--round", "2", "--ws", str(ws))[0], 0)
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        return ws
+
+    def test_c2_after_abort_fails(self):
+        ws = self.aborted_round2()
+        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("감사 중단됨", err)
+
+    def test_c3_after_abort_fails(self):
+        ws = self.start()
+        self.cli("clean", "--ws", str(ws))
+        rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("감사 중단됨", err)
+
+    def test_c1_clears_abort(self):
+        ws = self.start()
+        self.cli("clean", "--ws", str(ws))
+        rc, _, err = self.c1("--plan", str(self.d / "plans/p.md"))
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((ws / audit_ws.ABORTED).exists())
 
 
 def expand(rs):
