@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -83,6 +84,31 @@ def range_len(rs: list[Range]) -> int:
 
 def overlaps(a: list[Range], b: list[Range]) -> bool:
     return any(i == j and x <= v and u <= y for i, x, y in a for j, u, v in b)
+
+
+def _opcodes(old: list[bytes], new: list[bytes]) -> list:
+    return difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+
+
+def changed_lines(old: list[bytes], new: list[bytes]) -> set[int]:
+    """새 쪽에서 바뀐 줄(1부터). 삭제만이면 새 쪽 삭제 지점 앞뒤 1줄, [1, len(new)]로 잘림."""
+    out: set[int] = set()
+    for tag, _, _, j1, j2 in _opcodes(old, new):
+        if tag in ("replace", "insert"):
+            out.update(range(j1 + 1, j2 + 1))
+        elif tag == "delete":
+            out.update(k for k in (j1, j1 + 1) if 1 <= k <= len(new))
+    return out
+
+
+def move_range(old: list[bytes], new: list[bytes], a: int, b: int) -> tuple[int, int]:
+    """직전 줄 a–b를 새 쪽으로 옮긴 범위. equal 줄 = 대응 줄, replace/delete 줄 = 새 쪽 j1+1(끝 넘으면 마지막 줄)."""
+    last = max(len(new), 1)
+    moved = []
+    for tag, i1, i2, j1, _ in _opcodes(old, new):
+        for k in range(max(a, i1 + 1), min(b, i2) + 1):
+            moved.append(j1 + k - i1 if tag == "equal" else min(j1 + 1, last))
+    return (min(moved), max(moved)) if moved else (min(a, last), min(a, last))
 
 
 # ---- 위치(4.2) ----
@@ -306,6 +332,58 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     return build_round(ws, 1, targets, ranges, {})
 
 
+def _lines(p: Path) -> list[bytes]:
+    return p.read_bytes().splitlines(keepends=True)
+
+
+def cmd_init_next(ws: Path, n: int) -> dict:
+    """C2: 직전 라운드 대상(L18: 정본 재수집 없음)으로 스냅샷·diff.patch·scope.json(C7)·recheck(4.6)·배정."""
+    P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
+    for f in ("targets.json", "aggregate.json"):
+        if not (P / f).is_file():
+            die(f"직전 라운드 {f} 없음: {P / f}")
+    prev = json.loads((P / "targets.json").read_text())
+    for t in prev["targets"]:
+        if not (P / "snapshot" / t["snapshot"]).is_file():
+            die(f"직전 스냅샷 없음: {t['snapshot']}")
+        if not Path(t["path"]).is_file():
+            die(f"대상 파일 없음: {t['rel']}")
+    agg = json.loads((P / "aggregate.json").read_text())
+    for d in (R, tmproot() / "spec-audit" / ws.name / f"r{n}"):
+        shutil.rmtree(d, ignore_errors=True)
+    targets = snapshot_targets(R, Path(prev["tree"]), [(Path(t["path"]), t["role"]) for t in prev["targets"]])
+    old = [_lines(P / "snapshot" / t["snapshot"]) for t in prev["targets"]]
+    new = [_lines(R / "snapshot" / t["snapshot"]) for t in targets]
+    (R / "diff.patch").write_bytes(b"".join(
+        b"".join(difflib.diff_bytes(difflib.unified_diff, o, w, t["rel"].encode(), t["rel"].encode()))
+        for o, w, t in zip(old, new, targets)))
+    prev_ctx = {"n": n - 1, "targets": prev["targets"]}
+
+    def moved(s: str) -> Range:
+        i, a, b = to_range(s, prev_ctx)
+        return (i, *move_range(old[i - 1], new[i - 1], a, b))
+
+    changed = {(i, k) for i in range(1, len(targets) + 1) for k in changed_lines(old[i - 1], new[i - 1])}
+    prior = [f for f in agg["findings"] if f["unverified_reason"] != "context"]
+    ranges: dict[str, list[Range]] = {}
+    for ax in AXES:
+        extra = [moved(f["target"]) for f in prior if f["axis"] == ax]
+        extra += [moved(s) for s in agg["review_gap"].get(ax, [])]
+        ranges[ax] = runs((changed | lines_of(extra)) & lines_of(axis_lines(targets, ax)))
+    if not any(t["role"] == "spec" and oracle_needed((R / "snapshot" / t["snapshot"]).read_text(errors="replace"))
+               for t in targets):
+        ranges["oracle"] = []
+    recheck: dict[str, list[str]] = {}
+    for f in prior:
+        loc = [moved(f["target"])]
+        k = next((k for k, sh in enumerate(shard(ranges[f["axis"]]), 1) if overlaps(loc, sh)), None)
+        if k:
+            recheck.setdefault(f"{f['axis']}-r{n}-s{k}", []).append(f["id"])
+    scope = {ax: [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in rs] for ax, rs in ranges.items()}
+    (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1))
+    return build_round(ws, n, targets, ranges, recheck)
+
+
 # ---- C3 aggregate(4.5·4.7) ----
 
 CLASSES = {"ref-missing", "ref-mismatch", "exec-fail", "oracle-deviation", "cross-doc-conflict", "sync-miss",
@@ -372,8 +450,11 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     if f["unverified_reason"] not in want:
         bad.append(f"verdict {f['verdict']!r}에 unverified_reason {f['unverified_reason']!r}")
     try:
-        if not overlaps([to_range(f["target"], ctx)], ctx["axis_lines"][axis]):
+        t = [to_range(f["target"], ctx)]
+        if not overlaps(t, ctx["axis_lines"][axis]):
             bad.append(f"target {f['target']!r}이 {axis} 축의 대상 줄과 겹치지 않음")
+        elif ctx["n"] >= 2 and axis != "refs" and not overlaps(t, ctx["own"]):
+            bad.append(f"target {f['target']!r}이 배정 범위와 겹치지 않음")
     except ValueError as e:
         bad.append(f"target: {e}")
     for r in f["affected"]:
@@ -387,6 +468,7 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
 def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]:
     """위반 사유 목록(빈 목록 = 유효). ctx = {"n", "targets", "axis_lines": {axis: [Range]}}."""
     bad = [f"{b} 블록 없음" for b in ("findings", "coverage") if b not in blocks]
+    ctx = {**ctx, "own": [to_range(r, ctx) for r in item["ranges"]]}
     ids = set()
     for line in blocks.get("findings", []):
         try:
@@ -406,6 +488,23 @@ def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]
             to_range(line, ctx)
         except ValueError as e:
             bad.append(f"coverage: {e}")
+    # 4.5.3 resolved = 배정 recheck id 전부와 그것만
+    want = set(item["recheck"])
+    if want and "resolved" not in blocks:
+        bad.append("resolved 블록 없음")
+    seen = set()
+    for line in blocks.get("resolved", []):
+        m = re.fullmatch(r"(\S+): (?:resolved|unresolved (\S+))", line.strip())
+        if not m:
+            bad.append(f"resolved 형식 위반: {line[:80]!r}")
+            continue
+        if m.group(1) not in want:
+            bad.append(f"resolved 비배정 id {m.group(1)!r}")
+        if m.group(2) is not None and m.group(2) not in ids:
+            bad.append(f"resolved {m.group(1)}: 가리킨 finding {m.group(2)!r}이 이 보고에 없음")
+        seen.add(m.group(1))
+    if want - seen and "resolved" in blocks:
+        bad.append(f"resolved 배정 id 누락 {sorted(want - seen)}")
     return bad
 
 
@@ -413,15 +512,19 @@ def lines_of(rs: list[Range]) -> set[tuple[int, int]]:
     return {(i, k) for i, a, b in rs for k in range(a, b + 1)}
 
 
-def fmt_lines(lines: set[tuple[int, int]], n: int, targets: list[dict]) -> list[str]:
-    """줄 집합 → 연속 구간 범위 문자열(targets 순서)."""
+def runs(lines: set[tuple[int, int]]) -> list[Range]:
+    """줄 집합 → 연속 구간(targets 순서)."""
     out: list[list[int]] = []
     for i, k in sorted(lines):
         if out and out[-1][0] == i and out[-1][2] == k - 1:
             out[-1][2] = k
         else:
             out.append([i, k, k])
-    return [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in out]
+    return [(i, a, b) for i, a, b in out]
+
+
+def fmt_lines(lines: set[tuple[int, int]], n: int, targets: list[dict]) -> list[str]:
+    return [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in runs(lines)]
 
 
 def make_retry(ws: Path, n: int, item: dict, targets: list[dict]) -> dict:
@@ -571,9 +674,14 @@ def main(argv: list[str] | None = None) -> int:
         rc, out = cmd_aggregate(Path(a.ws).resolve(), a.round)
         print(json.dumps(out, ensure_ascii=False))
         return rc
-    if a.round != 1:
-        die("init --round N(N≥2)은 아직 구현되지 않음")
-    out = cmd_init_round1(a)
+    if a.round >= 2:
+        if not a.ws:
+            die("init --round N(N≥2)은 --ws 가 필요")
+        out = cmd_init_next(Path(a.ws).resolve(), a.round)
+    elif a.round == 1:
+        out = cmd_init_round1(a)
+    else:
+        die("--round 는 1 이상")
     print(json.dumps(out, ensure_ascii=False))
     return 0
 

@@ -758,5 +758,268 @@ class C4Test(Base):
         self.assertEqual((rc, out["action"]), (0, "pass"), err)
 
 
+def lines(n: int) -> list[str]:
+    return [f"s{k}\n" for k in range(1, n + 1)]
+
+
+SP = "docs/specs/s.md"
+CANON_FILES = {SP: "상위 정본: `docs/canon/c.md`\n" + "".join(lines(40)[1:]),
+               "docs/canon/c.md": "".join(f"c{k}\n" for k in range(1, 11))}
+RR, SC2 = "refs-r2-s1", "selfcontained-r2-s1"
+F1 = "refs-r1-s1-001"
+
+
+def r(n: int, a: int, b: int | None = None, snap: str = "1-s.md") -> str:
+    return audit_ws.fmt_range(n, snap, a, b or a)
+
+
+class C2Test(Base):
+    def setup1(self, files: dict[str, str], findings: dict | None = None) -> Path:
+        ws = self.round1_done(files, findings)
+        self.targets = json.loads((ws / "round-1/targets.json").read_text())["targets"]
+        return ws
+
+    def write(self, L: list[str], k: int = 0) -> None:
+        Path(self.targets[k]["path"]).write_text("".join(L))
+
+    def c2(self, ws: Path, n: int = 2) -> tuple[int, dict | None, str]:
+        return self.cli("init", "--ws", str(ws), "--round", str(n))
+
+    def ok2(self, ws: Path) -> dict:
+        rc, out, err = self.c2(ws)
+        self.assertEqual(rc, 0, err)
+        return out
+
+    def scope(self, ws: Path) -> dict:
+        return json.loads((ws / "round-2/scope.json").read_text())["ranges"]
+
+    def axis_ranges(self, out: dict) -> dict:
+        res: dict[str, list] = {}
+        for a in out["agents"]:
+            res.setdefault(a["axis"], []).extend(a["ranges"])
+        return res
+
+    def write2(self, ws: Path, out: dict, findings: dict | None = None, resolved: dict | None = None) -> None:
+        for a in out["agents"]:
+            default = [f"{i}: resolved" for i in a["recheck"]] if a["recheck"] else None
+            res = (resolved or {}).get(a["name"], default)
+            self.report(ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"], res)
+
+    def agg2(self, ws: Path) -> tuple[int, dict | None, str]:
+        return self.cli("aggregate", "--ws", str(ws), "--round", "2")
+
+    def set_agg(self, ws: Path, **over) -> None:
+        p = ws / "round-1/aggregate.json"
+        p.write_text(json.dumps({**json.loads(p.read_text()), **over}))
+
+    def test_T09_changed(self):
+        ws = self.setup1({SP: "".join(lines(10))})
+        L = lines(10)
+        L[3] = "X4\n"
+        self.write(L)
+        out = self.ok2(ws)
+        sc = self.scope(ws)
+        for ax in ("refs", "selfcontained", "rootcause"):
+            self.assertEqual(sc[ax], [r(2, 4)], ax)
+        self.assertEqual(sc["oracle"], [])
+        self.assertEqual(self.axis_ranges(out), {ax: [r(2, 4)] for ax in ("refs", "selfcontained", "rootcause")})
+        patch = (ws / "round-2/diff.patch").read_bytes()
+        for part in (b"-s4\n", b"+X4\n", SP.encode()):
+            self.assertIn(part, patch)
+
+    def test_T09_delete_only(self):
+        old = [f"{k}\n".encode() for k in range(1, 11)]
+        self.assertEqual(audit_ws.changed_lines(old, old[:4] + old[5:]), {4, 5})
+        self.assertEqual(audit_ws.changed_lines(old, old[1:]), {1})
+        self.assertEqual(audit_ws.changed_lines(old, old[:-1]), {9})
+
+    def test_T09_move(self):
+        ws = self.setup1({SP: "".join(lines(10))}, {R1: [self.finding(R1, 1, target=r(1, 7))]})
+        L = lines(10)
+        L[1:1] = ["n1\n", "n2\n", "n3\n"]
+        self.write(L)
+        self.ok2(ws)
+        sc = self.scope(ws)
+        self.assertEqual(sc["refs"], [r(2, 2, 4), r(2, 10)])
+        self.assertEqual(sc["selfcontained"], [r(2, 2, 4)])
+        enc = lambda xs: [x.encode() for x in xs]
+        self.assertEqual(audit_ws.move_range(enc(lines(10)), enc(L), 7, 7), (10, 10))
+        self.assertEqual(audit_ws.move_range(enc(lines(10)), enc(L), 1, 3), (1, 6))
+
+    def test_T09_gap(self):
+        ws = self.setup1({SP: "".join(lines(40))})
+        self.set_agg(ws, review_gap={"refs": [r(1, 20, 25)]})
+        out = self.ok2(ws)
+        sc = self.scope(ws)
+        self.assertEqual((sc["refs"], sc["selfcontained"], sc["rootcause"]), ([r(2, 20, 25)], [], []))
+        self.assertEqual({a["axis"] for a in out["agents"]}, {"refs"})
+
+    def three(self, n: int = 3000) -> list[str]:
+        L = lines(n)
+        for k in (100, 200, 300):
+            L[k - 1] = f"X{k}\n"
+        return L
+
+    def test_T05_basic(self):
+        ws = self.setup1({SP: "".join(lines(3000))})
+        self.write(self.three())
+        out = self.ok2(ws)
+        want = [r(2, 100), r(2, 200), r(2, 300)]
+        for ax in ("refs", "selfcontained", "rootcause"):
+            got = [a for a in out["agents"] if a["axis"] == ax]
+            self.assertEqual([a["ranges"] for a in got], [want], ax)
+        self.assertFalse([a for a in out["agents"] if a["axis"] == "oracle"])
+
+    def test_T05_recheck(self):
+        ws = self.setup1({SP: "".join(lines(3000))}, {R1: [self.finding(R1, 1, target=r(1, 50))]})
+        self.write(self.three())
+        out = self.ok2(ws)
+        ar = self.axis_ranges(out)
+        self.assertEqual(ar["refs"], [r(2, 50), r(2, 100), r(2, 200), r(2, 300)])
+        self.assertNotIn(r(2, 50), ar["selfcontained"] + ar["rootcause"])
+        owners = [a["name"] for a in out["agents"] if F1 in a["recheck"]]
+        self.assertEqual(owners, [RR])
+        self.assertEqual(json.loads((ws / "round-2/assign.json").read_text()), {"agents": out["agents"]})
+
+    def test_T05_other_only(self):
+        ws = self.setup1(CANON_FILES)
+        self.write([f"c{k}\n" if k != 2 else "X\n" for k in range(1, 11)], k=1)
+        out = self.ok2(ws)
+        self.assertEqual(self.axis_ranges(out), {"refs": [r(2, 2, snap="2-c.md")]})
+
+    def test_T05_boundary(self):
+        ws = self.setup1({SP: "".join(lines(3000))}, {S1: [self.finding(S1, 1, target=r(1, 1499, 1502))]})
+        self.write([x if 1499 <= k <= 1502 else f"X{k}\n" for k, x in enumerate(lines(3000), 1)])
+        out = self.ok2(ws)
+        sc = [a for a in out["agents"] if a["axis"] == "selfcontained"]
+        self.assertEqual([a["name"] for a in sc], ["selfcontained-r2-s1", "selfcontained-r2-s2"])
+        self.assertEqual([a["recheck"] for a in sc], [["selfcontained-r1-s1-001"], []])
+
+    def test_T05_context(self):
+        ctx = self.finding(S1, 1, verdict="unverified", unverified_reason="context", target=r(1, 10, 20))
+        ws = self.setup1({SP: "".join(lines(40))}, {S1: [ctx]})
+        out = self.ok2(ws)
+        self.assertFalse([a for a in out["agents"] if ctx["id"] in a["recheck"]])
+        self.assertEqual(self.scope(ws)["selfcontained"], [r(2, 10, 20)])
+        self.set_agg(ws, review_gap={})
+        out = self.ok2(ws)
+        self.assertEqual(self.scope(ws)["selfcontained"], [])
+        self.assertEqual(out["agents"], [])
+
+    def test_T05_oracle(self):
+        ws = self.setup1({SP: "".join(lines(40))})
+        L = lines(40)
+        for k in (5, 6, 7):
+            L[k - 1] = "X\n"
+        self.write(L)
+        out = self.ok2(ws)
+        self.assertFalse([a for a in out["agents"] if a["axis"] == "oracle"])
+        ws = self.setup1({SP: "# S\n" + "".join(lines(40))})
+        self.write(["# S\n", *lines(40), "## Reference Oracle\n", "\n", "원본 legacy/p.c v1 전체\n"])
+        out = self.ok2(ws)
+        orc = [a for a in out["agents"] if a["axis"] == "oracle"]
+        self.assertEqual([(a["name"], a["ranges"]) for a in orc], [("oracle-r2-s1", [r(2, 42, 44)])])
+
+    def r2_basic(self) -> tuple[Path, dict]:
+        """40줄 spec, 라운드 1 refs finding F1(:1), 4번째 줄 수정 후 C2."""
+        ws = self.setup1({SP: "".join(lines(40))}, {R1: [self.finding(R1, 1, target=r(1, 1))]})
+        L = lines(40)
+        L[3] = "X4\n"
+        self.write(L)
+        return ws, self.ok2(ws)
+
+    def test_T35_unresolved(self):
+        ws, out = self.r2_basic()
+        self.assertEqual({a["name"]: a["recheck"] for a in out["agents"]}[RR], [F1])
+        self.write2(ws, out, {RR: [self.finding(RR, 1)]}, {RR: [f"{F1}: unresolved {RR}-001"]})
+        rc, res, err = self.agg2(ws)
+        self.assertEqual((rc, res), (0, {}), err)
+        agg = json.loads((ws / "round-2/aggregate.json").read_text())
+        self.assertEqual(agg["unresolved"], [F1])
+        self.assertEqual(audit_ws.decide(agg, 2)["action"], "fix")
+
+    def test_T08_c2_new_head(self):
+        ws = self.setup1({SP: "# S\nx\n", "src/m.py": "v1\n"})
+        tree = Path(json.loads((ws / "round-1/targets.json").read_text())["tree"])
+        (tree / "src/m.py").write_text("v2\n")
+        git(tree, "commit", "-q", "-am", "m")
+        self.write(["# S\n", "y\n"])
+        out = self.ok2(ws)
+        r1 = json.loads((ws / "round-1/assign.json").read_text())["agents"]
+        for agents, want in ((r1, "v1\n"), (out["agents"], "v2\n")):
+            sc = [a for a in agents if a["axis"] == "selfcontained"]
+            self.assertTrue(sc)
+            for a in sc:
+                self.assertEqual((Path(a["exec_dir"]) / "head/src/m.py").read_text(), want)
+
+    def test_T26_c2(self):
+        P = self.repo({SP: "# S\nx\n"})
+        Q = self.repo({"q.txt": "Q1\n"})
+        rc, out, err = self.c1("--spec", str(P / SP), "--tree", str(Q))
+        self.assertEqual(rc, 0, err)
+        for a in out["agents"]:
+            self.report(self.ws, 1, a["name"], [], a["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws), "--round", "1")[0], 0)
+        (Q / "q.txt").write_text("Q2\n")
+        git(Q, "commit", "-q", "-am", "q")
+        (P / SP).write_text("# S\ny\n")
+        out = self.ok2(self.ws)
+        sc = [a for a in out["agents"] if a["axis"] == "selfcontained"]
+        self.assertTrue(sc)
+        self.assertEqual((Path(sc[0]["exec_dir"]) / "head/q.txt").read_text(), "Q2\n")
+
+    def test_T33_c2_missing_agg(self):
+        d = self.repo({SP: "# S\nx\n"})
+        rc, _, err = self.c1("--spec", str(d / SP))
+        self.assertEqual(rc, 0, err)
+        self.assertNotEqual(self.c2(self.ws)[0], 0)
+
+    def test_T33_c2_missing_other(self):
+        ws = self.setup1(CANON_FILES)
+        Path(self.targets[1]["path"]).unlink()
+        rc, _, err = self.c2(ws)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("docs/canon/c.md", err)
+
+    def test_T34_c2(self):
+        ws, out = self.r2_basic()
+        for a in out["agents"]:
+            text = Path(a["prompt"]).read_text()
+            for part in [*a["recheck"], str(ws / "round-2/scope.json"), str(ws / "round-1/aggregate.json"),
+                         str(ws / "round-2/diff.patch")]:
+                self.assertIn(part, text, a["name"])
+        self.assertIn(F1, Path({a["name"]: a for a in out["agents"]}[RR]["prompt"]).read_text())
+
+    def test_T10_n2(self):
+        cases = [("resolved 블록 없음", RR, {}, {RR: None}),
+                 ("비배정", RR, {}, {RR: [f"{F1}: resolved", "refs-r1-s1-009: resolved"]}),
+                 ("누락", RR, {}, {RR: []}),
+                 ("가리킨 finding", RR, {}, {RR: [f"{F1}: unresolved {RR}-009"]}),
+                 ("배정 범위", SC2, {SC2: [self.finding(SC2, 1, target=r(2, 10))]}, {})]
+        ws, _ = self.r2_basic()
+        for key, victim, findings, resolved in cases:
+            with self.subTest(key):
+                out = self.ok2(ws)
+                self.write2(ws, out, findings, resolved)
+                rc, res, err = self.agg2(ws)
+                self.assertEqual(rc, 3, err)
+                self.assertEqual(len(res["invalid"]), 1, res)
+                self.assertIn(victim, res["invalid"][0]["reason"])
+                self.assertIn(key, res["invalid"][0]["reason"])
+
+    def test_T25_n2(self):
+        ws, out = self.r2_basic()
+        self.write2(ws, out, {SC2: [self.finding(SC2, 1, target=r(2, 3, 5))],
+                              RR: [self.finding(RR, 1, target=r(2, 10))]})
+        rc, res, err = self.agg2(ws)
+        self.assertEqual((rc, res), (0, {}), err)
+
+    def test_rf_crlf_no_final_newline(self):
+        old = b"a\r\nb\r\nc".splitlines(keepends=True)
+        new = b"a\nb\r\nc".splitlines(keepends=True)
+        self.assertEqual(len(old), 3)
+        self.assertEqual(audit_ws.changed_lines(old, new), {1})
+
+
 if __name__ == "__main__":
     unittest.main()
