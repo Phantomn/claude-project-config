@@ -342,6 +342,7 @@ def _lines(p: Path) -> list[bytes]:
 
 def cmd_init_next(ws: Path, n: int) -> dict:
     """C2: 직전 라운드 대상(L18: 정본 재수집 없음)으로 스냅샷·diff.patch·scope.json(C7)·recheck(4.6)·배정."""
+    restore_snapshots(ws)
     P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
     for f in ("targets.json", "aggregate.json"):
         if not (P / f).is_file():
@@ -567,9 +568,19 @@ def check_text(code: int | None, out: str) -> str:
     return f"exit {'timeout' if code is None else code}\n{out}"
 
 
+def restore_snapshots(ws: Path) -> None:
+    """verify_check가 중단돼 남은 `round-*/snapshot.verifying`을 되돌린다. 짝 `snapshot`이 이미 있으면 추측하지 않고 중단."""
+    for hid in sorted(ws.glob("round-*/snapshot.verifying")):
+        snap = hid.with_name("snapshot")
+        if snap.exists():
+            die(f"snapshot 복구 불가: {snap}와 {hid}가 둘 다 있다 — 확인 후 수동 정리 필요")
+        hid.rename(snap)
+
+
 def verify_check(ws: Path, R: Path, targets: list[dict], tree: Path, f: dict) -> list[str]:
     """C3 ②: R/snapshot 사본과 빈 줄 사본(각 파일 앞에 그 줄 수만큼 빈 줄) 양쪽에서 exit 1이어야 한다.
     실행 동안 W의 스냅샷 디렉토리를 숨긴다 — 스냅샷 절대경로를 읽는 check가 두 사본을 우회해 통과하지 못하게."""
+    restore_snapshots(ws)
     shift = tmproot() / "spec-audit" / ws.name / "shift"
     shutil.rmtree(shift, ignore_errors=True)
     dirs = (shift / "copy", shift / "blank")
@@ -586,8 +597,14 @@ def verify_check(ws: Path, R: Path, targets: list[dict], tree: Path, f: dict) ->
             hidden.append(snap)
         codes = [run_check(f["check"], d, tree)[0] for d in dirs]
     finally:
+        errs = []
         for snap in hidden:
-            snap.with_name("snapshot.verifying").rename(snap)
+            try:
+                snap.with_name("snapshot.verifying").rename(snap)
+            except OSError as e:
+                errs.append(f"{snap}: {e}")
+        if errs:
+            raise RuntimeError("snapshot 복구 실패: " + "; ".join(errs))
     if codes == [1, 1]:
         return []
     return [f"{f['id']}: check 재현 실패(snapshot 사본 exit {codes[0]}, 빈 줄 사본 exit {codes[1]} — 둘 다 1이어야 함)"]
@@ -627,6 +644,7 @@ def make_retry(ws: Path, n: int, item: dict, targets: list[dict], violations: li
 
 
 def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
+    restore_snapshots(ws)
     R = ws / f"round-{n}"
     targets = json.loads((R / "targets.json").read_text(encoding="utf-8"))["targets"]
     # ① 대상 변경 탐지(4.5.5)
@@ -745,6 +763,7 @@ def cmd_decide(ws: Path, n: int) -> dict:
 
 def cmd_check(ws: Path) -> dict:
     """C9: 가장 큰 라운드의 checks를 K(현재 대상 파일 사본)에서 실행."""
+    restore_snapshots(ws)
     ns = [int(m.group(1)) for d in ws.glob("round-*") if (m := re.fullmatch(r"round-(\d+)", d.name))]
     R = ws / f"round-{max(ns, default=0)}"
     if not (R / "aggregate.json").is_file():

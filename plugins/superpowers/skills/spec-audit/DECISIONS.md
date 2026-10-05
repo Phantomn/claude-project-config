@@ -59,6 +59,7 @@
 | K | C9마다 지우고 새로 만든다 |
 | 빈 줄 사본(C3 ②) | `TMPROOT/spec-audit/<slug>/shift/` — check 검증마다 지우고 새로 만든다 |
 | check 재현 검증 격리(C3 ②) | `shift/copy/`(R/snapshot 사본)·`shift/blank/`(빈 줄 사본)에서만 실행하고, 실행 동안 W의 `round-*/snapshot`을 `snapshot.verifying`으로 옮겼다가 `finally`에서 되돌린다 — 스냅샷 절대경로를 읽는 check가 두 실행 모두 같은 원본을 읽어 통과하면 문서를 고친 뒤에도 C3 ③·C9가 영원히 실패한다(문자열 매칭은 우회 가능) |
+| 중단된 검증 복구 | verify_check가 죽어 `round-*/snapshot.verifying`이 남으면 aggregate·init C2·check C9·verify_check 시작 때 짝 `snapshot`이 없는 것을 되돌린다. 둘 다 있으면(check가 snapshot을 다시 만든 경우) 추측하지 않고 stderr에 디렉토리를 적고 중단한다. `finally` 복구는 한 디렉토리가 실패해도 나머지를 모두 시도한 뒤 오류를 올린다 |
 | retry 프롬프트 | 배정 블록에 직전 시도의 위반 사유를 `- 직전 시도 위반: <사유>` 줄로 넣는다(사유마다 한 줄) — 같은 위반의 반복으로 `report-invalid`가 나는 것을 줄인다 |
 | SKILL.md 내용 해시(C1) | `skill_hash()`: SKILL.md를 bytes로 읽어 `splitlines(keepends=True)`, `"스킬 버전: "`(UTF-8)로 시작하는 줄을 모두 뺀 나머지를 이어 붙인 bytes의 `sha256().hexdigest()[:12]`(줄끝·인코딩 정규화 없음) |
 | C3 retry | assign.json의 `<name>-retry` 항목이 그 범위의 감사자가 된다. retry 보고도 없으면 "보고 파일 없음"이고 retry는 null이다(retry는 한 번만 — C3 행의 "retry 보고가 있으면"을 글자대로 읽으면 같은 retry를 다시 만들어 S2·S3이 반복된다) |

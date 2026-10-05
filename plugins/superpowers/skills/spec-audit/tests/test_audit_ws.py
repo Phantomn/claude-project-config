@@ -6,6 +6,7 @@ import os
 import re
 import random
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1174,6 +1175,27 @@ class CheckTest(Base):
         self.assertEqual(sorted(x.name for x in (self.ws / "round-1").iterdir() if "snapshot" in x.name),
                          ["snapshot"])
         self.assertEqual([x.name for x in snap.iterdir()], ["1-s.md"])
+
+    def test_recover_stranded_verifying(self):
+        self.ok(self.r1())
+        snap = self.ws / "round-1/snapshot"
+        snap.rename(snap.with_name("snapshot.verifying"))
+        rc, out, err = self.c9()
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(snap.is_dir())
+        self.assertFalse(snap.with_name("snapshot.verifying").exists())
+
+    def test_both_snapshot_dirs_fail_with_path(self):
+        self.ok(self.r1())
+        snap = self.ws / "round-1/snapshot"
+        hid = snap.with_name("snapshot.verifying")
+        shutil.copytree(snap, hid)
+        rc, out, err = self.c9()
+        self.assertNotEqual(rc, 0)
+        self.assertIn(str(hid), err)
+        rc, out, err = self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn(str(hid), err)
 
     def test_run_check_timeout(self):
         self.assertIsNone(audit_ws.run_check("sleep 5", self.tmp, self.tmp, timeout=1)[0])
