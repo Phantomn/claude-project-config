@@ -1220,5 +1220,12 @@ class CheckTest(Base):
         self.assertNotEqual(self.c9()[0], 0)
 
 
+class SkillMdTest(Base):
+    def test_skill_md_hash(self) -> None:
+        text = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+        line = "스킬 버전: " + audit_ws.skill_hash()
+        self.assertEqual(text.splitlines().count(line), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
