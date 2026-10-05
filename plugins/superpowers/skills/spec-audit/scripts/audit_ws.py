@@ -542,7 +542,7 @@ def run_check(cmd: str, cwd: Path, tree: Path, timeout: float = 30) -> tuple[int
     """(exit code, stdout+stderr 마지막 2000자). 시간 초과 = (None, "timeout")."""
     try:
         p = subprocess.run(["bash", "-c", cmd], cwd=cwd, env={**os.environ, "TREE": str(tree)},
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, "timeout"
     return p.returncode, (p.stdout + p.stderr)[-2000:]

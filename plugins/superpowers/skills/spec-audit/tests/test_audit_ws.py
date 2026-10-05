@@ -1191,6 +1191,28 @@ class CheckTest(Base):
         self.assertEqual(rc, 0, err)
         self.assertEqual([f["id"] for f in out["failed"]], [FC])
 
+    def test_run_check_non_utf8(self):
+        code, out = audit_ws.run_check(r"printf '\xff\xfe'; exit 1", self.tmp, self.tmp)
+        self.assertEqual(code, 1)
+        self.assertIsInstance(out, str)
+
+    def test_c9_non_utf8(self):
+        self.ok(self.r1())
+        self.set_check(r"printf '\xff\xfe'; exit 1")
+        rc, out, err = self.c9()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([f["id"] for f in out["failed"]], [FC])
+
+    def test_check_readded_recheck_r3(self):
+        self.ok(self.r1())
+        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n")))
+        self.assertIn(FC, [f["id"] for f in self.agg(2)["findings"]])
+        rc, out, err = self.cli("init", "--ws", str(self.ws), "--round", "3")
+        self.assertEqual(rc, 0, err)
+        owners = [a["name"] for a in out["agents"] if FC in a["recheck"]]
+        self.assertEqual(len(owners), 1, out["agents"])
+        self.assertTrue(owners[0].startswith("refs-"))
+
     def test_c9_no_aggregate(self):
         d = self.repo({SP: "".join(spec20())})
         rc, _, err = self.c1("--spec", str(d / SP))
