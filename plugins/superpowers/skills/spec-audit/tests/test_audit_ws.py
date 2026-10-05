@@ -1014,6 +1014,24 @@ class C2Test(Base):
         rc, res, err = self.agg2(ws)
         self.assertEqual((rc, res), (0, {}), err)
 
+    def no_owner(self, ws: Path, fid: str) -> None:
+        rc, _, err = self.c2(ws)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(fid, err)
+        self.assertFalse((ws / "round-2").exists())
+
+    def test_T05_no_owner_empty(self):
+        ws = self.setup1({SP: "".join(lines(40))}, {S1: [self.finding(S1, 1, target=r(1, 1))]})
+        self.write([])
+        self.no_owner(ws, f"{S1}-001")
+
+    def test_T05_no_owner_oracle(self):
+        o1 = "oracle-r1-s1"
+        head = ["# S\n", "## Reference Oracle\n", "\n", "원본 legacy/p.c v1 전체\n"]
+        ws = self.setup1({SP: "".join(head + lines(10))}, {o1: [self.finding(o1, 1, target=r(1, 4))]})
+        self.write(head[:1] + lines(10))
+        self.no_owner(ws, f"{o1}-001")
+
     def test_rf_crlf_no_final_newline(self):
         old = b"a\r\nb\r\nc".splitlines(keepends=True)
         new = b"a\nb\r\nc".splitlines(keepends=True)

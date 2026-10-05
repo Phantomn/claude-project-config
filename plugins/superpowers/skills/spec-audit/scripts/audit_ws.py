@@ -374,11 +374,18 @@ def cmd_init_next(ws: Path, n: int) -> dict:
                for t in targets):
         ranges["oracle"] = []
     recheck: dict[str, list[str]] = {}
+    orphans = []
     for f in prior:
         loc = [moved(f["target"])]
         k = next((k for k, sh in enumerate(shard(ranges[f["axis"]]), 1) if overlaps(loc, sh)), None)
-        if k:
-            recheck.setdefault(f"{f['axis']}-r{n}-s{k}", []).append(f["id"])
+        if k is None:  # 4.6 "정확히 1명" 불가 — 조용히 버리면 J1이 잘못 pass
+            i, a, b = loc[0]
+            orphans.append(f"{f['id']} · {f['axis']} · {fmt_range(n, targets[i - 1]['snapshot'], a, b)}")
+            continue
+        recheck.setdefault(f"{f['axis']}-r{n}-s{k}", []).append(f["id"])
+    if orphans:
+        shutil.rmtree(R, ignore_errors=True)
+        die("recheck 담당 감사자가 없는 직전 finding(id · 축 · 새 위치):\n" + "\n".join(orphans))
     scope = {ax: [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in rs] for ax, rs in ranges.items()}
     (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1))
     return build_round(ws, n, targets, ranges, recheck)
