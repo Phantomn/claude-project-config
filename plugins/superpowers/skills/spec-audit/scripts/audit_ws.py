@@ -309,7 +309,7 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     if not a.skill_version:
         die("--skill-version 필요")
     if a.skill_version != skill_hash():
-        die("스킬 버전 불일치: `/reload-plugins`(A2 불성립이면 세션 재시작) 필요")
+        die("스킬 버전 불일치: `/reload-plugins`(플러그인을 캐시에서 로드하는 설치면 세션 재시작) 필요")
     plans = a.plan or []
     if len(plans) > 1:
         die("plan은 최대 1개")
