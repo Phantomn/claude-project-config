@@ -174,7 +174,7 @@ class CheckExpectedTest(Base):
                 else:
                     self.assertEqual(exp["outcome"], "any")
                 if name == "F1":
-                    self.assertIn((1, "6.4.2-phantomn.6"), exp["header"])
+                    self.assertIn((1, "플러그인 6.4.2-phantomn."), exp["header"])
 
 
 if __name__ == "__main__":
