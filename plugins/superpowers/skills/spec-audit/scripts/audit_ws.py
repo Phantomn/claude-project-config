@@ -306,6 +306,183 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     return build_round(ws, 1, targets, ranges, {})
 
 
+# ---- C3 aggregate(4.5·4.7) ----
+
+CLASSES = {"ref-missing", "ref-mismatch", "exec-fail", "oracle-deviation", "cross-doc-conflict", "sync-miss",
+           "ordering", "interface-mismatch", "constraint-drift", "contract-gap", "placeholder",
+           "unverifiable-step", "assumption-form", "premise", "root-cause", "regression", "security",
+           "concurrency", "under-scope", "over-scope", "requirement-uncovered", "oracle-missing", "rule-violation"}
+KEYS = ("id", "verdict", "axis", "class", "target", "claim", "evidence", "recommended", "fix_class",
+        "affected", "unverified_reason", "check")
+REASONS = {"policy", "external", "tool", "context"}
+BLOCKS = ("findings", "coverage", "resolved")
+_FENCE_RE = re.compile(r"^```(\w+)\n(.*?)^```$", re.M | re.S)
+
+
+def parse_report(text: str) -> dict[str, list[str]]:
+    """블록 이름 → 비어 있지 않은 줄. findings·coverage·resolved 외 펜스는 무시."""
+    return {m.group(1): [l for l in m.group(2).splitlines() if l.strip()]
+            for m in _FENCE_RE.finditer(text) if m.group(1) in BLOCKS}
+
+
+def to_range(s: object, ctx: dict) -> Range:
+    """범위 문자열 → (i, a, b). 라운드 ≠ N·모르는 스냅샷·줄 초과면 ValueError."""
+    if not isinstance(s, str):
+        raise ValueError(f"범위가 문자열이 아님: {s!r}")
+    n, snap, a, b = parse_range(s)
+    if n != ctx["n"]:
+        raise ValueError(f"라운드가 {ctx['n']}이 아님: {s!r}")
+    for i, t in enumerate(ctx["targets"], 1):
+        if t["snapshot"] == snap:
+            if b > t["lines"]:
+                raise ValueError(f"줄이 파일 끝을 넘음: {s!r}")
+            return i, a, b
+    raise ValueError(f"모르는 스냅샷: {s!r}")
+
+
+def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
+    if not isinstance(f, dict):
+        return ["finding이 객체가 아님"]
+    miss = [k for k in KEYS if k not in f]
+    if miss:
+        return [f"키 누락 {miss}"]
+    bad = []
+    if not (isinstance(f["id"], str) and re.fullmatch(re.escape(name) + r"-\d{3}", f["id"])):
+        bad.append(f"id {f['id']!r}")
+    if f["verdict"] not in ("fail", "unverified"):
+        bad.append(f"verdict {f['verdict']!r}")
+    if f["axis"] != axis:
+        bad.append(f"axis {f['axis']!r} ≠ {axis}")
+    if f["class"] not in CLASSES:
+        bad.append(f"class {f['class']!r}")
+    if f["fix_class"] not in ("align", "requirement"):
+        bad.append(f"fix_class {f['fix_class']!r}")
+    for k in ("claim", "evidence", "recommended"):
+        if not (isinstance(f[k], str) and f[k]):
+            bad.append(f"{k} 빈 값")
+    want = REASONS if f["verdict"] == "unverified" else {None}
+    if f["unverified_reason"] not in want:
+        bad.append(f"verdict {f['verdict']!r}에 unverified_reason {f['unverified_reason']!r}")
+    if f["check"] is not None and not isinstance(f["check"], str):
+        bad.append("check가 null도 문자열도 아님")
+    try:
+        if not overlaps([to_range(f["target"], ctx)], ctx["axis_lines"][axis]):
+            bad.append(f"target {f['target']!r}이 {axis} 축의 대상 줄과 겹치지 않음")
+    except ValueError as e:
+        bad.append(f"target: {e}")
+    if not isinstance(f["affected"], list):
+        bad.append("affected가 배열이 아님")
+    else:
+        for r in f["affected"]:
+            try:
+                to_range(r, ctx)
+            except ValueError as e:
+                bad.append(f"affected: {e}")
+    return [f"{f.get('id')}: {b}" for b in bad]
+
+
+def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]:
+    """위반 사유 목록(빈 목록 = 유효). ctx = {"n", "targets", "axis_lines": {axis: [Range]}}."""
+    bad = [f"{b} 블록 없음" for b in ("findings", "coverage") if b not in blocks]
+    ids = set()
+    for line in blocks.get("findings", []):
+        try:
+            f = json.loads(line)
+        except ValueError:
+            bad.append(f"JSON 아님: {line[:80]!r}")
+            continue
+        bad += validate_finding(f, name, item["axis"], ctx)
+        fid = f.get("id") if isinstance(f, dict) else None
+        if fid in ids:
+            bad.append(f"id 중복 {fid!r}")
+        ids.add(fid)
+    for line in blocks.get("coverage", []):
+        try:
+            to_range(line, ctx)
+        except ValueError as e:
+            bad.append(f"coverage: {e}")
+    return bad
+
+
+def lines_of(rs: list[Range]) -> set[tuple[int, int]]:
+    return {(i, k) for i, a, b in rs for k in range(a, b + 1)}
+
+
+def fmt_lines(lines: set[tuple[int, int]], n: int, targets: list[dict]) -> list[str]:
+    """줄 집합 → 연속 구간 범위 문자열(targets 순서)."""
+    out: list[list[int]] = []
+    for i, k in sorted(lines):
+        if out and out[-1][0] == i and out[-1][2] == k - 1:
+            out[-1][2] = k
+        else:
+            out.append([i, k, k])
+    return [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in out]
+
+
+def make_retry(ws: Path, n: int, item: dict, targets: list[dict]) -> dict:
+    """C8 retry 항목 생성 — 같은 범위·recheck, 프롬프트·X, assign.json에 추가."""
+    R = ws / f"round-{n}"
+    tree = Path(json.loads((R / "targets.json").read_text())["tree"])
+    name = item["name"] + "-retry"
+    retry = {**item, "name": name, "prompt": None, "exec_dir": None}
+    if item["axis"] in EXEC_AXES:
+        x = make_exec_dir(tree, tmproot() / "spec-audit" / ws.name / f"r{n}" / name)
+        retry["exec_dir"] = str(x) if x else None
+    retry["prompt"] = str(write_prompt(ws, retry, targets, n))
+    aj = R / "assign.json"
+    agents = json.loads(aj.read_text())["agents"] + [retry]
+    aj.write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1))
+    return retry
+
+
+def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
+    R = ws / f"round-{n}"
+    targets = json.loads((R / "targets.json").read_text())["targets"]
+    # ① 대상 변경 탐지(4.5.5)
+    changed = [t["rel"] for t in targets if not Path(t["path"]).is_file()
+               or hashlib.sha256(Path(t["path"]).read_bytes()).hexdigest() != t["sha256"]]
+    if changed:
+        return 3, {"target_modified": changed}
+    # ② 보고 검증 — retry 항목이 있으면 그것이 유효 감사자(원래 보고 무시, 재retry 없음)
+    ctx = {"n": n, "targets": targets, "axis_lines": {ax: axis_lines(targets, ax) for ax in AXES}}
+    agents = json.loads((R / "assign.json").read_text())["agents"]
+    by_name = {a["name"]: a for a in agents}
+    invalid, valid = [], []
+    for orig in (a for a in agents if not a["name"].endswith("-retry")):
+        item = by_name.get(orig["name"] + "-retry", orig)
+        p = R / "reports" / f"{item['name']}.md"
+        blocks = parse_report(p.read_text()) if p.is_file() else None
+        bad = validate_report(item["name"], blocks, item, ctx) if blocks is not None else ["보고 파일 없음"]
+        if bad:
+            retry = None if item is not orig else make_retry(ws, n, orig, targets)
+            invalid.append({"reason": f"{item['name']}: " + "; ".join(bad), "retry": retry})
+        else:
+            valid.append((item, blocks))
+    if invalid:
+        return 3, {"invalid": invalid}
+    # ③ 집계
+    findings, unresolved = [], []
+    assigned: dict[str, set] = {}
+    covered: dict[str, set] = {}
+    for item, blocks in valid:
+        fs = [json.loads(l) for l in blocks["findings"]]
+        findings += fs
+        own = lines_of([to_range(r, ctx) for r in item["ranges"]])
+        cov = lines_of([to_range(r, ctx) for r in blocks["coverage"]]) & own
+        cov -= lines_of([to_range(f["target"], ctx) for f in fs if f["unverified_reason"] == "context"])
+        assigned.setdefault(item["axis"], set()).update(own)
+        covered.setdefault(item["axis"], set()).update(cov)
+        unresolved += [m.group(1) for l in blocks.get("resolved", [])
+                       if (m := re.match(r"^(\S+): unresolved\b", l))]
+    gap = {ax: fmt_lines(assigned[ax] - covered[ax], n, targets) for ax in assigned if assigned[ax] - covered[ax]}
+    counts = {"fail": sum(f["verdict"] == "fail" for f in findings),
+              "unverified": sum(f["verdict"] == "unverified" and f["unverified_reason"] != "context"
+                                for f in findings)}
+    out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts}
+    (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
+    return 0, {}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -316,7 +493,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plan", action="append")
     p.add_argument("--spec", action="append")
     p.add_argument("--tree")
+    p = sub.add_parser("aggregate")
+    p.add_argument("--ws", required=True)
+    p.add_argument("--round", type=int, required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "aggregate":
+        rc, out = cmd_aggregate(Path(a.ws).resolve(), a.round)
+        print(json.dumps(out, ensure_ascii=False))
+        return rc
     if a.round != 1:
         die("init --round N(N≥2)은 아직 구현되지 않음")
     out = cmd_init_round1(a)

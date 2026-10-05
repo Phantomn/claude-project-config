@@ -480,5 +480,182 @@ class CanonTest(Base):
         self.assertEqual(self.other_rels(t), {"docs/canon/a.md"})
 
 
+R1, S1, C1N = "refs-r1-s1", "selfcontained-r1-s1", "rootcause-r1-s1"
+
+
+class C3Test(Base):
+    SPEC = "상위 정본: `docs/canon/c.md`\n" + "".join(f"s{k}\n" for k in range(2, 41))
+    FILES = {"docs/specs/s.md": SPEC, "docs/canon/c.md": "".join(f"c{k}\n" for k in range(1, 11))}
+
+    def start(self, files: dict | None = None, spec: str = "docs/specs/s.md", d: Path | None = None) -> None:
+        self.d = d or self.repo(files or self.FILES)
+        rc, out, err = self.c1("--spec", str(self.d / spec))
+        self.assertEqual(rc, 0, err)
+        self.agents = {a["name"]: a for a in out["agents"]}
+
+    def write_all(self, findings: dict | None = None, coverage: dict | None = None, skip: tuple = ()) -> None:
+        for name, a in self.agents.items():
+            if name not in skip:
+                self.report(self.ws, 1, name, (findings or {}).get(name, []), (coverage or {}).get(name, a["ranges"]))
+
+    def agg(self) -> tuple[int, dict | None, str]:
+        return self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
+
+    def ok(self) -> dict:
+        rc, out, err = self.agg()
+        self.assertEqual((rc, out), (0, {}), err)
+        return json.loads((self.ws / "round-1/aggregate.json").read_text())
+
+    def raw(self, name: str, text: str) -> None:
+        (self.ws / "round-1/reports" / f"{name}.md").write_text(text)
+
+    def test_T13(self):
+        self.start()
+        self.write_all()
+        spec = self.d / "docs/specs/s.md"
+        data = spec.read_bytes()
+        spec.write_bytes(b"X" + data[1:])
+        self.assertEqual(self.agg()[:2], (3, {"target_modified": ["docs/specs/s.md"]}))
+        spec.unlink()
+        self.assertEqual(self.agg()[:2], (3, {"target_modified": ["docs/specs/s.md"]}))
+        spec.write_bytes(data)
+        (self.d / "other.txt").write_text("x\n")
+        git(self.d, "add", "-A")
+        git(self.d, "commit", "-q", "-m", "x")
+        self.ok()
+
+    def cases(self) -> list:
+        f = self.finding
+        no_ev = f(R1, 1)
+        del no_ev["evidence"]
+        fence = lambda n, body: "```" + n + "\n" + body + "```\n"
+        cov = "round-1/snapshot/1-s.md:1-40\nround-1/snapshot/2-c.md:1-10\n"
+        return [
+            ("키 누락(evidence)", R1, [no_ev], None),
+            ("verdict 'warn'", R1, [f(R1, 1, verdict="warn")], None),
+            ("class 'typo'", R1, [f(R1, 1, **{"class": "typo"})], None),
+            ("fix_class 'minor'", R1, [f(R1, 1, fix_class="minor")], None),
+            ("unverified인데 reason null", R1, [f(R1, 1, verdict="unverified")], None),
+            ("fail인데 reason 'tool'", S1, [f(S1, 1, unverified_reason="tool")], None),
+            ("id 'refs-r1-s1-1'", R1, [f(R1, 1, id="refs-r1-s1-1")], None),
+            ("id 중복", R1, [f(R1, 1), f(R1, 1)], None),
+            ("axis 'rootcause' in refs", R1, [f(R1, 1, axis="rootcause")], None),
+            ("claim ''", C1N, [f(C1N, 1, claim="")], None),
+            ("coverage 블록 없음", R1, None, fence("findings", "")),
+            ("findings 블록 없음", R1, None, fence("coverage", cov)),
+            ("target이 축 대상 줄 밖", S1, [f(S1, 1, target="round-1/snapshot/2-c.md:1")], None),
+            ("target 라운드 round-2", R1, [f(R1, 1, target="round-2/snapshot/1-s.md:1")], None),
+            ("affected 라운드 round-2", R1, [f(R1, 1, affected=["round-2/snapshot/1-s.md:1"])], None),
+            ("보고 파일 없음", R1, None, None),
+        ]
+
+    def test_T10(self):
+        d = self.repo(self.FILES)
+        self.start(d=d)
+        keys = ["evidence", "'warn'", "'typo'", "'minor'", "None", "'tool'", "id 'refs-r1-s1-1'", "중복", "axis",
+                "claim", "coverage 블록", "findings 블록", "겹치지", "target: 라운드", "affected: 라운드", "보고 파일 없음"]
+        for (label, victim, findings, raw), key in zip(self.cases(), keys, strict=True):
+            with self.subTest(label):
+                self.start(d=d)
+                self.write_all({victim: findings or []}, skip=(victim,) if findings is None else ())
+                if raw is not None:
+                    self.raw(victim, raw)
+                rc, out, err = self.agg()
+                self.assertEqual(rc, 3, err)
+                self.assertEqual(len(out["invalid"]), 1)
+                inv = out["invalid"][0]
+                self.assertIn(key, inv["reason"])
+                orig, retry = self.agents[victim], inv["retry"]
+                self.assertEqual(retry["name"], victim + "-retry")
+                self.assertEqual((retry["ranges"], retry["recheck"]), (orig["ranges"], orig["recheck"]))
+                if orig["axis"] in audit_ws.EXEC_AXES:
+                    self.assertTrue(Path(retry["exec_dir"]).is_dir())
+                agents = json.loads((self.ws / "round-1/assign.json").read_text())["agents"]
+                self.assertIn(retry, agents)
+                self.assertTrue((self.ws / "round-1/prompts" / f"{victim}-retry.md").is_file())
+
+    def test_T11(self):
+        self.start()
+        self.write_all({R1: [self.finding(R1, 1, verdict="warn")]})
+        rc, out, _ = self.agg()
+        self.assertEqual(rc, 3)
+        retry = out["invalid"][0]["retry"]
+        self.report(self.ws, 1, retry["name"], [self.finding(retry["name"], 1)], retry["ranges"])
+        agg = self.ok()
+        self.assertEqual([f["id"] for f in agg["findings"]], ["refs-r1-s1-retry-001"])
+        self.report(self.ws, 1, retry["name"], [self.finding(retry["name"], 1, claim="")], retry["ranges"])
+        rc, out, _ = self.agg()
+        self.assertEqual(rc, 3)
+        self.assertEqual(len(out["invalid"]), 1)
+        self.assertIsNone(out["invalid"][0]["retry"])
+
+    def test_T12(self):
+        self.start()
+        self.write_all(coverage={R1: ["round-1/snapshot/1-s.md:1-40", "round-1/snapshot/2-c.md:1-4"]})
+        gap = self.ok()["review_gap"]
+        self.assertEqual(gap["refs"], ["round-1/snapshot/2-c.md:5-10"])
+        self.assertFalse(gap.get("selfcontained"))
+        self.start(d=self.d)
+        ctx = self.finding(S1, 1, verdict="unverified", unverified_reason="context",
+                           target="round-1/snapshot/1-s.md:10-20")
+        self.write_all({S1: [ctx]})
+        agg = self.ok()
+        self.assertEqual(agg["review_gap"]["selfcontained"], ["round-1/snapshot/1-s.md:10-20"])
+        self.assertEqual(agg["counts"]["unverified"], 0)
+        self.start({"docs/specs/s.md": "".join(f"l{k}\n" for k in range(1, 2001))})
+        s2 = "selfcontained-r1-s2"
+        self.assertEqual(self.agents[s2]["ranges"], ["round-1/snapshot/1-s.md:1501-2000"])
+        ctx = self.finding(S1, 1, verdict="unverified", unverified_reason="context",
+                           target="round-1/snapshot/1-s.md:100-200")
+        self.write_all({S1: [ctx]}, {S1: ["round-1/snapshot/1-s.md:1-1500"], s2: ["round-1/snapshot/1-s.md:1-2000"]})
+        self.assertEqual(self.ok()["review_gap"]["selfcontained"], ["round-1/snapshot/1-s.md:100-200"])
+
+    def test_T25_r1(self):
+        self.start()
+        self.write_all({C1N: [self.finding(C1N, 1, target="round-1/snapshot/2-c.md:1")]})
+        self.assertEqual(self.agg()[0], 3)
+        self.start(d=self.d)
+        self.write_all({R1: [self.finding(R1, 1, target="round-1/snapshot/2-c.md:1")]})
+        self.ok()
+
+    def test_T34_retry(self):
+        self.start()
+        self.write_all({S1: [self.finding(S1, 1, claim="")]})
+        rc, out, _ = self.agg()
+        retry = out["invalid"][0]["retry"]
+        head = (AUDITORS / "common.md").read_text() + (AUDITORS / "selfcontained.md").read_text()
+        orig = Path(self.agents[S1]["prompt"]).read_text()[len(head):]
+        new = Path(retry["prompt"]).read_text()
+        self.assertTrue(new.startswith(head))
+        self.assertEqual(new[len(head):], orig.replace(S1, S1 + "-retry"))
+
+    def test_counts(self):
+        self.start()
+        f = self.finding
+        self.write_all({R1: [f(R1, 1), f(R1, 2, verdict="unverified", unverified_reason="external")],
+                        S1: [f(S1, 1), f(S1, 2, verdict="unverified", unverified_reason="context")]})
+        agg = self.ok()
+        self.assertEqual(agg["counts"], {"fail": 2, "unverified": 1})
+        self.assertEqual(len(agg["findings"]), 4)
+        self.assertEqual(agg["unresolved"], [])
+
+    def test_rf_unknown_fence_ignored(self):
+        self.start()
+        self.write_all()
+        a = self.agents[R1]
+        self.report(self.ws, 1, R1, [], a["ranges"], extra="메모\n```python\nprint(1)\n```\n")
+        self.ok()
+
+    def test_rf_space_in_basename(self):
+        self.start({"docs/specs/my spec-2.md": "a\nb\n"}, spec="docs/specs/my spec-2.md")
+        self.write_all({R1: [self.finding(R1, 1)]})
+        f = self.ok()["findings"]
+        self.assertEqual(f[0]["target"], "round-1/snapshot/1-my spec-2.md:1")
+
+    def test_round1_done(self):
+        ws = self.round1_done(self.FILES)
+        self.assertTrue((ws / "round-1/aggregate.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
