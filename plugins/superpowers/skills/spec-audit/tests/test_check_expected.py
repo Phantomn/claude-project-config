@@ -103,6 +103,31 @@ class CheckExpectedTest(Base):
         with self.assertRaises(ValueError):
             check_expected.parse_expected("outcome: any\n")
 
+    def test_fixtures_well_formed(self):
+        root = HERE / "fixtures"
+        for i in range(1, 8):
+            name = f"F{i}"
+            with self.subTest(fixture=name):
+                case = root / name / "case"
+                self.assertTrue(case.is_dir())
+                exp = check_expected.parse_expected((root / name / "EXPECTED.md").read_text())
+                roles = []
+                for rel in exp["targets"]:
+                    self.assertTrue((case / rel).is_file(), rel)
+                    roles.append(audit_ws.role_of(Path(rel)))
+                self.assertNotIn(None, roles)
+                for _, _, _, locs in exp["rules"]:
+                    for rel, a, b in locs:
+                        n = len((case / rel).read_bytes().splitlines())
+                        self.assertTrue(1 <= a <= b <= n, f"{rel}:{a}-{b} (줄 수 {n})")
+                if name == "F4":
+                    self.assertNotIn("plan", roles)
+                    self.assertEqual(exp["outcome"], "pass")
+                else:
+                    self.assertEqual(exp["outcome"], "any")
+                if name == "F1":
+                    self.assertIn((1, "6.4.2-phantomn.6"), exp["header"])
+
 
 if __name__ == "__main__":
     import unittest
