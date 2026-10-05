@@ -6,13 +6,13 @@ when_to_use: /spec-audit, spec audit, spec 검증, self-contained 검토 요청 
 
 # spec-audit
 
-## 라운드 상한
+## 1.2 라운드 상한 (D5)
 
 | ID | 결정 | 단계 |
 |---|---|---|
 | D5 | 라운드 상한 5. 라운드 5에서 합격하지 못하면 불합격 보고 후 멈춘다. 이어서 하려면 사용자가 문서를 고친 뒤 새로 호출한다 | 1 |
 
-## 루프
+## 4.3 루프
 
 **리드는 감사 판정을 하지 않는다**(심볼·경로 확인, 측정, 실행 금지 — 정본 수집·스냅샷은 C1·C2가 한다). 명령 형식은 4.7 C표만 따른다. C명령이 이 절에 정한 처리
 없이 실패(exit ≠ 0)하면 리드는 그 stderr를 그대로 사용자에게 보이고, `ws`를 얻은 뒤의 실패면 C5 후, C1 실패면 C5 없이 멈춘다. **불합격 보고** = 마지막 `aggregate.md`(있으면) + 사유 한 줄(`target-modified`·
@@ -42,7 +42,7 @@ when_to_use: /spec-audit, spec audit, spec 검증, self-contained 검토 요청 
 **닫힘**: C2는 S5 뒤에만, `cap`은 라운드 상한(D5)에서 나오므로 라운드는 상한을 넘지 않는다. S3·S4·S5의 모든 분기는 "다음 라운드" 또는 "보고 후 멈춤"이다. 원본 재현 문서의
 심판 부재는 라운드 1의 `oracle-missing`과 oracle 감사자로 처리한다(4.6).
 
-## 결함 판정 기준
+## 4.4.0 결함 판정 기준
 
 finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 `evidence`에 모두 담아야 한다. 하나라도 없으면 finding이 아니다.
 
@@ -64,7 +64,7 @@ finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 
 쓴다. 이 제외는 4.4.1이 소유 검사로 정한 누락(`oracle-missing`·`requirement-uncovered`·`unverifiable-step`·`under-scope`·`assumption-form`)과 규칙 위반에는
 적용하지 않는다 — 표의 필수 근거로 충분하다. 문서가 이미 정한 규칙의 모호함(계약 공백)·모순도 구성한 입력으로 충분하다.
 
-## 감사 축
+## 4.4.1 감사 축
 
 | axis | 소유 검사 |
 |---|---|
@@ -75,13 +75,13 @@ finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 
 
 결함인지는 4.4.0으로만 판정한다. 대상 문서가 자기 계약/재량 경계를 선언하면 그 선언이 판정 근거가 된다.
 
-## D7 가정 형식
+## 4.4.7 D7 가정 형식
 
 가정 항목이 ① 가정(한 문장) ② 실측 프로브(PLAN의 구체 Step: 명령 + 기대 결과, 그 사실에 기대는 첫 Task 이전 또는 그 Task의 첫 Step. spec 단독 감사면
 "구현 Task 1" 지정만 확인) ③ 실패 시 대안(구체 행동)을 모두 가지면 그 검증 불가 사항은 finding이 아니다. 형식 위반은 selfcontained `assumption-form`(`align`),
 대안 실행 불가는 rootcause `premise`(`requirement`).
 
-## 집계 원칙과 사용자 보고
+## 4.5.4 집계 원칙과 사용자 보고
 
 - 축이 다른 finding은 충돌로 보지 않고 모두 남긴다. ❌를 ⚠️로 내리는 경로도, finding을 빼는 재판정 경로도 없다.
 - **미검토 줄**(review-gap): 축별로 (각 감사자 coverage ∩ 그 감사자 배정 범위, 그 감사자 `context` finding target 제외)의 합집합이 그 축 배정 범위 합집합을 덮지 못한 줄.
@@ -96,7 +96,7 @@ fail <n> · unverified <n> · review-gap <n줄> · 직전 미해소 <n>
 |---|---|---|---|---|---|---|---|
 ```
 
-## J1 판정 규칙
+## 4.7 J1 판정 규칙
 
 | action | 조건 | 리드 행동 |
 |---|---|---|
@@ -104,11 +104,11 @@ fail <n> · unverified <n> · review-gap <n줄> · 직전 미해소 <n>
 | `cap` | N ≥ 라운드 상한(D5) | 불합격 보고(`cap`) |
 | `fix` | 그 외 | S5 |
 
-## 명령 (audit_ws.py)
+## 4.7 명령 (audit_ws.py)
 
 호출 형식: `python3 <Base directory>/scripts/audit_ws.py <명령>`
 
-스킬 버전: 09a311fca173
+스킬 버전: 0cb9cf513458
 
 | ID | 명령·형식 | 동작 |
 |---|---|---|

@@ -66,7 +66,7 @@ def _workspace(exp: dict, repo: Path) -> Path:
 
 
 def _load(p: Path) -> dict:
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def _hits(f: dict, n: int, snap_rel: dict[str, str], rel: str, a: int, b: int) -> bool:
@@ -78,7 +78,7 @@ def _hits(f: dict, n: int, snap_rel: dict[str, str], rel: str, a: int, b: int) -
 
 
 def check(expected: Path, repo: Path) -> list[str]:
-    exp = parse_expected(expected.read_text())
+    exp = parse_expected(expected.read_text(encoding="utf-8"))
     W = _workspace(exp, repo)
     bad: list[str] = []
     for n, kind, classes, locs in exp["rules"]:
@@ -102,7 +102,7 @@ def check(expected: Path, repo: Path) -> list[str]:
             bad.append(f"{label} — 위반 finding 있음")
     for n, text in exp["header"]:
         try:
-            head = "\n".join((W / f"round-{n}" / "aggregate.md").read_text().splitlines()[:3])
+            head = "\n".join((W / f"round-{n}" / "aggregate.md").read_text(encoding="utf-8").splitlines()[:3])
         except OSError:
             bad.append(f"round {n} header_contains: aggregate.md 없음")
             continue
@@ -127,7 +127,7 @@ def _final_action(W: Path) -> str:
 
 def _log_row(expected: Path, repo: Path, ok: bool) -> str:
     try:
-        W = _workspace(parse_expected(expected.read_text()), repo)
+        W = _workspace(parse_expected(expected.read_text(encoding="utf-8")), repo)
     except ValueError:
         W = repo / ".none"
     fail = unv = 0

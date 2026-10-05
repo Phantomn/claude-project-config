@@ -305,6 +305,16 @@ class C1Test(Base):
         os.environ.pop("SUPERPOWERS_AUDIT_TMPROOT")
         self.assertEqual(audit_ws.tmproot(), Path(f"/tmp/claude-{os.getuid()}"))
 
+    def test_tmproot_relative(self):
+        os.environ["SUPERPOWERS_AUDIT_TMPROOT"] = "rel/tmp"
+        self.assertTrue(audit_ws.tmproot().is_absolute())
+
+    def test_c1_non_utf8_spec(self):
+        repo = self.repo({"docs/specs/s.md": "# S\n"})
+        (repo / "docs/specs/s.md").write_bytes(b"# S\n\xff\xfe x\n## Reference Oracle\n\nsrc v1\n")
+        out = self.ok("--spec", str(repo / "docs/specs/s.md"))
+        self.assertIn("oracle-r1-s1", [a["name"] for a in out["agents"]])
+
     def test_T07_c1(self):
         repo = self.repo({"docs/specs/s.md": "# S\n## Reference Oracle\n\n원본 legacy/p.c v1 전체\n"})
         out = self.ok("--spec", str(repo / "docs/specs/s.md"))
@@ -371,8 +381,10 @@ class C1Test(Base):
         self.assertNotEqual(rc, 0)
         self.assertIn("/reload-plugins", err)
         self.assertFalse((repo / ".superpowers").exists())
-        rc, _, _ = self.cli("init", "--round", "1", "--spec", s)
+        rc, _, err = self.cli("init", "--round", "1", "--spec", s)
         self.assertNotEqual(rc, 0)
+        self.assertIn("--skill-version 필요", err)
+        self.assertNotIn("/reload-plugins", err)
         self.ok("--spec", s)
         x, y, z = (self.tmp / "x.md", self.tmp / "y.md", self.tmp / "z.md")
         x.write_text("a\n스킬 버전: x\nb\n")
@@ -647,7 +659,20 @@ class C3Test(Base):
         orig = Path(self.agents[S1]["prompt"]).read_text()[len(head):]
         new = Path(retry["prompt"]).read_text()
         self.assertTrue(new.startswith(head))
-        self.assertEqual(new[len(head):], orig.replace(S1, S1 + "-retry"))
+        viol = [l for l in new[len(head):].splitlines(keepends=True) if l.startswith("- 직전 시도 위반: ")]
+        self.assertTrue(viol)
+        self.assertEqual("".join(l for l in new[len(head):].splitlines(keepends=True) if l not in viol),
+                         orig.replace(S1, S1 + "-retry"))
+
+    def test_retry_prompt_reason(self):
+        self.start()
+        self.write_all({S1: [self.finding(S1, 1, claim="")]})
+        rc, out, _ = self.agg()
+        self.assertEqual(rc, 3)
+        reason = out["invalid"][0]["reason"]
+        self.assertIn("claim 빈 값", reason)
+        text = Path(out["invalid"][0]["retry"]["prompt"]).read_text()
+        self.assertIn("- 직전 시도 위반: " + f"{S1}-001: claim 빈 값", text)
 
     def test_counts(self):
         self.start()
@@ -939,6 +964,23 @@ class C2Test(Base):
         self.assertEqual(agg["unresolved"], [F1])
         self.assertEqual(audit_ws.decide(agg, 2)["action"], "fix")
 
+    def test_unresolved_leading_space(self):
+        ws, out = self.r2_basic()
+        self.write2(ws, out, {RR: [self.finding(RR, 1)]}, {RR: [f"  {F1}: unresolved {RR}-001"]})
+        rc, res, err = self.agg2(ws)
+        self.assertEqual((rc, res), (0, {}), err)
+        self.assertEqual(json.loads((ws / "round-2/aggregate.json").read_text())["unresolved"], [F1])
+
+    def test_diff_patch_no_final_newline(self):
+        ws = self.setup1({"docs/plans/p.md": "a\nb", SP: "c\nd"})
+        self.write(["a\n", "B"], 0)
+        self.write(["c\n", "D"], 1)
+        self.ok2(ws)
+        patch = (ws / "round-2/diff.patch").read_bytes()
+        self.assertRegex(patch, rb"(?m)^--- " + re.escape(self.targets[1]["rel"].encode()))
+        self.assertRegex(patch, rb"(?m)^\+B$")
+        self.assertEqual(patch.count(b"\\ No newline at end of file\n"), 4)
+
     def test_T08_c2_new_head(self):
         ws = self.setup1({SP: "# S\nx\n", "src/m.py": "v1\n"})
         tree = Path(json.loads((ws / "round-1/targets.json").read_text())["tree"])
@@ -1120,6 +1162,18 @@ class CheckTest(Base):
                     "sed -n 1,12p 1-s.md | grep 60 && exit 1 || exit 0"):
             with self.subTest(cmd):
                 self.bad(self.r1(cmd))
+
+    def test_check_abs_snapshot_path(self):
+        self.ok(self.r1())
+        snap = self.ws / "round-1/snapshot"
+        cmd = f'grep -Hn "timeout=60" {shlex.quote(str(snap))}/1-s.md && exit 1 || exit 0'
+        f = self.finding(R1, 1, **{"class": "ref-mismatch", "target": r(1, 5), "affected": [r(1, 5)], "check": cmd})
+        agents = json.loads((self.ws / "round-1/assign.json").read_text())["agents"]
+        self.report(self.ws, 1, R1, [f], next(a for a in agents if a["name"] == R1)["ranges"])
+        self.bad(self.cli("aggregate", "--ws", str(self.ws), "--round", "1"))
+        self.assertEqual(sorted(x.name for x in (self.ws / "round-1").iterdir() if "snapshot" in x.name),
+                         ["snapshot"])
+        self.assertEqual([x.name for x in snap.iterdir()], ["1-s.md"])
 
     def test_run_check_timeout(self):
         self.assertIsNone(audit_ws.run_check("sleep 5", self.tmp, self.tmp, timeout=1)[0])

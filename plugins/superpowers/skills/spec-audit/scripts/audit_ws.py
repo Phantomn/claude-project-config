@@ -124,7 +124,7 @@ def die(msg: str) -> None:
 
 
 def tmproot() -> Path:
-    return Path(os.environ.get("SUPERPOWERS_AUDIT_TMPROOT") or f"/tmp/claude-{os.getuid()}")
+    return Path(os.environ.get("SUPERPOWERS_AUDIT_TMPROOT") or f"/tmp/claude-{os.getuid()}").resolve()
 
 
 def role_of(path: Path) -> str | None:
@@ -214,9 +214,10 @@ def make_exec_dir(tree: Path, x: Path) -> Path | None:
     return x
 
 
-def write_prompt(ws: Path, item: dict, targets: list[dict], n: int) -> Path:
+def write_prompt(ws: Path, item: dict, targets: list[dict], n: int, violations: tuple[str, ...] = ()) -> Path:
+    """violations = retry 프롬프트에 적는 직전 시도 위반 사유(C3 ②)."""
     R = ws / f"round-{n}"
-    tree = json.loads((R / "targets.json").read_text())["tree"]
+    tree = json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"]
     lines = ["", "## 배정", "",
              f"- 작업공간 W: {ws}", f"- 라운드: {n}", f"- 이름: {item['name']} · 축: {item['axis']}",
              f"- <tree>: {tree}", "- 배정 범위(W 기준):", *[f"  - {r}" for r in item["ranges"]],
@@ -231,11 +232,12 @@ def write_prompt(ws: Path, item: dict, targets: list[dict], n: int) -> Path:
         lines += [f"- scope.json: {R / 'scope.json'}",
                   f"- 직전 aggregate.json: {ws / f'round-{n - 1}' / 'aggregate.json'}",
                   f"- diff.patch: {R / 'diff.patch'}"]
+    lines += [f"- 직전 시도 위반: {v}".replace("\n", " ") for v in violations]
     lines.append(f"- 보고 경로: {R / 'reports' / (item['name'] + '.md')}")
-    text = (AUDITORS / "common.md").read_text() + (AUDITORS / f"{item['axis']}.md").read_text()
+    text = (AUDITORS / "common.md").read_text(encoding="utf-8") + (AUDITORS / f"{item['axis']}.md").read_text(encoding="utf-8")
     p = R / "prompts" / f"{item['name']}.md"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text + "\n".join(lines) + "\n")
+    p.write_text(text + "\n".join(lines) + "\n", encoding="utf-8")
     return p
 
 
@@ -243,7 +245,7 @@ def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Ra
                 recheck: dict[str, list[str]]) -> dict:
     """ranges = 축별 배정 범위(샤드 전), recheck = 감사자 이름 → id. assign.json·prompts·X 생성, C8 반환."""
     R = ws / f"round-{n}"
-    tree = Path(json.loads((R / "targets.json").read_text())["tree"])
+    tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
     agents = []
     for axis in AXES:
         for k, sh in enumerate(shard(ranges.get(axis, [])), 1):
@@ -257,7 +259,7 @@ def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Ra
             item["prompt"] = str(write_prompt(ws, item, targets, n))
             agents.append(item)
     (R / "reports").mkdir(parents=True, exist_ok=True)
-    (R / "assign.json").write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1))
+    (R / "assign.json").write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"ws": str(ws), "agents": agents}
 
 
@@ -272,8 +274,8 @@ def snapshot_targets(R: Path, tree: Path, docs: list[tuple[Path, str]]) -> list[
         targets.append({"path": str(path), "rel": rel(path, tree), "role": role,
                         "sha256": hashlib.sha256(data).hexdigest(),
                         "lines": len(data.splitlines(keepends=True)), "snapshot": snap})
-    tj = {"tree": str(tree), "plugin_version": json.loads(PLUGIN_JSON.read_text())["version"], "targets": targets}
-    (R / "targets.json").write_text(json.dumps(tj, ensure_ascii=False, indent=1))
+    tj = {"tree": str(tree), "plugin_version": json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))["version"], "targets": targets}
+    (R / "targets.json").write_text(json.dumps(tj, ensure_ascii=False, indent=1), encoding="utf-8")
     return targets
 
 
@@ -289,7 +291,7 @@ def collect_canon(doc: Path, tree: Path, exclude: set[Path]) -> list[Path]:
     root = next((c for c in (d, *d.parents) if any((c / m).exists() for m in _ROOT_MARKERS)), None)
     bases = [b for b in (tree, root, d) if b is not None]
     found: dict[Path, None] = {}
-    for line in doc.read_text(errors="replace").splitlines():
+    for line in doc.read_text(encoding="utf-8", errors="replace").splitlines():
         if "정본" not in line and "canonical" not in line:
             continue
         for tok in _TICK_RE.findall(line):
@@ -304,6 +306,8 @@ def collect_canon(doc: Path, tree: Path, exclude: set[Path]) -> list[Path]:
 
 
 def cmd_init_round1(a: argparse.Namespace) -> dict:
+    if not a.skill_version:
+        die("--skill-version 필요")
     if a.skill_version != skill_hash():
         die("스킬 버전 불일치: `/reload-plugins`(A2 불성립이면 세션 재시작) 필요")
     plans = a.plan or []
@@ -321,13 +325,13 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     for d in (ws, tmproot() / "spec-audit" / ws.name):
         shutil.rmtree(d, ignore_errors=True)
     ws.mkdir(parents=True)
-    (ws.parent / ".gitignore").write_text("*\n")
+    (ws.parent / ".gitignore").write_text("*\n", encoding="utf-8")
     exclude = {p for p in [plan, *specs] if p}
     canon = sorted({c for p in exclude for c in collect_canon(p, tree, exclude)}, key=str)
     docs = ([(plan, "plan")] if plan else []) + [(s, "spec") for s in specs] + [(c, "other") for c in canon]
     targets = snapshot_targets(ws / "round-1", tree, docs)
     ranges = {ax: axis_lines(targets, ax) for ax in AXES}
-    if not any(t["role"] == "spec" and oracle_needed(Path(t["path"]).read_text()) for t in targets):
+    if not any(t["role"] == "spec" and oracle_needed((ws / "round-1" / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace")) for t in targets):
         ranges["oracle"] = []
     return build_round(ws, 1, targets, ranges, {})
 
@@ -342,21 +346,23 @@ def cmd_init_next(ws: Path, n: int) -> dict:
     for f in ("targets.json", "aggregate.json"):
         if not (P / f).is_file():
             die(f"직전 라운드 {f} 없음: {P / f}")
-    prev = json.loads((P / "targets.json").read_text())
+    prev = json.loads((P / "targets.json").read_text(encoding="utf-8"))
     for t in prev["targets"]:
         if not (P / "snapshot" / t["snapshot"]).is_file():
             die(f"직전 스냅샷 없음: {t['snapshot']}")
         if not Path(t["path"]).is_file():
             die(f"대상 파일 없음: {t['rel']}")
-    agg = json.loads((P / "aggregate.json").read_text())
+    agg = json.loads((P / "aggregate.json").read_text(encoding="utf-8"))
     for d in (R, tmproot() / "spec-audit" / ws.name / f"r{n}"):
         shutil.rmtree(d, ignore_errors=True)
     targets = snapshot_targets(R, Path(prev["tree"]), [(Path(t["path"]), t["role"]) for t in prev["targets"]])
     old = [_lines(P / "snapshot" / t["snapshot"]) for t in prev["targets"]]
     new = [_lines(R / "snapshot" / t["snapshot"]) for t in targets]
+    nl = b"\n\\ No newline at end of file\n"  # 개행 없는 마지막 줄이 다음 줄·대상과 붙지 않게
     (R / "diff.patch").write_bytes(b"".join(
-        b"".join(difflib.diff_bytes(difflib.unified_diff, o, w, t["rel"].encode(), t["rel"].encode()))
-        for o, w, t in zip(old, new, targets)))
+        l if l.endswith(b"\n") else l + nl
+        for o, w, t in zip(old, new, targets)
+        for l in difflib.diff_bytes(difflib.unified_diff, o, w, t["rel"].encode(), t["rel"].encode())))
     prev_ctx = {"n": n - 1, "targets": prev["targets"]}
 
     def moved(s: str) -> Range:
@@ -370,7 +376,7 @@ def cmd_init_next(ws: Path, n: int) -> dict:
         extra = [moved(f["target"]) for f in prior if f["axis"] == ax]
         extra += [moved(s) for s in agg["review_gap"].get(ax, [])]
         ranges[ax] = runs((changed | lines_of(extra)) & lines_of(axis_lines(targets, ax)))
-    if not any(t["role"] == "spec" and oracle_needed((R / "snapshot" / t["snapshot"]).read_text(errors="replace"))
+    if not any(t["role"] == "spec" and oracle_needed((R / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace"))
                for t in targets):
         ranges["oracle"] = []
     recheck: dict[str, list[str]] = {}
@@ -387,7 +393,7 @@ def cmd_init_next(ws: Path, n: int) -> dict:
         shutil.rmtree(R, ignore_errors=True)
         die("recheck 담당 감사자가 없는 직전 finding(id · 축 · 새 위치):\n" + "\n".join(orphans))
     scope = {ax: [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in rs] for ax, rs in ranges.items()}
-    (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1))
+    (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1), encoding="utf-8")
     return build_round(ws, n, targets, ranges, recheck)
 
 
@@ -474,6 +480,14 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     return [f"{f.get('id')}: {b}" for b in bad]
 
 
+_RESOLVED_RE = re.compile(r"(\S+): (?:resolved|unresolved (\S+))")
+
+
+def parse_resolved(line: str) -> re.Match | None:
+    """resolved 블록 한 줄 → group(1) = id, group(2) = unresolved면 가리킨 finding id(아니면 None)."""
+    return _RESOLVED_RE.fullmatch(line.strip())
+
+
 def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]:
     """위반 사유 목록(빈 목록 = 유효). ctx = {"n", "targets", "axis_lines": {axis: [Range]}}."""
     bad = [f"{b} 블록 없음" for b in ("findings", "coverage") if b not in blocks]
@@ -503,7 +517,7 @@ def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]
         bad.append("resolved 블록 없음")
     seen = set()
     for line in blocks.get("resolved", []):
-        m = re.fullmatch(r"(\S+): (?:resolved|unresolved (\S+))", line.strip())
+        m = parse_resolved(line)
         if not m:
             bad.append(f"resolved 형식 위반: {line[:80]!r}")
             continue
@@ -554,23 +568,36 @@ def check_text(code: int | None, out: str) -> str:
 
 
 def verify_check(ws: Path, R: Path, targets: list[dict], tree: Path, f: dict) -> list[str]:
-    """C3 ②: R/snapshot과 빈 줄 사본(각 파일 앞에 그 줄 수만큼 빈 줄) 양쪽에서 exit 1이어야 한다."""
+    """C3 ②: R/snapshot 사본과 빈 줄 사본(각 파일 앞에 그 줄 수만큼 빈 줄) 양쪽에서 exit 1이어야 한다.
+    실행 동안 W의 스냅샷 디렉토리를 숨긴다 — 스냅샷 절대경로를 읽는 check가 두 사본을 우회해 통과하지 못하게."""
     shift = tmproot() / "spec-audit" / ws.name / "shift"
     shutil.rmtree(shift, ignore_errors=True)
-    shift.mkdir(parents=True)
+    dirs = (shift / "copy", shift / "blank")
+    for d in dirs:
+        d.mkdir(parents=True)
     for t in targets:
-        (shift / t["snapshot"]).write_bytes(b"\n" * t["lines"] + (R / "snapshot" / t["snapshot"]).read_bytes())
-    codes = [run_check(f["check"], d, tree)[0] for d in (R / "snapshot", shift)]
+        data = (R / "snapshot" / t["snapshot"]).read_bytes()
+        (dirs[0] / t["snapshot"]).write_bytes(data)
+        (dirs[1] / t["snapshot"]).write_bytes(b"\n" * t["lines"] + data)
+    hidden: list[Path] = []
+    try:
+        for snap in sorted(ws.glob("round-*/snapshot")):
+            snap.rename(snap.with_name("snapshot.verifying"))
+            hidden.append(snap)
+        codes = [run_check(f["check"], d, tree)[0] for d in dirs]
+    finally:
+        for snap in hidden:
+            snap.with_name("snapshot.verifying").rename(snap)
     if codes == [1, 1]:
         return []
-    return [f"{f['id']}: check 재현 실패(snapshot exit {codes[0]}, 빈 줄 사본 exit {codes[1]} — 둘 다 1이어야 함)"]
+    return [f"{f['id']}: check 재현 실패(snapshot 사본 exit {codes[0]}, 빈 줄 사본 exit {codes[1]} — 둘 다 1이어야 함)"]
 
 
 def carry_checks(ws: Path, n: int, targets: list[dict]) -> dict[str, dict]:
     """직전 aggregate.json checks의 각 finding을 이번 스냅샷 위치(target·affected)로 옮긴다."""
     P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
-    prev = json.loads((P / "aggregate.json").read_text()).get("checks", {})
-    ptargets = json.loads((P / "targets.json").read_text())["targets"]
+    prev = json.loads((P / "aggregate.json").read_text(encoding="utf-8")).get("checks", {})
+    ptargets = json.loads((P / "targets.json").read_text(encoding="utf-8"))["targets"]
     idx = {t["snapshot"]: i for i, t in enumerate(ptargets)}
 
     def mv(s: str) -> str:
@@ -583,25 +610,25 @@ def carry_checks(ws: Path, n: int, targets: list[dict]) -> dict[str, dict]:
             for k, f in prev.items()}
 
 
-def make_retry(ws: Path, n: int, item: dict, targets: list[dict]) -> dict:
-    """C8 retry 항목 생성 — 같은 범위·recheck, 프롬프트·X, assign.json에 추가."""
+def make_retry(ws: Path, n: int, item: dict, targets: list[dict], violations: list[str]) -> dict:
+    """C8 retry 항목 생성 — 같은 범위·recheck, 프롬프트(직전 위반 사유 포함)·X, assign.json에 추가."""
     R = ws / f"round-{n}"
-    tree = Path(json.loads((R / "targets.json").read_text())["tree"])
+    tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
     name = item["name"] + "-retry"
     retry = {**item, "name": name, "prompt": None, "exec_dir": None}
     if item["axis"] in EXEC_AXES:
         x = make_exec_dir(tree, tmproot() / "spec-audit" / ws.name / f"r{n}" / name)
         retry["exec_dir"] = str(x) if x else None
-    retry["prompt"] = str(write_prompt(ws, retry, targets, n))
+    retry["prompt"] = str(write_prompt(ws, retry, targets, n, tuple(violations)))
     aj = R / "assign.json"
-    agents = json.loads(aj.read_text())["agents"] + [retry]
-    aj.write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1))
+    agents = json.loads(aj.read_text(encoding="utf-8"))["agents"] + [retry]
+    aj.write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1), encoding="utf-8")
     return retry
 
 
 def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
     R = ws / f"round-{n}"
-    targets = json.loads((R / "targets.json").read_text())["targets"]
+    targets = json.loads((R / "targets.json").read_text(encoding="utf-8"))["targets"]
     # ① 대상 변경 탐지(4.5.5)
     changed = [t["rel"] for t in targets if not Path(t["path"]).is_file()
                or hashlib.sha256(Path(t["path"]).read_bytes()).hexdigest() != t["sha256"]]
@@ -609,8 +636,8 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         return 3, {"target_modified": changed}
     # ② 보고 검증 — retry 항목이 있으면 그것이 유효 감사자(원래 보고 무시, 재retry 없음)
     ctx = {"n": n, "targets": targets, "axis_lines": {ax: axis_lines(targets, ax) for ax in AXES}}
-    tree = Path(json.loads((R / "targets.json").read_text())["tree"])
-    agents = json.loads((R / "assign.json").read_text())["agents"]
+    tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
+    agents = json.loads((R / "assign.json").read_text(encoding="utf-8"))["agents"]
     by_name = {a["name"]: a for a in agents}
     invalid, valid = [], []
     for orig in (a for a in agents if not a["name"].endswith("-retry")):
@@ -630,7 +657,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
             except (OSError, UnicodeDecodeError) as e:
                 bad = [f"보고 읽기 실패: {e}"]
         if bad:
-            retry = None if item is not orig else make_retry(ws, n, orig, targets)
+            retry = None if item is not orig else make_retry(ws, n, orig, targets, bad)
             invalid.append({"reason": f"{item['name']}: " + "; ".join(bad), "retry": retry})
         else:
             valid.append((item, blocks))
@@ -649,7 +676,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         assigned.setdefault(item["axis"], set()).update(own)
         covered.setdefault(item["axis"], set()).update(cov)
         unresolved += [m.group(1) for l in blocks.get("resolved", [])
-                       if (m := re.match(r"^(\S+): unresolved\b", l))]
+                       if (m := parse_resolved(l)) and m.group(2) is not None]
     gap = {ax: fmt_lines(assigned[ax] - covered[ax], n, targets) for ax in assigned if assigned[ax] - covered[ax]}
     checks = carry_checks(ws, n, targets) if n >= 2 else {}
     for fid, f in checks.items():
@@ -664,7 +691,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
               "unverified": sum(f["verdict"] == "unverified" and f["unverified_reason"] != "context"
                                 for f in findings)}
     out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts, "checks": checks}
-    (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
+    (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0, {}
 
 
@@ -692,9 +719,9 @@ def _cell(x: object) -> str:
 
 def cmd_decide(ws: Path, n: int) -> dict:
     R = ws / f"round-{n}"
-    agg = json.loads((R / "aggregate.json").read_text())
-    tj = json.loads((R / "targets.json").read_text())
-    names = [a["name"] for a in json.loads((R / "assign.json").read_text())["agents"]]
+    agg = json.loads((R / "aggregate.json").read_text(encoding="utf-8"))
+    tj = json.loads((R / "targets.json").read_text(encoding="utf-8"))
+    names = [a["name"] for a in json.loads((R / "assign.json").read_text(encoding="utf-8"))["agents"]]
     dec = decide(agg, n)
     gap_lines = sum(b - a + 1 for rs in agg["review_gap"].values() for r in rs
                     for _, _, a, b in [parse_range(r)])
@@ -712,7 +739,7 @@ def cmd_decide(ws: Path, n: int) -> dict:
                  ", ".join(f["affected"])]
         md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
     (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1))
+    (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1), encoding="utf-8")
     return dec
 
 
@@ -722,8 +749,8 @@ def cmd_check(ws: Path) -> dict:
     R = ws / f"round-{max(ns, default=0)}"
     if not (R / "aggregate.json").is_file():
         die(f"aggregate.json 없음: {R / 'aggregate.json'}")
-    checks = json.loads((R / "aggregate.json").read_text()).get("checks", {})
-    tj = json.loads((R / "targets.json").read_text())
+    checks = json.loads((R / "aggregate.json").read_text(encoding="utf-8")).get("checks", {})
+    tj = json.loads((R / "targets.json").read_text(encoding="utf-8"))
     K = tmproot() / "spec-audit" / ws.name / "check"
     shutil.rmtree(K, ignore_errors=True)
     K.mkdir(parents=True)

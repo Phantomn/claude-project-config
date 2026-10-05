@@ -1,11 +1,17 @@
 # 축 refs
 
+## 4.4.1 감사 축 (refs 행)
+
 | `refs` | 참조 실재(4.4.3), 심볼 3분류·경로 해석·파일 참조(4.4.2), 문서 간·문서 내부 충돌(class `cross-doc-conflict`: 대상 각 문서의 내부 모순, 대상 사이, 대상·other, other 내부), PLAN 내부 정합(Task Consumes ⊆ 앞선 Task Produces, Global Constraints 값 = spec 원문 값, 생성 Step이 사용보다 앞, 삭제 Step이 마지막 사용보다 뒤), N≥2 짝 동기화(직전 diff가 바꾼 용어·값·심볼을 언급하는 **모든 곳** — 배정 범위 밖 target 허용) |
+
+## 4.4.2 심볼·경로·파일 참조
 
 - 심볼 3분류: `existing`(지금 실재) / `created`(PLAN `Create` 파일·Interfaces `Produces`·spec의 "신규" 표기) / `deleted`(지금 실재 + 삭제 Step이 마지막 사용 Step 뒤).
   근거 없으면 `ref-missing`(`align`).
 - 경로 해석 순서(실재 확인은 작업트리): ① `<tree>` ② 문서 디렉토리에서 위로 처음 `package.json`·`pyproject.toml`·`Cargo.toml`·`go.mod`가 있는 디렉토리 ③ 문서 디렉토리.
 - 파일 참조 = 본문 백틱 안 경로 토큰(`/` 포함 또는 `.`+영숫자 확장자로 끝남)과 PLAN `Files:` 블록. 실재·PLAN Create 합집합·"신규" 표기 중 하나면 통과.
+
+## 4.4.3 참조 종류별 검증 수단
 
 | 종류 | 수단(사용 가능한 첫 것) |
 |---|---|
