@@ -1,7 +1,7 @@
 # superpowers fork — 변경점
 
 Upstream: <https://github.com/obra/superpowers> (MIT, Copyright (c) 2025 Jesse Vincent)
-기준 버전: **6.4.2** · fork: `6.4.2-phantomn.5` (2026-10-01; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
+기준 버전: **6.4.2** · fork: `6.4.2-phantomn.6` (2026-10-05; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
 
 ## 왜 fork 했나
 
@@ -15,7 +15,7 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 ## 무엇을 바꿨나
 
-**1) `skills/using-superpowers/SKILL.md` 압축** (원본 수정 1파일). 나머지 13개 원본 스킬·훅은 그대로.
+**1) `skills/using-superpowers/SKILL.md` 압축** (원본 수정 전체 목록은 항목 6).
 
 **2) `skills/spec-driven-development/` 추가** (2026-09-20, `phantomn.2`) — upstream엔 없는 우리 고유 스킬. spec/plan 워크플로우가 3계보(canon `spec-driven-development`·openspec·superpowers)로 분산된 것을 이 fork로 수렴한 **통합 정본**. superpowers 파이프라인(brainstorming→writing-plans→subagent-driven)의 최상위 진입점이며, spec 생명주기·`validate_spec.py`(openspec validator의 CLI-less thin port)를 자체 소유한다. 신규 스킬이라 upstream divergence 아님. 설계·근거는 같은 디렉토리 `CONSOLIDATION-DESIGN.md`.
 
@@ -23,7 +23,9 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 **4) 감사팀 소유권을 spec-audit으로** (2026-09-25, `phantomn.4`) — 항목3은 team-assemble을 "감사팀"이라 했지만 spec-audit 본문은 "합격 후 스폰(+`/build`, 부재)"으로 정반대 기술했고, sdd는 두 스킬을 참조조차 안 했다. 결과: 사용자가 두 명령을 240회+ 수동 짝 호출, 단독 시 리드 혼자 감사·무승인 구현 착수(51세션 실측). spec-audit에 고정 3축 opus 감사팀(refs/selfcontained/rootcause)과 "합격≠구현 승인" 정지를 내장하고, team-assemble엔 SPEC 감사 라우팅, sdd엔 Tasks→Implement 게이트를 연결했다.
 
-**5) upstream 6.3.0 → 6.4.2 재기반** (2026-10-01, `phantomn.5`) — 방법: 로컬 fork 가 v6.3.0 원본과 우리 변경점(위 1)~4): 1파일+고유 3종)만 다름을 `diff -r` 로 확인한 뒤, 원본 경로(`skills/<upstream 15종>`·`hooks/`·`LICENSE`·`package.json`)를 v6.4.2 로 교체하고 우리 것만 재적용했다. 신규 원본 스킬 `diagnosing-superpowers` 로 **원본 15종 + 고유 3종**. 재적용 내역: ① `using-superpowers` 압축본 유지 + upstream 이 추가한 Claude Code·Muse reference 2개를 플랫폼 줄에 병합 ② sdd Phase 4 의 `executing-plans` 설명을 "inline batch" → Native(세션이 전 태스크 직접 구현 후 브랜치 전체 리뷰 1회)로 갱신 — 6.4.1 에서 체크포인트 방식이 폐지됐다. 다음 재기반도 같은 절차: `diff -r <local> <upstream 기준태그>` 로 변경점이 이 문서 목록과 일치하는지 먼저 확인.
+**5) upstream 6.3.0 → 6.4.2 재기반** (2026-10-01, `phantomn.5`) — 방법: 로컬 fork 가 v6.3.0 원본과 우리 변경점(위 1)~4): 1파일+고유 3종)만 다름을 `diff -r` 로 확인한 뒤, 원본 경로(`skills/<upstream 15종>`·`hooks/`·`LICENSE`·`package.json`)를 v6.4.2 로 교체하고 우리 것만 재적용했다. 신규 원본 스킬 `diagnosing-superpowers` 로 **원본 15종 + 고유 3종**. 재적용 내역: ① `using-superpowers` 압축본 유지 + upstream 이 추가한 Claude Code·Muse reference 2개를 플랫폼 줄에 병합 ② sdd Phase 4 의 `executing-plans` 설명을 "inline batch" → Native(세션이 전 태스크 직접 구현 후 브랜치 전체 리뷰 1회)로 갱신 — 6.4.1 에서 체크포인트 방식이 폐지됐다. 다음 재기반도 같은 절차: `diff -r <local> <upstream 기준태그>` 로 변경점이 이 문서 목록과 일치하는지 먼저 확인. phantomn.6 이후 재기반에서는 항목 6의 원본 수정 파일 목록을 따른다.
+
+**6) spec-audit 재설계 1단계** (2026-10-05, `phantomn.6`) — 감사 루프 소유·계약 기준 판정. 원본 수정 전체: `skills/using-superpowers/SKILL.md`(항목 1, 압축), `skills/writing-plans/SKILL.md`(Execution Handoff, 이 항목). 신규 `skills/spec-audit/{scripts,auditors,tests}/`·`README.md`·`DECISIONS.md`·`LIMITS.md`. spec은 비공개 저장소.
 
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 
@@ -48,7 +50,7 @@ MVP·YAGNI·"모호하면 질문", ponytail 의 "첫 rung 에서 멈춰라". 원
 
 `claude-plugins-official` 마켓플레이스의 superpowers 가 올라가면:
 
-1. 새 버전과 이 fork 를 diff — `skills/using-superpowers/SKILL.md` **외** 변경분은 그대로 반영
+1. 새 버전과 이 fork 를 diff — 항목 6의 원본 수정 파일 **외** 변경분은 그대로 반영하고, 그 파일들은 upstream 변경을 우리 수정 위에 손으로 합친다
 2. `using-superpowers` 는 upstream 변경 취지를 확인해 압축본에 수동 반영
 3. `plugin.json` 의 version 을 `<upstream>-phantomn.N` 으로 갱신
 4. 주입량 재측정(아래 명령)이 크게 늘었으면 압축을 다시 손본다
@@ -58,6 +60,8 @@ echo '{"session_id":"t","hook_event_name":"SessionStart","source":"startup"}' \
   | CLAUDE_PLUGIN_ROOT="$PWD" bash hooks/session-start \
   | python3 -c "import sys,json;c=json.load(sys.stdin)['hookSpecificOutput']['additionalContext'];print(len(c),'chars ≈',len(c)//4,'tokens')"
 ```
+
+5. 배포 후 실행 중 세션은 `/reload-plugins` (안 하면 구버전이 계속 쓰인다)
 
 ## 주의
 

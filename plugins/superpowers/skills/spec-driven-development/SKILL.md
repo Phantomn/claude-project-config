@@ -99,6 +99,9 @@ Don't silently fill in ambiguous requirements. The spec's entire purpose is to s
 ## Success Criteria
 [How we'll know this is done — specific, testable conditions]
 
+## Reference Oracle (optional)
+[기존 시스템을 재현·이식·마이그레이션할 때: 원본 경로·버전·대조 범위]
+
 ## Open Questions
 [Anything unresolved that needs human input]
 ```
@@ -121,7 +124,7 @@ This lets you loop, retry, and problem-solve toward a clear goal rather than gue
 
 ### Phase 2: Plan
 
-With the validated spec, produce a technical implementation plan by **delegating to `superpowers:writing-plans`** — do not hand-roll a plan format here. That skill turns the spec into bite-sized, testable tasks with exact files, interfaces, and TDD steps. The spec travels with the plan (writing-plans reads both).
+With the validated spec, produce a technical implementation plan by **delegating to `superpowers:writing-plans`** — do not hand-roll a plan format here. That skill turns the spec into tasks sized to one action with a checkable result, with exact files, interfaces, and TDD steps. The spec travels with the plan (writing-plans reads both).
 
 **Revising an existing spec set (양방향 재조정).** When a change touches specs that already exist, don't just append. Reconcile in both directions:
 
@@ -131,9 +134,9 @@ With the validated spec, produce a technical implementation plan by **delegating
 
 ### Phase 3: Tasks
 
-Task decomposition is part of `superpowers:writing-plans` (bite-sized steps, acceptance criteria, verification per task, dependency ordering, ≤~5 files per task). Review the generated tasks against the spec before implementing.
+Task decomposition is part of `superpowers:writing-plans` (tasks sized to one action with a checkable result, Interfaces blocks, Review Focus). Finish the two-way reconciliation above and the task review against the spec before the plan is audited; if the spec or plan changes after the audit, rerun `superpowers:spec-audit` before implementing.
 
-**Gate before Implement: `superpowers:spec-audit`.** Run it on the spec + plan. It spawns its own adversarial audit team (refs / Self-Contained / root-cause). Advance to Phase 4 only when it reports ❌ 0 **and** the human explicitly approves implementation — a passed audit is not that approval.
+**Gate before Implement.** `superpowers:writing-plans` runs `superpowers:spec-audit` on the spec + plan before its execution handoff. The partner's execution-method answer after a passed audit is the implementation approval — do not ask for it twice.
 
 ### Phase 4: Implement
 
@@ -185,4 +188,4 @@ Before proceeding to implementation, confirm:
 - [ ] Success criteria are specific and testable
 - [ ] Boundaries (Always/Ask First/Never) are defined
 - [ ] The spec is saved to a file in the repository
-- [ ] `superpowers:spec-audit` passed (❌ 0) on spec + plan, and the human approved implementation
+- [ ] `superpowers:spec-audit` passed (❌ 0, ⚠️ 0) on spec + plan and the partner chose the execution method
