@@ -1,6 +1,6 @@
 # claude-project-config
 Claude Code 범용 프로젝트 템플릿 저장소. Skills, Agents, Hooks 제공.
-**중요**: 이 파일은 이 프로젝트 고유 설정. `.claude/CLAUDE.md`와 `~/.claude/CLAUDE.md`는 동기화 유지.
+**중요**: 이 파일은 이 프로젝트 고유 설정.
 
 ## Tech Stack
 - **Language**: Markdown, Shell (Bash), Python 3.10+, JSON
@@ -30,7 +30,7 @@ jq empty .claude/*.json
 ### We Use
 - **Shell**: `set -euo pipefail`, 색상 변수, 함수 분리
 - **Python**: 타입 힌트, pathlib, dataclass, 3.10+ 호환
-- **SKILL.md**: YAML frontmatter (name, description, triggers) 필수
+- **SKILL.md**: YAML frontmatter (name, description) 필수, 선택 when_to_use — triggers는 Claude Code가 읽지 않는다
 
 ### We Avoid
 - **Shell**: Bash 전용 → POSIX 호환 권장 (`[[` → `[`, `echo -e` → `printf`)
@@ -41,7 +41,7 @@ jq empty .claude/*.json
 ## Architecture
 ```
 .claude/
-├── CLAUDE.md           # 프로젝트 설정 (~/.claude/CLAUDE.md와 동기화)
+├── CLAUDE.md           # 프로젝트 설정
 ├── README.md           # 프로젝트 설명
 ├── settings.json       # 훅 + 권한 설정 (PreToolUse, PostToolUse, TeammateIdle, TaskCompleted)
 ├── settings.local.json # 로컬 전용 설정 (.gitignore)
@@ -81,10 +81,6 @@ jq empty .claude/*.json
 
 ## Gotchas
 
-### CLAUDE.md 동기화 누락
-- **함정**: `.claude/CLAUDE.md`와 `~/.claude/CLAUDE.md`를 개별 수정하여 내용 불일치
-- **대안**: 한쪽 수정 후 반드시 다른 쪽에 동기화. 두 파일은 항상 동일 내용 유지
-
 ### Skills/Agents 무분별 수정
 - **함정**: 다른 프로젝트에서 사용 중인 스킬/에이전트 임의 수정
 - **대안**: 수정 전 영향 범위 확인, 범용성 유지
@@ -103,7 +99,7 @@ jq empty .claude/*.json
 
 ### Agent Teams 비용
 - **함정**: 팀원 5명 스폰 시 토큰 ~7배 증가
-- **대안**: 최소 팀원 수 유지, Sonnet/Haiku 모델 사용, 완료 후 즉시 정리
+- **대안**: 최소 팀원 수 유지, Sonnet/Haiku 모델 사용(spec-audit 감사자는 판정 품질 우선이라 opus — 그 스킬 DECISIONS.md), 완료 후 즉시 정리
 
 ### 스킬 이름과 내장 명령 충돌
 - **함정**: 스킬 이름이 Claude Code 내장 명령(`plan`, `help` 등)과 동일하면 스킬 호출 불가
@@ -117,8 +113,8 @@ jq empty .claude/*.json
 - **함정**: Gotchas/Lessons Learned를 `.claude/CLAUDE.md`(템플릿)에 추가하면 다른 프로젝트 복사 시 오염
 - **대안**: 이 프로젝트 고유 내용은 루트 `CLAUDE.md`에, 범용 규칙만 `.claude/CLAUDE.md`에 작성
 
-### Worktree 도입 시 3중 동기화 주의
-- **함정**: `.claude/CLAUDE.md`(템플릿) ↔ `~/.claude/CLAUDE.md`(전역) ↔ 각 브랜치 CLAUDE.md를 각각 수정하면 불일치 발생
+### Worktree 도입 시 동기화 주의
+- **함정**: `.claude/CLAUDE.md`(템플릿) ↔ 각 브랜치 CLAUDE.md를 각각 수정하면 불일치 발생
 - **대안**: 공통 수정은 main에서만, 카테고리 전용은 해당 브랜치에서만 수정
 
 ### Worktree 스킬 중복 증식 경계
@@ -143,7 +139,6 @@ jq empty .claude/*.json
 - **UserPromptSubmit 훅 stdout → Claude 컨텍스트 주입**: UserPromptSubmit 훅에서 stdout으로 출력한 내용은 Claude 컨텍스트에 자동 주입된다. 스킬 추천, 자동 컨텍스트 로딩 등에 활용 가능하다.
 
 ## Compact Instructions
-- `.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` 동기화 유지
 - Skills/Agents 수정 전 다른 프로젝트 영향 고려
 - Scripts: shellcheck/py_compile 검증 필수, JSON: jq 검증 필수
 

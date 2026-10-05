@@ -178,6 +178,11 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 
 ## Execution Handoff
 
+After saving and self-reviewing the plan, run `superpowers:spec-audit` on the plan and the spec it implements before asking your human partner
+anything. If the audit does not pass, stop and report the audit result — do not offer execution. If it passes, continue below; the partner's answer
+to the question below is the single implementation approval. If the plan or spec changes after the audit for any reason (the partner's
+request, a review, or a reconciliation), apply the change and rerun `superpowers:spec-audit` before asking again.
+
 After saving and self-reviewing the plan, link it for your human partner
 to read. If they have already explicitly supplied an execution method, ask
 them to review the plan and confirm it captures what they want; wait for that
@@ -186,7 +191,7 @@ them to review the plan and choose an execution method before implementation.
 
 **When no execution method has already been supplied:**
 
-**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Please review the plan. Which execution approach would you prefer?**
+**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. The spec audit passed. Please review the plan. Which execution approach would you prefer?**
 
 - **Subagent-driven** - A fresh subagent implements each task and a fresh reviewer checks it before the next one starts, then a whole-branch review at the end. Most thorough; costs a fresh context per task and per review.
 - **Native** - I implement every task myself in this session, the way this harness runs work, then one fresh reviewer on the most capable model checks the whole branch. Cheapest and fastest; no independent review until the end. Runs well with a mid-tier session model, since the plan carries the design.
@@ -195,7 +200,7 @@ them to review the plan and choose an execution method before implementation.
 
 **When an execution method has already been supplied:**
 
-**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Please review the plan. Does it capture what you want?"**
+**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. The spec audit passed. Please review the plan. Does it capture what you want?"**
 
 **If Subagent-driven chosen:**
 - **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
