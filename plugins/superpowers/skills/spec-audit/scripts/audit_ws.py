@@ -453,6 +453,8 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     for k in ("claim", "evidence", "recommended"):
         if not f[k]:
             bad.append(f"{k} 빈 값")
+    if f["check"] is not None and f["verdict"] != "fail":
+        bad.append(f"check는 verdict fail에만 (verdict {f['verdict']!r})")
     want = REASONS if f["verdict"] == "unverified" else {None}
     if f["unverified_reason"] not in want:
         bad.append(f"verdict {f['verdict']!r}에 unverified_reason {f['unverified_reason']!r}")
@@ -534,6 +536,53 @@ def fmt_lines(lines: set[tuple[int, int]], n: int, targets: list[dict]) -> list[
     return [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in runs(lines)]
 
 
+# ---- check(4.5.1·D22) ----
+
+def run_check(cmd: str, cwd: Path, tree: Path, timeout: float = 30) -> tuple[int | None, str]:
+    """(exit code, stdout+stderr 마지막 2000자). 시간 초과 = (None, "timeout")."""
+    try:
+        p = subprocess.run(["bash", "-c", cmd], cwd=cwd, env={**os.environ, "TREE": str(tree)},
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    return p.returncode, (p.stdout + p.stderr)[-2000:]
+
+
+def check_text(code: int | None, out: str) -> str:
+    """재삽입 evidence·C9 output 형식: `exit <code>` 한 줄 + 출력."""
+    return f"exit {'timeout' if code is None else code}\n{out}"
+
+
+def verify_check(ws: Path, R: Path, targets: list[dict], tree: Path, f: dict) -> list[str]:
+    """C3 ②: R/snapshot과 빈 줄 사본(각 파일 앞에 그 줄 수만큼 빈 줄) 양쪽에서 exit 1이어야 한다."""
+    shift = tmproot() / "spec-audit" / ws.name / "shift"
+    shutil.rmtree(shift, ignore_errors=True)
+    shift.mkdir(parents=True)
+    for t in targets:
+        (shift / t["snapshot"]).write_bytes(b"\n" * t["lines"] + (R / "snapshot" / t["snapshot"]).read_bytes())
+    codes = [run_check(f["check"], d, tree)[0] for d in (R / "snapshot", shift)]
+    if codes == [1, 1]:
+        return []
+    return [f"{f['id']}: check 재현 실패(snapshot exit {codes[0]}, 빈 줄 사본 exit {codes[1]} — 둘 다 1이어야 함)"]
+
+
+def carry_checks(ws: Path, n: int, targets: list[dict]) -> dict[str, dict]:
+    """직전 aggregate.json checks의 각 finding을 이번 스냅샷 위치(target·affected)로 옮긴다."""
+    P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
+    prev = json.loads((P / "aggregate.json").read_text()).get("checks", {})
+    ptargets = json.loads((P / "targets.json").read_text())["targets"]
+    idx = {t["snapshot"]: i for i, t in enumerate(ptargets)}
+
+    def mv(s: str) -> str:
+        _, snap, a, b = parse_range(s)
+        i = idx[snap]
+        old, new = _lines(P / "snapshot" / snap), _lines(R / "snapshot" / targets[i]["snapshot"])
+        return fmt_range(n, targets[i]["snapshot"], *move_range(old, new, a, b))
+
+    return {k: {**f, "target": mv(f["target"]), "affected": [mv(x) for x in f["affected"]]}
+            for k, f in prev.items()}
+
+
 def make_retry(ws: Path, n: int, item: dict, targets: list[dict]) -> dict:
     """C8 retry 항목 생성 — 같은 범위·recheck, 프롬프트·X, assign.json에 추가."""
     R = ws / f"round-{n}"
@@ -560,6 +609,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         return 3, {"target_modified": changed}
     # ② 보고 검증 — retry 항목이 있으면 그것이 유효 감사자(원래 보고 무시, 재retry 없음)
     ctx = {"n": n, "targets": targets, "axis_lines": {ax: axis_lines(targets, ax) for ax in AXES}}
+    tree = Path(json.loads((R / "targets.json").read_text())["tree"])
     agents = json.loads((R / "assign.json").read_text())["agents"]
     by_name = {a["name"]: a for a in agents}
     invalid, valid = [], []
@@ -572,6 +622,11 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
             try:
                 blocks = parse_report(p.read_text(encoding="utf-8"))
                 bad = validate_report(item["name"], blocks, item, ctx)
+                if not bad:  # 형식이 유효할 때만 check 실행(C3 ②)
+                    for l in blocks["findings"]:
+                        f = json.loads(l)
+                        if f["check"] is not None:
+                            bad += verify_check(ws, R, targets, tree, f)
             except (OSError, UnicodeDecodeError) as e:
                 bad = [f"보고 읽기 실패: {e}"]
         if bad:
@@ -596,10 +651,19 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         unresolved += [m.group(1) for l in blocks.get("resolved", [])
                        if (m := re.match(r"^(\S+): unresolved\b", l))]
     gap = {ax: fmt_lines(assigned[ax] - covered[ax], n, targets) for ax in assigned if assigned[ax] - covered[ax]}
+    checks = carry_checks(ws, n, targets) if n >= 2 else {}
+    for fid, f in checks.items():
+        if fid in unresolved:  # 감사자가 다시 쓴 finding이 대신한다
+            continue
+        code, text = run_check(f["check"], R / "snapshot", tree)
+        if code != 0:
+            findings.append({**f, "evidence": check_text(code, text)})
+    checks.update({f["id"]: f for item, blocks in valid for l in blocks["findings"]
+                   if (f := json.loads(l))["check"] is not None})
     counts = {"fail": sum(f["verdict"] == "fail" for f in findings),
               "unverified": sum(f["verdict"] == "unverified" and f["unverified_reason"] != "context"
                                 for f in findings)}
-    out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts}
+    out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts, "checks": checks}
     (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
     return 0, {}
 
@@ -652,6 +716,29 @@ def cmd_decide(ws: Path, n: int) -> dict:
     return dec
 
 
+def cmd_check(ws: Path) -> dict:
+    """C9: 가장 큰 라운드의 checks를 K(현재 대상 파일 사본)에서 실행."""
+    ns = [int(m.group(1)) for d in ws.glob("round-*") if (m := re.fullmatch(r"round-(\d+)", d.name))]
+    R = ws / f"round-{max(ns, default=0)}"
+    if not (R / "aggregate.json").is_file():
+        die(f"aggregate.json 없음: {R / 'aggregate.json'}")
+    checks = json.loads((R / "aggregate.json").read_text()).get("checks", {})
+    tj = json.loads((R / "targets.json").read_text())
+    K = tmproot() / "spec-audit" / ws.name / "check"
+    shutil.rmtree(K, ignore_errors=True)
+    K.mkdir(parents=True)
+    for t in tj["targets"]:
+        if Path(t["path"]).is_file():
+            shutil.copyfile(t["path"], K / t["snapshot"])
+    failed = []
+    for fid, f in checks.items():
+        code, text = run_check(f["check"], K, Path(tj["tree"]))
+        if code != 0:
+            failed.append({"id": fid, "fix_class": f["fix_class"], "claim": f["claim"],
+                           "output": check_text(code, text)})
+    return {"failed": failed}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -670,7 +757,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--round", type=int, required=True)
     p = sub.add_parser("clean")
     p.add_argument("--ws", required=True)
+    p = sub.add_parser("check")
+    p.add_argument("--ws", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "check":
+        print(json.dumps(cmd_check(Path(a.ws).resolve()), ensure_ascii=False))
+        return 0
     if a.cmd == "decide":
         print(json.dumps(cmd_decide(Path(a.ws).resolve(), a.round), ensure_ascii=False))
         return 0

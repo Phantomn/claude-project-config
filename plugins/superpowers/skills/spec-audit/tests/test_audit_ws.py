@@ -5,6 +5,7 @@ import json
 import os
 import re
 import random
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1037,6 +1038,164 @@ class C2Test(Base):
         new = b"a\nb\r\nc".splitlines(keepends=True)
         self.assertEqual(len(old), 3)
         self.assertEqual(audit_ws.changed_lines(old, new), {1})
+
+
+CHK = 'grep -Hn "timeout=60" 1-s.md && exit 1 || exit 0'
+FC = "refs-r1-s1-001"
+
+
+def spec20(**edits: str) -> list[str]:
+    L = lines(20)
+    L[4] = "timeout=60\n"
+    for k, v in edits.items():
+        L[int(k[1:]) - 1] = v
+    return L
+
+
+class CheckTest(Base):
+    def r1(self, check: str | None = CHK, **over) -> tuple[int, dict | None, str]:
+        """spec 20줄(5줄 timeout=60) C1 → refs finding(:5, check) + 나머지 빈 보고 → C3."""
+        d = self.repo({SP: "".join(spec20())})
+        self.spec = d / SP
+        rc, out, err = self.c1("--spec", str(self.spec))
+        self.assertEqual(rc, 0, err)
+        f = self.finding(R1, 1, **{"class": "ref-mismatch", "target": r(1, 5), "affected": [r(1, 5)],
+                                   "check": check, **over})
+        for a in out["agents"]:
+            self.report(self.ws, 1, a["name"], [f] if a["name"] == R1 else [], a["ranges"])
+        return self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
+
+    def agg(self, n: int = 1) -> dict:
+        return json.loads((self.ws / f"round-{n}/aggregate.json").read_text())
+
+    def round2(self, L: list[str], findings: dict | None = None, resolved: dict | None = None,
+               ) -> tuple[int, dict | None, str]:
+        self.spec.write_text("".join(L))
+        rc, out, err = self.cli("init", "--ws", str(self.ws), "--round", "2")
+        self.assertEqual(rc, 0, err)
+        for a in out["agents"]:
+            default = [f"{i}: resolved" for i in a["recheck"]] if a["recheck"] else None
+            self.report(self.ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"],
+                        (resolved or {}).get(a["name"], default))
+        return self.cli("aggregate", "--ws", str(self.ws), "--round", "2")
+
+    def ok(self, res: tuple) -> None:
+        self.assertEqual(res[:2], (0, {}), res[2])
+
+    def bad(self, res: tuple) -> None:
+        rc, out, err = res
+        self.assertEqual(rc, 3, err)
+        self.assertEqual(len(out["invalid"]), 1, out)
+        self.assertIn("check", out["invalid"][0]["reason"])
+
+    def set_check(self, cmd: str) -> None:
+        p = self.ws / "round-1/aggregate.json"
+        agg = json.loads(p.read_text())
+        agg["checks"][FC]["check"] = cmd
+        p.write_text(json.dumps(agg))
+
+    def c9(self) -> tuple[int, dict | None, str]:
+        return self.cli("check", "--ws", str(self.ws))
+
+    def test_check_valid(self):
+        self.ok(self.r1())
+        checks = self.agg()["checks"]
+        self.assertEqual(list(checks), [FC])
+        self.assertEqual(checks[FC]["check"], CHK)
+        self.assertEqual(checks[FC], next(f for f in self.agg()["findings"] if f["id"] == FC))
+
+    def test_check_null(self):
+        self.ok(self.r1(None))
+        self.assertEqual(self.agg()["checks"], {})
+
+    def test_check_not_reproducing(self):
+        self.bad(self.r1("exit 0"))
+
+    def test_check_error(self):
+        self.bad(self.r1("exit 2"))
+        self.bad(self.r1("exit 1", verdict="unverified", unverified_reason="external"))
+
+    def test_check_line_shift(self):
+        for cmd in ("sed -n 5p 1-s.md | grep 60 && exit 1 || exit 0",
+                    "sed -n 1,12p 1-s.md | grep 60 && exit 1 || exit 0"):
+            with self.subTest(cmd):
+                self.bad(self.r1(cmd))
+
+    def test_run_check_timeout(self):
+        self.assertIsNone(audit_ws.run_check("sleep 5", self.tmp, self.tmp, timeout=1)[0])
+
+    def test_run_check_env(self):
+        self.ok(self.r1())
+        tree = Path(json.loads((self.ws / "round-1/targets.json").read_text())["tree"])
+        cmd = 'test -f 1-s.md && test "$TREE" = ' + shlex.quote(str(tree))
+        self.assertEqual(audit_ws.run_check(cmd, self.ws / "round-1/snapshot", tree)[0], 0)
+
+    def test_check_fixed_kept(self):
+        self.ok(self.r1())
+        self.ok(self.round2(spec20(L5="timeout=30\n")))
+        agg = self.agg(2)
+        self.assertNotIn(FC, [f["id"] for f in agg["findings"]])
+        self.assertTrue(agg["checks"][FC]["target"].startswith("round-2/"))
+
+    def test_check_regression_readded(self):
+        self.ok(self.r1())
+        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n")))
+        agg = self.agg(2)
+        f = next(f for f in agg["findings"] if f["id"] == FC)
+        self.assertTrue(f["target"].startswith("round-2/"))
+        self.assertTrue(all(a.startswith("round-2/") for a in f["affected"]) and f["affected"])
+        self.assertTrue(f["evidence"].startswith("exit 1"))
+        self.assertIn("1-s.md:12", f["evidence"])
+        self.assertEqual(agg["counts"]["fail"], 1)
+        rc, dec, err = self.cli("decide", "--ws", str(self.ws), "--round", "2")
+        self.assertEqual((rc, dec["action"]), (0, "fix"), err)
+
+    def test_check_error_readded(self):
+        self.ok(self.r1())
+        self.set_check("exit 2")
+        self.ok(self.round2(spec20(L5="timeout=30\n")))
+        self.assertIn(FC, [f["id"] for f in self.agg(2)["findings"]])
+
+    def test_check_unresolved_not_duplicated(self):
+        self.ok(self.r1())
+        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n"),
+                            {RR: [self.finding(RR, 1, target=r(2, 5))]}, {RR: [f"{FC}: unresolved {RR}-001"]}))
+        agg = self.agg(2)
+        self.assertNotIn(FC, [f["id"] for f in agg["findings"]])
+        self.assertEqual(agg["counts"]["fail"], 1)
+
+    def test_checks_cumulative(self):
+        self.ok(self.r1())
+        chk2 = 'grep -Hn "^X12$" 1-s.md && exit 1 || exit 0'
+        self.ok(self.round2(spec20(L12="X12\n"), {RR: [self.finding(RR, 1, target=r(2, 12), check=chk2)]}))
+        self.assertEqual(set(self.agg(2)["checks"]), {FC, f"{RR}-001"})
+
+    def test_c9_failed(self):
+        self.ok(self.r1())
+        rc, out, err = self.c9()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(out["failed"]), 1, out)
+        f = out["failed"][0]
+        self.assertEqual(set(f), {"id", "fix_class", "claim", "output"})
+        self.assertEqual(f["id"], FC)
+        self.assertIn("1-s.md:5", f["output"])
+        self.assertTrue((self.tmp / "tmproot/spec-audit" / self.ws.name / "check/1-s.md").is_file())
+        self.spec.write_text("".join(spec20(L5="timeout=30\n")))
+        rc, out, err = self.c9()
+        self.assertEqual((rc, out), (0, {"failed": []}), err)
+
+    def test_c9_error(self):
+        self.ok(self.r1())
+        self.set_check("exit 2")
+        rc, out, err = self.c9()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([f["id"] for f in out["failed"]], [FC])
+
+    def test_c9_no_aggregate(self):
+        d = self.repo({SP: "".join(spec20())})
+        rc, _, err = self.c1("--spec", str(d / SP))
+        self.assertEqual(rc, 0, err)
+        self.assertNotEqual(self.c9()[0], 0)
 
 
 if __name__ == "__main__":
