@@ -10,7 +10,7 @@ writing-plans (upstream, Execution Handoff 문단 수정)
    ▼
 spec-audit/SKILL.md  ── 리드(스킬을 실행하는 메인 대화) 절차 S0–S6, 명령은 C표만
    │  python3 <Base directory>/scripts/audit_ws.py <C명령>     작업공간·스냅샷·프롬프트·집계·판정
-   │  Agent(general-purpose, opus, name=<감사자 이름>)  감사자(프롬프트 파일)
+   │  Agent(superpowers:spec-auditor, opus, name=<감사자 이름>)  감사자(에이전트 + 프롬프트 파일)
    ▼
 <tree>/.superpowers/audit/<slug>/round-<N>/          라운드 작업공간
 ```
@@ -25,14 +25,10 @@ spec-audit/SKILL.md  ── 리드(스킬을 실행하는 메인 대화) 절차 
 - **S5 수정**: 정합 수정은 리드가 반영하고 요구 변경은 항목별 승인을 받은 뒤 C9로 check를 다시 돌린다.
 - **S6 다음 라운드**: C2로 새 라운드를 만들고 S2로 돌아간다. 라운드 상한은 5.
 
-## 2단계 예고
-
-1단계 머지 뒤 별도 spec으로 다룬다.
+## 강제 계층
 
 | 대상 | 내용 |
 |---|---|
-| 감사자 정책 훅 | 쓰기 도구·Agent·MCP 쓰기·시크릿·파괴적 명령 차단(opt-in) |
-| 작업트리 변경 사후 탐지 | gitignore 경로·빈 디렉토리 사각지대를 포함한 재설계 |
-| 실행 관문 | 감사 합격 확인 + 구현 디스패치 훅 |
-| 감사 중 대상 문서 잠금 | 감사 도중 문서 수정을 막는다 |
-| 리드의 직접 감사 차단 | 감사 중 리드의 `<tree>` 조회 도구 제한 |
+| 감사자 에이전트 | `agents/spec-auditor.md` — 쓰기 도구 없음 |
+| audit-guard | G1–G3 감사자(쓰기·시크릿·파괴적 명령), M1–M2 감사 중 리드(대상 수정·`<tree>` 조회) 차단 |
+| 실행 관문 | opt-in — 켜는 법: 쓰는 프로젝트의 `.claude/settings.json` `env.SUPERPOWERS_AUDIT_GATE="1"` |

@@ -129,12 +129,7 @@ algorithm they do not determine.
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/path/test.py src/path/file.py
-git commit -m "feat: add specific feature"
-```
+- [ ] **Step 5: Commit** — message `feat: add specific feature`; the paths are this task's **Files**.
 ````
 
 ## What a Step Contains

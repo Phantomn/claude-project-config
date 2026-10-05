@@ -1,7 +1,7 @@
 # superpowers fork — 변경점
 
 Upstream: <https://github.com/obra/superpowers> (MIT, Copyright (c) 2025 Jesse Vincent)
-기준 버전: **6.4.2** · fork: `6.4.2-phantomn.6` (2026-10-05; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
+기준 버전: **6.4.2** · fork: `6.4.2-phantomn.7` (2026-10-05; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
 
 ## 왜 fork 했나
 
@@ -25,7 +25,9 @@ superpowers 의 SessionStart 훅은 `skills/using-superpowers/SKILL.md` 를 **�
 
 **5) upstream 6.3.0 → 6.4.2 재기반** (2026-10-01, `phantomn.5`) — 방법: 로컬 fork 가 v6.3.0 원본과 우리 변경점(위 1)~4): 1파일+고유 3종)만 다름을 `diff -r` 로 확인한 뒤, 원본 경로(`skills/<upstream 15종>`·`hooks/`·`LICENSE`·`package.json`)를 v6.4.2 로 교체하고 우리 것만 재적용했다. 신규 원본 스킬 `diagnosing-superpowers` 로 **원본 15종 + 고유 3종**. 재적용 내역: ① `using-superpowers` 압축본 유지 + upstream 이 추가한 Claude Code·Muse reference 2개를 플랫폼 줄에 병합 ② sdd Phase 4 의 `executing-plans` 설명을 "inline batch" → Native(세션이 전 태스크 직접 구현 후 브랜치 전체 리뷰 1회)로 갱신 — 6.4.1 에서 체크포인트 방식이 폐지됐다. 다음 재기반도 같은 절차: `diff -r <local> <upstream 기준태그>` 로 변경점이 이 문서 목록과 일치하는지 먼저 확인. phantomn.6 이후 재기반에서는 항목 6의 원본 수정 파일 목록을 따른다.
 
-**6) spec-audit 재설계 1단계** (2026-10-05, `phantomn.6`) — 감사 루프 소유·계약 기준 판정. 원본 수정 전체: `skills/using-superpowers/SKILL.md`(항목 1, 압축), `skills/writing-plans/SKILL.md`(Execution Handoff, 이 항목). 신규 `skills/spec-audit/{scripts,auditors,tests}/`·`README.md`·`DECISIONS.md`·`LIMITS.md`. spec은 비공개 저장소.
+**6) spec-audit 재설계 1단계** (2026-10-05, `phantomn.6`) — 감사 루프 소유·계약 기준 판정. 원본 수정 전체: `skills/using-superpowers/SKILL.md`(항목 1, 압축), `skills/writing-plans/SKILL.md`(Execution Handoff, 이 항목), `hooks/hooks.json`·`skills/subagent-driven-development/scripts/sdd-workspace`·`skills/writing-plans/SKILL.md`(Step 5, 항목 7). 신규 `skills/spec-audit/{scripts,auditors,tests}/`·`README.md`·`DECISIONS.md`·`LIMITS.md`. spec은 비공개 저장소.
+
+**7) spec-audit 강제 계층** (2026-10-05, `phantomn.7`) — 감사자가 대상 문서·시크릿을 건드리거나 리드가 감사 중 직접 조회하는 것을 훅으로 막는다. 신규 `agents/spec-auditor.md`·`hooks/audit-guard.py`. 원본 수정: `hooks/hooks.json`(훅 등록), `skills/subagent-driven-development/scripts/sdd-workspace`(실행 관문), `skills/writing-plans/SKILL.md`(Step 5 의 Commit 코드 블록 삭제 — Files 가 유일한 경로 목록).
 
 주입량 **3321자(830토큰) → 1802자(450토큰), 45% 감축.**
 

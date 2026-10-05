@@ -12,5 +12,5 @@ round 1 must_not: ref-missing @ pkg/docs/specs/f1-spec.md:19
 round 1 must_not: requirement-uncovered|unverifiable-step @ docs/plans/f1-plan.md:15-59
 round 1 must_not: requirement-uncovered|unverifiable-step @ docs/plans/f1-plan.md:12
 round 1 must: unverifiable-step|requirement-uncovered @ docs/plans/f1-plan.md:13
-round 1 header_contains: 6.4.2-phantomn.6
+round 1 header_contains: 플러그인 6.4.2-phantomn.
 outcome: any

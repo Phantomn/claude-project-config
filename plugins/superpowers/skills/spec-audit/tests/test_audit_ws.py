@@ -29,6 +29,8 @@ class Base(unittest.TestCase):
         env = {
             "HOME": str(self.tmp / "home"),
             "SUPERPOWERS_AUDIT_TMPROOT": str(self.tmp / "tmproot"),
+            "SUPERPOWERS_AUDIT_STATE": str(self.tmp / "state"),
+            "CLAUDE_CODE_SESSION_ID": "sess-test",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
@@ -116,6 +118,95 @@ class Base(unittest.TestCase):
         rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
         self.assertEqual(rc, 0, err)
         return ws
+
+
+class OpenStateTest(Base):
+    FILES = {"plans/p.md": "# p\n`a.txt`\n", "a.txt": "x\n"}
+
+    def open_json(self, ws: Path) -> Path:
+        return audit_ws.open_path(ws)
+
+    def start(self) -> Path:
+        d = self.repo(self.FILES)
+        rc, out, err = self.c1("--plan", str(d / "plans/p.md"))
+        self.assertEqual(rc, 0, err)
+        self.d = d
+        return Path(out["ws"])
+
+    def test_c1_writes_open(self):
+        ws = self.start()
+        o = json.loads(self.open_json(ws).read_text())
+        self.assertEqual((o["round"], o["session"], o["ws"]), (1, "sess-test", str(ws)))
+        self.assertEqual(o["tree"], str(self.d.resolve()))
+        self.assertIn(str((self.d / "plans/p.md").resolve()), o["targets"])
+        self.assertTrue(all(Path(t).is_absolute() for t in o["targets"]))
+
+    def test_session_null_without_env(self):
+        os.environ.pop("CLAUDE_CODE_SESSION_ID")
+        ws = self.start()
+        self.assertIsNone(json.loads(self.open_json(ws).read_text())["session"])
+
+    def test_c3_exit0_removes_open(self):
+        ws = self.round1_done(self.FILES)
+        self.assertFalse(self.open_json(ws).exists())
+
+    def test_c3_target_modified_removes_open(self):
+        ws = self.start()
+        (self.d / "plans/p.md").write_text("changed\n")
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("target_modified", out)
+        self.assertFalse(self.open_json(ws).exists())
+
+    def test_c3_invalid_keeps_open(self):
+        ws = self.start()
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertEqual(rc, 3)
+        self.assertIn("invalid", out)
+        self.assertTrue(self.open_json(ws).exists())
+
+    def test_c2_writes_open_round2(self):
+        ws = self.round1_done(self.FILES)
+        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(self.open_json(ws).read_text())["round"], 2)
+
+    def test_clean_while_open_aborts(self):
+        ws = self.start()
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        self.assertTrue((ws / audit_ws.ABORTED).exists())
+        self.assertFalse((audit_ws.tmproot() / "spec-audit" / ws.name).exists())
+
+    def test_clean_after_close_no_abort(self):
+        ws = self.round1_done(self.FILES)
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        self.assertFalse((ws / audit_ws.ABORTED).exists())
+
+    def aborted_round2(self) -> Path:
+        ws = self.round1_done(self.FILES)
+        self.assertEqual(self.cli("init", "--round", "2", "--ws", str(ws))[0], 0)
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        return ws
+
+    def test_c2_after_abort_fails(self):
+        ws = self.aborted_round2()
+        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("감사 중단됨", err)
+
+    def test_c3_after_abort_fails(self):
+        ws = self.start()
+        self.cli("clean", "--ws", str(ws))
+        rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("감사 중단됨", err)
+
+    def test_c1_clears_abort(self):
+        ws = self.start()
+        self.cli("clean", "--ws", str(ws))
+        rc, _, err = self.c1("--plan", str(self.d / "plans/p.md"))
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((ws / audit_ws.ABORTED).exists())
 
 
 def expand(rs):
@@ -798,6 +889,132 @@ F1 = "refs-r1-s1-001"
 
 def r(n: int, a: int, b: int | None = None, snap: str = "1-s.md") -> str:
     return audit_ws.fmt_range(n, snap, a, b or a)
+
+
+class GateTest(Base):
+    PLAN, SPEC = "docs/plans/p-plan.md", "docs/specs/s-spec.md"
+    FILES = {PLAN: "# p\n", SPEC: "# s\n"}
+    SDD = Path(audit_ws.__file__).resolve().parents[2] / "subagent-driven-development" / "scripts" / "sdd-workspace"
+
+    def passed(self, files: dict[str, str] | None = None) -> tuple[Path, dict]:
+        ws = self.round1_done(files or self.FILES)
+        rc, out, err = self.cli("decide", "--ws", str(ws), "--round", "1")
+        self.assertEqual((rc, out["action"]), (0, "pass"), err)
+        tj = json.loads((ws / "round-1" / "targets.json").read_text())
+        return ws, {Path(t["path"]).name: Path(t["path"]) for t in tj["targets"]}
+
+    def records(self) -> list[Path]:
+        return list((audit_ws.state_dir() / "audit-pass").glob("*.json"))
+
+    def gate(self, plan: Path) -> tuple[int, str]:
+        rc, _, err = self.cli("gate", str(plan))
+        return rc, err
+
+    def test_pass_with_plan_writes_record(self):
+        _, f = self.passed()
+        sha = hashlib.sha256(f["p-plan.md"].read_bytes()).hexdigest()
+        rec = json.loads(audit_ws.pass_record_path(sha).read_text())
+        self.assertEqual(rec["plan"], str(f["p-plan.md"]))
+        self.assertEqual({t["path"] for t in rec["targets"]}, {str(f["p-plan.md"]), str(f["s-spec.md"])})
+        self.assertTrue(all(set(t) == {"path", "sha256"} for t in rec["targets"]))
+        self.assertEqual((rec["round"], rec["plugin_version"]),
+                         (1, json.loads(PLUGIN_JSON.read_text())["version"]))
+
+    def test_pass_without_plan_no_record(self):
+        self.passed({self.SPEC: "# s\n"})
+        self.assertEqual(self.records(), [])
+
+    def test_fix_no_record(self):
+        d = self.repo(self.FILES)
+        rc, out, err = self.c1("--plan", str(d / self.PLAN), "--spec", str(d / self.SPEC))
+        self.assertEqual(rc, 0, err)
+        for i, a in enumerate(out["agents"]):
+            fs = [self.finding(a["name"], 1)] if i == 0 else []
+            self.report(Path(out["ws"]), 1, a["name"], fs, a["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", out["ws"], "--round", "1")[0], 0)
+        rc, dec, err = self.cli("decide", "--ws", out["ws"], "--round", "1")
+        self.assertEqual(dec["action"], "fix", err)
+        self.assertEqual(self.records(), [])
+
+    def test_record_excludes_other(self):
+        _, f = self.passed({self.PLAN: "# p\n", self.SPEC: "# s\n상위 정본: `docs/canon.md`\n",
+                            "docs/canon.md": "c\n"})
+        rec = self.records()[0].read_text()
+        self.assertIn("s-spec.md", rec)
+        self.assertNotIn("canon", rec)
+
+    def test_state_dir_xdg_default(self):
+        os.environ.pop("SUPERPOWERS_AUDIT_STATE")
+        for xdg in (None, ""):
+            if xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = xdg
+            self.assertEqual(audit_ws.state_dir(), Path.home() / ".local/state/superpowers")
+        os.environ["XDG_STATE_HOME"] = str(self.tmp / "x")
+        self.addCleanup(os.environ.pop, "XDG_STATE_HOME", None)
+        self.assertEqual(audit_ws.state_dir(), self.tmp / "x" / "superpowers")
+
+    def test_gate_pass(self):
+        _, f = self.passed()
+        self.assertEqual(self.gate(f["p-plan.md"]), (0, ""))
+
+    def test_gate_no_record(self):
+        d = self.repo(self.FILES)
+        rc, err = self.gate(d / self.PLAN)
+        self.assertEqual(rc, 1)
+        self.assertIn("감사 합격 기록 없음", err)
+
+    def test_gate_plan_changed(self):
+        _, f = self.passed()
+        f["p-plan.md"].write_text("# p changed\n")
+        rc, err = self.gate(f["p-plan.md"])
+        self.assertEqual(rc, 1)
+        self.assertIn("감사 합격 기록 없음", err)
+
+    def test_gate_spec_changed(self):
+        _, f = self.passed()
+        f["s-spec.md"].write_text("# s changed\n")
+        rc, err = self.gate(f["p-plan.md"])
+        self.assertEqual(rc, 1)
+        self.assertIn(f"{f['s-spec.md']}가 감사 합격 뒤 바뀌었다", err)
+
+    def test_gate_spec_missing(self):
+        _, f = self.passed()
+        f["s-spec.md"].unlink()
+        rc, err = self.gate(f["p-plan.md"])
+        self.assertEqual(rc, 1)
+        self.assertIn(f"{f['s-spec.md']}가 감사 합격 뒤 바뀌었다", err)
+
+    def test_gate_other_changed_passes(self):
+        _, f = self.passed({self.PLAN: "# p\n", self.SPEC: "# s\n상위 정본: `docs/canon.md`\n",
+                            "docs/canon.md": "c\n"})
+        (f["p-plan.md"].parents[1] / "canon.md").write_text("changed\n")
+        self.assertEqual(self.gate(f["p-plan.md"]), (0, ""))
+
+    def sdd(self, plan: Path, gate: bool) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env.pop("SUPERPOWERS_AUDIT_GATE", None)
+        if gate:
+            env["SUPERPOWERS_AUDIT_GATE"] = "1"
+        return subprocess.run(["bash", str(self.SDD), str(plan)], cwd=plan.parent,
+                              env=env, capture_output=True, text=True)
+
+    def test_sdd_workspace_gate_off(self):
+        d = self.repo(self.FILES)
+        self.assertEqual(self.sdd(d / self.PLAN, False).returncode, 0)
+
+    def test_sdd_workspace_gate_on_blocks(self):
+        d = self.repo(self.FILES)
+        p = self.sdd(d / self.PLAN, True)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("감사 합격 기록 없음", p.stderr)
+
+    def test_sdd_workspace_gate_on_passes(self):
+        _, f = self.passed()
+        p = self.sdd(f["p-plan.md"], True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(Path(p.stdout.strip()).parent.name, "sdd")
 
 
 class C2Test(Base):

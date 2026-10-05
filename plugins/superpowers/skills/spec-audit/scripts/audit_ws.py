@@ -127,6 +127,42 @@ def tmproot() -> Path:
     return Path(os.environ.get("SUPERPOWERS_AUDIT_TMPROOT") or f"/tmp/claude-{os.getuid()}").resolve()
 
 
+def state_dir() -> Path:
+    if env := os.environ.get("SUPERPOWERS_AUDIT_STATE"):
+        return Path(env)
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "superpowers"
+
+
+def pass_record_path(plan_sha: str) -> Path:
+    return state_dir() / "audit-pass" / f"{plan_sha}.json"
+
+
+ABORTED = "aborted"
+
+
+def open_path(ws: Path) -> Path:
+    return tmproot() / "spec-audit" / ws.name / "open.json"
+
+
+def write_open(ws: Path, n: int) -> None:
+    """열린 감사 기록(spec 4.3) — 훅이 읽는다."""
+    tj = json.loads((ws / f"round-{n}" / "targets.json").read_text(encoding="utf-8"))
+    rec = {"ws": str(ws), "round": n, "session": os.environ.get("CLAUDE_CODE_SESSION_ID"),
+           "tree": tj["tree"], "targets": [t["path"] for t in tj["targets"]]}
+    p = open_path(ws)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+
+def close_open(ws: Path) -> None:
+    open_path(ws).unlink(missing_ok=True)
+
+
+def ensure_not_aborted(ws: Path) -> None:
+    if (ws / ABORTED).exists():
+        die("감사 중단됨 — 새로 시작하려면 C1")
+
+
 def role_of(path: Path) -> str | None:
     """S0-2 역할 규칙. plan 규칙이 먼저."""
     dirs, base = path.parent.parts, path.name.lower()
@@ -333,7 +369,9 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     ranges = {ax: axis_lines(targets, ax) for ax in AXES}
     if not any(t["role"] == "spec" and oracle_needed((ws / "round-1" / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace")) for t in targets):
         ranges["oracle"] = []
-    return build_round(ws, 1, targets, ranges, {})
+    out = build_round(ws, 1, targets, ranges, {})
+    write_open(ws, 1)
+    return out
 
 
 def _lines(p: Path) -> list[bytes]:
@@ -342,6 +380,7 @@ def _lines(p: Path) -> list[bytes]:
 
 def cmd_init_next(ws: Path, n: int) -> dict:
     """C2: 직전 라운드 대상(L18: 정본 재수집 없음)으로 스냅샷·diff.patch·scope.json(C7)·recheck(4.6)·배정."""
+    ensure_not_aborted(ws)
     restore_snapshots(ws)
     P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
     for f in ("targets.json", "aggregate.json"):
@@ -395,7 +434,9 @@ def cmd_init_next(ws: Path, n: int) -> dict:
         die("recheck 담당 감사자가 없는 직전 finding(id · 축 · 새 위치):\n" + "\n".join(orphans))
     scope = {ax: [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in rs] for ax, rs in ranges.items()}
     (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1), encoding="utf-8")
-    return build_round(ws, n, targets, ranges, recheck)
+    out = build_round(ws, n, targets, ranges, recheck)
+    write_open(ws, n)
+    return out
 
 
 # ---- C3 aggregate(4.5·4.7) ----
@@ -644,6 +685,7 @@ def make_retry(ws: Path, n: int, item: dict, targets: list[dict], violations: li
 
 
 def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
+    ensure_not_aborted(ws)
     restore_snapshots(ws)
     R = ws / f"round-{n}"
     targets = json.loads((R / "targets.json").read_text(encoding="utf-8"))["targets"]
@@ -651,6 +693,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
     changed = [t["rel"] for t in targets if not Path(t["path"]).is_file()
                or hashlib.sha256(Path(t["path"]).read_bytes()).hexdigest() != t["sha256"]]
     if changed:
+        close_open(ws)
         return 3, {"target_modified": changed}
     # ② 보고 검증 — retry 항목이 있으면 그것이 유효 감사자(원래 보고 무시, 재retry 없음)
     ctx = {"n": n, "targets": targets, "axis_lines": {ax: axis_lines(targets, ax) for ax in AXES}}
@@ -710,6 +753,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
                                 for f in findings)}
     out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts, "checks": checks}
     (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    close_open(ws)
     return 0, {}
 
 
@@ -758,6 +802,15 @@ def cmd_decide(ws: Path, n: int) -> dict:
         md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
     (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1), encoding="utf-8")
+    plan = next((t for t in tj["targets"] if t["role"] == "plan"), None)
+    if dec["action"] == "pass" and plan:
+        rec = {"plan": plan["path"],
+               "targets": [{"path": t["path"], "sha256": t["sha256"]} for t in tj["targets"]
+                           if t["role"] in ("plan", "spec")],
+               "ws": str(ws), "round": n, "plugin_version": tj["plugin_version"]}
+        f = pass_record_path(plan["sha256"])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     return dec
 
 
@@ -785,6 +838,29 @@ def cmd_check(ws: Path) -> dict:
     return {"failed": failed}
 
 
+def cmd_clean(ws: Path) -> None:
+    """C5: 열린 감사를 끝내면 중단 표시(W/aborted)를 남긴다."""
+    if open_path(ws).exists() and ws.is_dir():
+        (ws / ABORTED).touch()
+    shutil.rmtree(tmproot() / "spec-audit" / ws.name, ignore_errors=True)
+
+
+def cmd_gate(plan: Path) -> tuple[int, str]:
+    """C11: 이 계획 내용이 감사를 통과했고 합격 뒤 spec이 그대로인지."""
+    sha = hashlib.sha256(plan.read_bytes()).hexdigest()
+    f = pass_record_path(sha)
+    if not f.is_file():
+        return 1, "감사 합격 기록 없음 — 이 계획 내용으로 spec-audit을 통과한 적이 없다(합격 뒤 계획이 바뀌었으면 재감사)"
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    for t in rec["targets"]:
+        if t["path"] == rec["plan"]:
+            continue
+        p = Path(t["path"])
+        if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != t["sha256"]:
+            return 1, f"{t['path']}가 감사 합격 뒤 바뀌었다 — 재감사"
+    return 0, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -805,7 +881,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ws", required=True)
     p = sub.add_parser("check")
     p.add_argument("--ws", required=True)
+    p = sub.add_parser("gate")
+    p.add_argument("plan")
     a = ap.parse_args(argv)
+    if a.cmd == "gate":
+        rc, msg = cmd_gate(Path(a.plan))
+        if msg:
+            print(msg, file=sys.stderr)
+        return rc
     if a.cmd == "check":
         print(json.dumps(cmd_check(Path(a.ws).resolve()), ensure_ascii=False))
         return 0
@@ -813,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(cmd_decide(Path(a.ws).resolve(), a.round), ensure_ascii=False))
         return 0
     if a.cmd == "clean":
-        shutil.rmtree(tmproot() / "spec-audit" / Path(a.ws).resolve().name, ignore_errors=True)
+        cmd_clean(Path(a.ws).resolve())
         return 0
     if a.cmd == "aggregate":
         rc, out = cmd_aggregate(Path(a.ws).resolve(), a.round)

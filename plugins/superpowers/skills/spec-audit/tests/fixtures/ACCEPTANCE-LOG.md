@@ -8,3 +8,4 @@
 | F6 | 일치 | pass | 3 | 4 | 4 | exec-fail,interface-mismatch,premise,ref-missing,unverifiable-step |
 | F7 | 일치 | pass | 3 | 2 | 0 | oracle-missing,unverifiable-step |
 | F5 | 일치 | cap | 5 | 3 | 0 | cross-doc-conflict,premise |
+| F1 | 일치 | fix | 2 | 10 | 0 | constraint-drift,interface-mismatch,over-scope,premise,ref-mismatch,ref-missing,requirement-uncovered,unverifiable-step |
