@@ -675,6 +675,88 @@ class C3Test(Base):
         ws = self.round1_done(self.FILES)
         self.assertTrue((ws / "round-1/aggregate.json").is_file())
 
+class C4Test(Base):
+    FILES = {"docs/specs/s.md": "".join(f"s{k}\n" for k in range(1, 21))}
+
+    @staticmethod
+    def agg(fail=0, unv=0, gap=None, unres=(), findings=()):
+        return {"findings": list(findings), "review_gap": gap or {}, "unresolved": list(unres),
+                "counts": {"fail": fail, "unverified": unv}}
+
+    def fnd(self, i, **over):
+        f = {"id": i, "verdict": "fail", "fix_class": "align", "unverified_reason": None}
+        f.update(over)
+        return f
+
+    def test_T14(self):
+        d = audit_ws.decide
+        self.assertEqual(d(self.agg(), 1)["action"], "pass")
+        self.assertEqual(d(self.agg(fail=1), 1)["action"], "fix")
+        r = d(self.agg(gap={"refs": ["round-1/snapshot/1-s.md:1"]}), 1)
+        self.assertEqual(r, {"action": "fix", "fix": {"align": [], "approval": []}})
+        self.assertEqual(d(self.agg(unres=["x"]), 1)["action"], "fix")
+
+    def test_T15(self):
+        self.assertEqual(audit_ws.decide(self.agg(unv=1), 2)["action"], "fix")
+
+    def test_T16(self):
+        d = audit_ws.decide
+        self.assertEqual(d(self.agg(fail=1), 5)["action"], "cap")
+        self.assertEqual(d(self.agg(), 5)["action"], "pass")
+        self.assertEqual(d(self.agg(fail=1), 3)["action"], "fix")
+
+    def test_T17(self):
+        fs = [self.fnd("a"), self.fnd("r", fix_class="requirement"),
+              self.fnd("c", verdict="unverified", unverified_reason="context")]
+        r = audit_ws.decide(self.agg(fail=2, findings=fs), 1)
+        self.assertEqual(r["fix"], {"align": ["a"], "approval": ["r"]})
+
+    def test_T18(self):
+        ws = self.round1_done(self.FILES)
+        a = json.loads((ws / "round-1/assign.json").read_text())["agents"]
+        refs = next(x for x in a if x["axis"] == "refs")
+        self.report(ws, 1, refs["name"], [self.finding(refs["name"], 1, claim="a|b\nc")], refs["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", str(ws), "--round", "1")[0], 0)
+        rc, out, err = self.cli("decide", "--ws", str(ws), "--round", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out["action"], "fix")
+        self.assertEqual(json.loads((ws / "round-1/decision.json").read_text()), out)
+        md = (ws / "round-1/aggregate.md").read_text()
+        lines = md.splitlines()
+        tj = json.loads((ws / "round-1/targets.json").read_text())
+        rels = [t["rel"] for t in tj["targets"]]
+        version = json.loads(PLUGIN_JSON.read_text())["version"]
+        self.assertEqual(lines[0], "# SPEC Audit · round 1 · fix")
+        self.assertTrue(lines[1].startswith("대상: " + ", ".join(rels) + " · "))
+        self.assertIn(f"플러그인 {version}", lines[1])
+        self.assertIn("감사자: ", lines[1])
+        for x in a:
+            self.assertIn(x["name"], lines[1])
+        self.assertRegex(lines[2], r"^fail 1 · unverified 0 · review-gap \d+줄 · 직전 미해소 0$")
+        self.assertIn("| id | 판정 | 축 | 위치 | 주장 | 근거 | 수정 분류 | 영향 위치 |", md)
+        i = lines.index("|---|---|---|---|---|---|---|---|")
+        self.assertEqual(len(lines) - i - 1, 1)
+        self.assertIn("a\\|b c", lines[i + 1])
+
+    def test_T19_clean(self):
+        ws = self.round1_done(self.FILES)
+        tmp = audit_ws.tmproot() / "spec-audit" / ws.name
+        tmp.mkdir(parents=True, exist_ok=True)
+        (tmp / "k").write_text("x")
+        self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
+        self.assertFalse(tmp.exists())
+        self.assertTrue(ws.exists())
+
+    def test_rf_empty_all_pass(self):
+        d = self.repo({"docs/specs/e.md": ""})
+        rc, out, err = self.c1("--spec", str(d / "docs/specs/e.md"))
+        self.assertEqual(rc, 0, err)
+        for a in out["agents"]:
+            self.report(self.ws, 1, a["name"], [], a["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws), "--round", "1")[0], 0)
+        rc, out, err = self.cli("decide", "--ws", str(self.ws), "--round", "1")
+        self.assertEqual((rc, out["action"]), (0, "pass"), err)
+
 
 if __name__ == "__main__":
     unittest.main()

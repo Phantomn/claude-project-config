@@ -494,6 +494,54 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
     return 0, {}
 
 
+# ---- C4 decide(J1)·C5 clean ----
+
+def decide(agg: dict, n: int) -> dict:
+    gap = any(agg["review_gap"].values())
+    c = agg["counts"]
+    if not (c["fail"] or c["unverified"] or gap or agg["unresolved"]):
+        action = "pass"
+    elif n >= CAP:
+        action = "cap"
+    else:
+        action = "fix"
+    fix: dict[str, list[str]] = {"align": [], "approval": []}
+    for f in agg["findings"]:
+        if f["unverified_reason"] != "context":
+            fix["align" if f["fix_class"] == "align" else "approval"].append(f["id"])
+    return {"action": action, "fix": fix}
+
+
+def _cell(x: object) -> str:
+    return str(x).replace("|", "\\|").replace("\n", " ")
+
+
+def cmd_decide(ws: Path, n: int) -> dict:
+    R = ws / f"round-{n}"
+    agg = json.loads((R / "aggregate.json").read_text())
+    tj = json.loads((R / "targets.json").read_text())
+    names = [a["name"] for a in json.loads((R / "assign.json").read_text())["agents"]]
+    dec = decide(agg, n)
+    gap_lines = sum(b - a + 1 for rs in agg["review_gap"].values() for r in rs
+                    for _, _, a, b in [parse_range(r)])
+    c = agg["counts"]
+    md = [f"# SPEC Audit · round {n} · {dec['action']}",
+          f"대상: {', '.join(t['rel'] for t in tj['targets'])} · 플러그인 {tj['plugin_version']} · "
+          f"감사자: {', '.join(names)}",
+          f"fail {c['fail']} · unverified {c['unverified']} · review-gap {gap_lines}줄 · "
+          f"직전 미해소 {len(agg['unresolved'])}",
+          "",
+          "| id | 판정 | 축 | 위치 | 주장 | 근거 | 수정 분류 | 영향 위치 |",
+          "|---|---|---|---|---|---|---|---|"]
+    for f in agg["findings"]:
+        cells = [f["id"], f["verdict"], f["axis"], f["target"], f["claim"], f["evidence"], f["fix_class"],
+                 ", ".join(f["affected"])]
+        md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
+    (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1))
+    return dec
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -507,7 +555,18 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("aggregate")
     p.add_argument("--ws", required=True)
     p.add_argument("--round", type=int, required=True)
+    p = sub.add_parser("decide")
+    p.add_argument("--ws", required=True)
+    p.add_argument("--round", type=int, required=True)
+    p = sub.add_parser("clean")
+    p.add_argument("--ws", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "decide":
+        print(json.dumps(cmd_decide(Path(a.ws).resolve(), a.round), ensure_ascii=False))
+        return 0
+    if a.cmd == "clean":
+        shutil.rmtree(tmproot() / "spec-audit" / Path(a.ws).resolve().name, ignore_errors=True)
+        return 0
     if a.cmd == "aggregate":
         rc, out = cmd_aggregate(Path(a.ws).resolve(), a.round)
         print(json.dumps(out, ensure_ascii=False))
