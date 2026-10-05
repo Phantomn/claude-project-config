@@ -99,6 +99,12 @@ class AssignTest(Base):
         self.assertFalse(audit_ws.oracle_needed("## Reference Oracle (optional)\n[기존 시스템을 …]\n"))
         self.assertFalse(audit_ws.oracle_needed("```\n## Reference Oracle\nx\n```\n"))
 
+    def test_oracle_subheading_in_section(self):
+        self.assertTrue(audit_ws.oracle_needed("## Reference Oracle\n### 원본\nlegacy/p.c\n"))
+
+    def test_oracle_empty_section_ends_at_h2(self):
+        self.assertFalse(audit_ws.oracle_needed("## Reference Oracle\n\n## 다음\nx\n"))
+
     def test_rf_empty_lines_excluded(self):
         self.assertEqual(audit_ws.axis_lines(self.t(("spec", 0), ("plan", 10)), "refs"), [(2, 1, 10)])
         self.assertEqual(audit_ws.shard([]), [])

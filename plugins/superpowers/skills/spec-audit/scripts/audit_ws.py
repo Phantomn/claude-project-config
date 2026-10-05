@@ -60,7 +60,7 @@ def oracle_needed(text: str) -> bool:
         if in_fence:
             continue
         if in_section:
-            if line.startswith("#"):
+            if re.match(r"#{1,2}(\s|$)", line):
                 return False
             if line.strip():
                 return not line.lstrip().startswith("[")
