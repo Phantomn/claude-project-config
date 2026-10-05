@@ -127,6 +127,16 @@ def tmproot() -> Path:
     return Path(os.environ.get("SUPERPOWERS_AUDIT_TMPROOT") or f"/tmp/claude-{os.getuid()}").resolve()
 
 
+def state_dir() -> Path:
+    if env := os.environ.get("SUPERPOWERS_AUDIT_STATE"):
+        return Path(env)
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "superpowers"
+
+
+def pass_record_path(plan_sha: str) -> Path:
+    return state_dir() / "audit-pass" / f"{plan_sha}.json"
+
+
 ABORTED = "aborted"
 
 
@@ -792,6 +802,15 @@ def cmd_decide(ws: Path, n: int) -> dict:
         md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
     (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1), encoding="utf-8")
+    plan = next((t for t in tj["targets"] if t["role"] == "plan"), None)
+    if dec["action"] == "pass" and plan:
+        rec = {"plan": plan["path"],
+               "targets": [{"path": t["path"], "sha256": t["sha256"]} for t in tj["targets"]
+                           if t["role"] in ("plan", "spec")],
+               "ws": str(ws), "round": n, "plugin_version": tj["plugin_version"]}
+        f = pass_record_path(plan["sha256"])
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     return dec
 
 
@@ -826,6 +845,22 @@ def cmd_clean(ws: Path) -> None:
     shutil.rmtree(tmproot() / "spec-audit" / ws.name, ignore_errors=True)
 
 
+def cmd_gate(plan: Path) -> tuple[int, str]:
+    """C11: 이 계획 내용이 감사를 통과했고 합격 뒤 spec이 그대로인지."""
+    sha = hashlib.sha256(plan.read_bytes()).hexdigest()
+    f = pass_record_path(sha)
+    if not f.is_file():
+        return 1, "감사 합격 기록 없음 — 이 계획 내용으로 spec-audit을 통과한 적이 없다(합격 뒤 계획이 바뀌었으면 재감사)"
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    for t in rec["targets"]:
+        if t["path"] == rec["plan"]:
+            continue
+        p = Path(t["path"])
+        if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != t["sha256"]:
+            return 1, f"{t['path']}가 감사 합격 뒤 바뀌었다 — 재감사"
+    return 0, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -846,7 +881,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ws", required=True)
     p = sub.add_parser("check")
     p.add_argument("--ws", required=True)
+    p = sub.add_parser("gate")
+    p.add_argument("plan")
     a = ap.parse_args(argv)
+    if a.cmd == "gate":
+        rc, msg = cmd_gate(Path(a.plan))
+        if msg:
+            print(msg, file=sys.stderr)
+        return rc
     if a.cmd == "check":
         print(json.dumps(cmd_check(Path(a.ws).resolve()), ensure_ascii=False))
         return 0

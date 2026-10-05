@@ -35,6 +35,10 @@ if [ $# -ne 1 ]; then
   exit 2
 fi
 
+if [ "${SUPERPOWERS_AUDIT_GATE:-0}" = "1" ]; then
+  python3 "$(cd "$(dirname "$0")/../../spec-audit/scripts" && pwd)/audit_ws.py" gate "$1" >&2 || exit 1
+fi
+
 plan=$1
 [ -f "$plan" ] || { echo "no such plan file: $plan" >&2; exit 2; }
 
