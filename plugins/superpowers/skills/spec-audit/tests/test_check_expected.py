@@ -103,6 +103,45 @@ class CheckExpectedTest(Base):
         with self.assertRaises(ValueError):
             check_expected.parse_expected("outcome: any\n")
 
+    # EXPECTED 위치마다 그 줄 범위에 들어 있어야 할 토큰(줄 드리프트 차단). 위치 키 = "<rel>:<a>-<b>".
+    FIXTURE_TOKENS = {
+        "F1": {
+            "pkg/docs/specs/f1-spec.md:20-20": ("linker/stm32.ld",),
+            "docs/plans/f1-plan.md:106-106": ("Consumes: Task 3 `clear_full_layers(x)`",),
+            "docs/plans/f1-plan.md:7-7": ("`timeout=30`",),
+            "pkg/docs/specs/f1-spec.md:21-21": ("`a.b`",),
+            "pkg/docs/specs/f1-spec.md:22-22": ("[[Missing Note]]",),
+            "pkg/docs/specs/f1-spec.md:9-9": ("`parse_config()`",),
+            "pkg/docs/specs/f1-spec.md:18-18": ("`src/index.ts`",),
+            "pkg/docs/specs/f1-spec.md:14-14": ("`Cargo.toml`",),
+            "pkg/docs/specs/f1-spec.md:19-19": ("`app/main.py`",),
+            "docs/plans/f1-plan.md:15-59": ("### Task 1:", "Cargo.toml` → 기대 출력 `1`"),
+            "docs/plans/f1-plan.md:12-12": ("dict로 돌려준다",),
+            "docs/plans/f1-plan.md:13-13": ("FileNotFoundError",),
+        },
+        "F2": {
+            "docs/plans/f2-plan.md:17-17": ("Produces: `ProviderFactory",),
+            "docs/plans/f2-plan.md:36-50": ("```python", "class ProviderFactory:", "ProviderFactory.create().text"),
+            "docs/specs/f2-spec.md:1-10": ("# f2 spec", "`src/greet.py`에 둔다"),
+            "docs/plans/f2-plan.md:1-51": ("# f2 plan", "Step 4:"),
+        },
+        "F3": {
+            "docs/plans/f3-plan.md:47-47": ("handle edge cases appropriately",),
+            "docs/specs/f3-spec.md:5-5": ("로그·메트릭 등을 남긴다",),
+            "docs/plans/f3-plan.md:50-50": ("TODO(2026-12-31, owner: phantom, removal: v2 출시)",),
+        },
+        "F4": {"docs/specs/f4-spec.md:26-26": ("`timeoutSec = 30`",)},
+        "F5": {
+            "docs/specs/f5-spec.md:12-12": ('`{"fast","safe"}`',),
+            "docs/canon/status.md:13-13": ("레지스트리 값에서 가져온다",),
+        },
+        "F6": {
+            "docs/plans/f6-plan.md:14-14": ("`python3 -c 'print(1+1)'`", "`3`"),
+            "docs/plans/f6-plan.md:15-15": ("`curl -fsS http://203.0.113.10/health`",),
+        },
+        "F7": {"docs/specs/f7-spec.md:1-11": ("# f7 spec", "지우지 않는다")},
+    }
+
     def test_fixtures_well_formed(self):
         root = HERE / "fixtures"
         for i in range(1, 8):
@@ -116,10 +155,19 @@ class CheckExpectedTest(Base):
                     self.assertTrue((case / rel).is_file(), rel)
                     roles.append(audit_ws.role_of(Path(rel)))
                 self.assertNotIn(None, roles)
+                tokens = self.FIXTURE_TOKENS[name]
+                cited = set()
                 for _, _, _, locs in exp["rules"]:
                     for rel, a, b in locs:
-                        n = len((case / rel).read_bytes().splitlines())
-                        self.assertTrue(1 <= a <= b <= n, f"{rel}:{a}-{b} (줄 수 {n})")
+                        lines = (case / rel).read_bytes().decode().splitlines()
+                        self.assertTrue(1 <= a <= b <= len(lines), f"{rel}:{a}-{b} (줄 수 {len(lines)})")
+                        key = f"{rel}:{a}-{b}"
+                        cited.add(key)
+                        self.assertIn(key, tokens, "토큰 표에 없는 위치")
+                        body = "\n".join(lines[a - 1:b])
+                        for tok in tokens[key]:
+                            self.assertIn(tok, body, key)
+                self.assertEqual(cited, set(tokens), "EXPECTED에 없는 토큰 표 위치")
                 if name == "F4":
                     self.assertNotIn("plan", roles)
                     self.assertEqual(exp["outcome"], "pass")

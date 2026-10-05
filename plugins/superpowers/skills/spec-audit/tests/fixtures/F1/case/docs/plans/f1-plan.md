@@ -55,6 +55,7 @@ name = "f1"
 version = "0.1.0"
 edition = "2021"
 ```
+- [ ] Step 6: `grep -c '^name = "f1"$' Cargo.toml` → 기대 출력 `1`.
 
 ### Task 2: 시간 제한 값
 
