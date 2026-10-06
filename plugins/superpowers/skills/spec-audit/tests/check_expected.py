@@ -118,11 +118,13 @@ def _rounds(W: Path) -> list[Path]:
 
 
 def _final_action(W: Path) -> str:
-    rs = _rounds(W)
-    try:
-        return _load(rs[-1] / "decision.json")["action"] if rs else "none"
-    except (OSError, ValueError, KeyError):
-        return "none"
+    """가장 큰 라운드의 finish 결과(result.json): done → pass, 미완 → open, finish 전 → none."""
+    for R in reversed(_rounds(W)):
+        try:
+            return "pass" if _load(R / "result.json")["done"] is True else "open"
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return "none"
 
 
 def _log_row(expected: Path, repo: Path, ok: bool) -> str:

@@ -1,7 +1,7 @@
 # superpowers fork — 변경점
 
 Upstream: <https://github.com/obra/superpowers> (MIT, Copyright (c) 2025 Jesse Vincent)
-기준 버전: **6.4.2** · fork: `6.4.2-phantomn.7` (2026-10-05; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
+기준 버전: **6.4.2** · fork: `6.4.2-phantomn.8` (2026-10-06; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
 
 ## 왜 fork 했나
 
@@ -71,3 +71,5 @@ upstream 과 **플러그인 이름이 같다**(`superpowers`). 스킬들이 서�
 참조하므로 이름을 바꾸면 참조가 전부 깨진다. 따라서 **둘을 동시에 켜지 않는다** —
 `enabledPlugins` 에서 `superpowers@claude-plugins-official` 은 끄고
 `superpowers@phantomn-harness` 만 켠다.
+
+**8) spec-audit 끝의 정의 교체** (2026-10-06, `phantomn.8`) — "감사자가 0건을 찾을 때까지 재감사"를 폐기하고 감사 최대 2회(전체 1회 + 수정분 재검토 1회) + 지적별 처분(반영·기각·수용) + 반영분 check 통과로 끝낸다(D23). 근거는 9개 프로젝트 감사 104건 전수조사(spec-audit `DECISIONS.md` D23). 원본 수정: `skills/writing-plans/SKILL.md`(Execution Handoff — 감사 뒤 문서가 바뀌면 새 감사가 아니라 `finish` 재실행). C4·C9·라운드 상한 삭제, C2는 수정분 재검토 1회로, C6 `finish` 신설.

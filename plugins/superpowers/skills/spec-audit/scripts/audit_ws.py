@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""spec-audit 작업 공간 도구 (stdlib only, Python 3.10+)."""
+"""spec-audit 작업 공간 도구 (stdlib only, Python 3.10+).
+
+감사는 최대 2회다(D23): 라운드 1 = 전체 감사, 라운드 2 = 리드가 고친 줄만 1회 재검토(수정이 있을 때만).
+끝(finish) = 모든 지적에 처분 ∧ 반영한 지적의 check 통과 ∧ (라운드 1 뒤 고쳤으면) 라운드 2를 거침.
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,12 +15,15 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import NoReturn
 
 Z = 1500
-CAP = 5
+REVIEW = 2  # 마지막 라운드 = 수정분 재검토. 그 뒤 라운드는 없다(D23)
 AXES = ("refs", "selfcontained", "rootcause", "oracle")
 EXEC_AXES = AXES[1:]
+DISPOSITIONS = {"apply": "반영", "reject": "기각", "accept": "수용"}
 
 # (스냅샷 순번 i, a, b) — 1부터, 양끝 포함
 Range = tuple[int, int, int]
@@ -86,29 +93,15 @@ def overlaps(a: list[Range], b: list[Range]) -> bool:
     return any(i == j and x <= v and u <= y for i, x, y in a for j, u, v in b)
 
 
-def _opcodes(old: list[bytes], new: list[bytes]) -> list:
-    return difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
-
-
 def changed_lines(old: list[bytes], new: list[bytes]) -> set[int]:
     """새 쪽에서 바뀐 줄(1부터). 삭제만이면 새 쪽 삭제 지점 앞뒤 1줄, [1, len(new)]로 잘림."""
     out: set[int] = set()
-    for tag, _, _, j1, j2 in _opcodes(old, new):
+    for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if tag in ("replace", "insert"):
             out.update(range(j1 + 1, j2 + 1))
         elif tag == "delete":
             out.update(k for k in (j1, j1 + 1) if 1 <= k <= len(new))
     return out
-
-
-def move_range(old: list[bytes], new: list[bytes], a: int, b: int) -> tuple[int, int]:
-    """직전 줄 a–b를 새 쪽으로 옮긴 범위. equal 줄 = 대응 줄, replace/delete 줄 = 새 쪽 j1+1(끝 넘으면 마지막 줄)."""
-    last = max(len(new), 1)
-    moved = []
-    for tag, i1, i2, j1, _ in _opcodes(old, new):
-        for k in range(max(a, i1 + 1), min(b, i2) + 1):
-            moved.append(j1 + k - i1 if tag == "equal" else min(j1 + 1, last))
-    return (min(moved), max(moved)) if moved else (min(a, last), min(a, last))
 
 
 # ---- 위치(4.2) ----
@@ -119,7 +112,7 @@ AUDITORS = HERE.parents[1] / "auditors"
 PLUGIN_JSON = HERE.parents[3] / ".claude-plugin" / "plugin.json"
 
 
-def die(msg: str) -> None:
+def die(msg: str) -> NoReturn:
     raise SystemExit(msg)
 
 
@@ -161,6 +154,10 @@ def close_open(ws: Path) -> None:
 def ensure_not_aborted(ws: Path) -> None:
     if (ws / ABORTED).exists():
         die("감사 중단됨 — 새로 시작하려면 C1")
+
+
+def rounds(ws: Path) -> list[int]:
+    return sorted(int(m.group(1)) for d in ws.glob("round-*") if (m := re.fullmatch(r"round-(\d+)", d.name)))
 
 
 def role_of(path: Path) -> str | None:
@@ -231,7 +228,7 @@ def skill_hash(path: Path = SKILL_MD) -> str:
     return hashlib.sha256(b"".join(keep)).hexdigest()[:12]
 
 
-# ---- 라운드 구성(4.6) ----
+# ---- 감사자 배정(4.6) ----
 
 def make_exec_dir(tree: Path, x: Path) -> Path | None:
     """X 생성. git이면 X/head/ = HEAD archive 추출, 실패하면 X를 지우고 None."""
@@ -243,7 +240,8 @@ def make_exec_dir(tree: Path, x: Path) -> Path | None:
     arc = subprocess.Popen(["git", "-C", str(tree), "archive", "--format=tar", "HEAD"],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     tar = subprocess.run(["tar", "-x", "-C", str(head)], stdin=arc.stdout, capture_output=True)
-    arc.stdout.close()
+    if arc.stdout:
+        arc.stdout.close()
     if arc.wait() != 0 or tar.returncode != 0:
         shutil.rmtree(x)
         return None
@@ -255,19 +253,18 @@ def write_prompt(ws: Path, item: dict, targets: list[dict], n: int, violations: 
     R = ws / f"round-{n}"
     tree = json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"]
     lines = ["", "## 배정", "",
-             f"- 작업공간 W: {ws}", f"- 라운드: {n}", f"- 이름: {item['name']} · 축: {item['axis']}",
+             f"- 작업공간 W: {ws}", f"- 라운드: {n}" + (" (수정분 재검토)" if n == REVIEW else ""),
+             f"- 이름: {item['name']} · 축: {item['axis']}",
              f"- <tree>: {tree}", "- 배정 범위(W 기준):", *[f"  - {r}" for r in item["ranges"]],
-             "- recheck: " + (", ".join(item["recheck"]) or "없음"), "- 대상 스냅샷:",
+             "- 대상 스냅샷:",
              *[f"  - {R / 'snapshot' / t['snapshot']} · role {t['role']} · rel {t['rel']}" for t in targets]]
     if item["axis"] in EXEC_AXES:
         if item["exec_dir"]:
             lines.append(f"- 실행 디렉토리 X: {item['exec_dir']}")
         else:
             lines.append("- 실행 디렉토리 X: 없음(생성 실패) — 실행 검증은 `unverified(tool)`")
-    if n >= 2:
-        lines += [f"- scope.json: {R / 'scope.json'}",
-                  f"- 직전 aggregate.json: {ws / f'round-{n - 1}' / 'aggregate.json'}",
-                  f"- diff.patch: {R / 'diff.patch'}"]
+    if n == REVIEW:
+        lines.append(f"- diff.patch(라운드 1 스냅샷 → 지금): {R / 'diff.patch'}")
     lines += [f"- 직전 시도 위반: {v}".replace("\n", " ") for v in violations]
     lines.append(f"- 보고 경로: {R / 'reports' / (item['name'] + '.md')}")
     text = (AUDITORS / "common.md").read_text(encoding="utf-8") + (AUDITORS / f"{item['axis']}.md").read_text(encoding="utf-8")
@@ -277,9 +274,8 @@ def write_prompt(ws: Path, item: dict, targets: list[dict], n: int, violations: 
     return p
 
 
-def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Range]],
-                recheck: dict[str, list[str]]) -> dict:
-    """ranges = 축별 배정 범위(샤드 전), recheck = 감사자 이름 → id. assign.json·prompts·X 생성, C8 반환."""
+def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Range]]) -> dict:
+    """ranges = 축별 배정 범위(샤드 전). assign.json·prompts·X 생성, C8 반환."""
     R = ws / f"round-{n}"
     tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
     agents = []
@@ -287,8 +283,7 @@ def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Ra
         for k, sh in enumerate(shard(ranges.get(axis, [])), 1):
             name = f"{axis}-r{n}-s{k}"
             item = {"name": name, "axis": axis, "prompt": None, "exec_dir": None,
-                    "ranges": [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in sh],
-                    "recheck": recheck.get(name, [])}
+                    "ranges": [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in sh]}
             if axis in EXEC_AXES:
                 x = make_exec_dir(tree, tmproot() / "spec-audit" / ws.name / f"r{n}" / name)
                 item["exec_dir"] = str(x) if x else None
@@ -296,7 +291,7 @@ def build_round(ws: Path, n: int, targets: list[dict], ranges: dict[str, list[Ra
             agents.append(item)
     (R / "reports").mkdir(parents=True, exist_ok=True)
     (R / "assign.json").write_text(json.dumps({"agents": agents}, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"ws": str(ws), "agents": agents}
+    return {"ws": str(ws), "round": n, "agents": agents}
 
 
 def snapshot_targets(R: Path, tree: Path, docs: list[tuple[Path, str]]) -> list[dict]:
@@ -341,7 +336,24 @@ def collect_canon(doc: Path, tree: Path, exclude: set[Path]) -> list[Path]:
     return list(found)
 
 
-def cmd_init_round1(a: argparse.Namespace) -> dict:
+def archive_ws(ws: Path) -> None:
+    """같은 대상의 이전 감사 W를 지우지 않고 `<W>.<시각>`으로 옮긴다(D6 개정 — 이력이 사후 분석의 유일한 자료였다)."""
+    if not ws.exists():
+        return
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dst, k = ws.with_name(f"{ws.name}.{stamp}"), 1
+    while dst.exists():
+        dst, k = ws.with_name(f"{ws.name}.{stamp}-{k}"), k + 1
+    ws.rename(dst)
+
+
+def _oracle_off(R: Path, targets: list[dict]) -> bool:
+    return not any(t["role"] == "spec" and oracle_needed((R / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace"))
+                   for t in targets)
+
+
+def cmd_init(a: argparse.Namespace) -> dict:
+    """C1: 라운드 1(전체 범위)."""
     if not a.skill_version:
         die("--skill-version 필요")
     if a.skill_version != skill_hash():
@@ -358,18 +370,19 @@ def cmd_init_round1(a: argparse.Namespace) -> dict:
     specs = sorted({Path(f).resolve() for f in a.spec or []} - {plan}, key=str)
     tree = resolve_tree(plan, specs, Path(a.tree) if a.tree else None)
     ws = workspace(tree, plan, specs)
-    for d in (ws, tmproot() / "spec-audit" / ws.name):
-        shutil.rmtree(d, ignore_errors=True)
+    archive_ws(ws)
+    shutil.rmtree(tmproot() / "spec-audit" / ws.name, ignore_errors=True)
     ws.mkdir(parents=True)
     (ws.parent / ".gitignore").write_text("*\n", encoding="utf-8")
     exclude = {p for p in [plan, *specs] if p}
     canon = sorted({c for p in exclude for c in collect_canon(p, tree, exclude)}, key=str)
     docs = ([(plan, "plan")] if plan else []) + [(s, "spec") for s in specs] + [(c, "other") for c in canon]
-    targets = snapshot_targets(ws / "round-1", tree, docs)
+    R = ws / "round-1"
+    targets = snapshot_targets(R, tree, docs)
     ranges = {ax: axis_lines(targets, ax) for ax in AXES}
-    if not any(t["role"] == "spec" and oracle_needed((ws / "round-1" / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace")) for t in targets):
+    if _oracle_off(R, targets):
         ranges["oracle"] = []
-    out = build_round(ws, 1, targets, ranges, {})
+    out = build_round(ws, 1, targets, ranges)
     write_open(ws, 1)
     return out
 
@@ -378,23 +391,19 @@ def _lines(p: Path) -> list[bytes]:
     return p.read_bytes().splitlines(keepends=True)
 
 
-def cmd_init_next(ws: Path, n: int) -> dict:
-    """C2: 직전 라운드 대상(L18: 정본 재수집 없음)으로 스냅샷·diff.patch·scope.json(C7)·recheck(4.6)·배정."""
+def cmd_review(ws: Path) -> dict:
+    """C2: 라운드 2 = 라운드 1 스냅샷 뒤 바뀐 줄만 1회 재검토(D23). 대상은 라운드 1과 같은 파일."""
     ensure_not_aborted(ws)
     restore_snapshots(ws)
-    P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
-    for f in ("targets.json", "aggregate.json"):
-        if not (P / f).is_file():
-            die(f"직전 라운드 {f} 없음: {P / f}")
+    P, R = ws / "round-1", ws / f"round-{REVIEW}"
+    if R.exists():
+        die("수정분 재검토는 한 번뿐이다(D23) — 남은 지적은 처분하고 finish")
+    if not (P / "aggregate.json").is_file():
+        die(f"라운드 1 aggregate.json 없음: {P / 'aggregate.json'}")
     prev = json.loads((P / "targets.json").read_text(encoding="utf-8"))
     for t in prev["targets"]:
-        if not (P / "snapshot" / t["snapshot"]).is_file():
-            die(f"직전 스냅샷 없음: {t['snapshot']}")
         if not Path(t["path"]).is_file():
             die(f"대상 파일 없음: {t['rel']}")
-    agg = json.loads((P / "aggregate.json").read_text(encoding="utf-8"))
-    for d in (R, tmproot() / "spec-audit" / ws.name / f"r{n}"):
-        shutil.rmtree(d, ignore_errors=True)
     targets = snapshot_targets(R, Path(prev["tree"]), [(Path(t["path"]), t["role"]) for t in prev["targets"]])
     old = [_lines(P / "snapshot" / t["snapshot"]) for t in prev["targets"]]
     new = [_lines(R / "snapshot" / t["snapshot"]) for t in targets]
@@ -403,39 +412,15 @@ def cmd_init_next(ws: Path, n: int) -> dict:
         l if l.endswith(b"\n") else l + nl
         for o, w, t in zip(old, new, targets)
         for l in difflib.diff_bytes(difflib.unified_diff, o, w, t["rel"].encode(), t["rel"].encode())))
-    prev_ctx = {"n": n - 1, "targets": prev["targets"]}
-
-    def moved(s: str) -> Range:
-        i, a, b = to_range(s, prev_ctx)
-        return (i, *move_range(old[i - 1], new[i - 1], a, b))
-
     changed = {(i, k) for i in range(1, len(targets) + 1) for k in changed_lines(old[i - 1], new[i - 1])}
-    prior = [f for f in agg["findings"] if f["unverified_reason"] != "context"]
-    ranges: dict[str, list[Range]] = {}
-    for ax in AXES:
-        extra = [moved(f["target"]) for f in prior if f["axis"] == ax]
-        extra += [moved(s) for s in agg["review_gap"].get(ax, [])]
-        ranges[ax] = runs((changed | lines_of(extra)) & lines_of(axis_lines(targets, ax)))
-    if not any(t["role"] == "spec" and oracle_needed((R / "snapshot" / t["snapshot"]).read_text(encoding="utf-8", errors="replace"))
-               for t in targets):
+    if not changed:
+        shutil.rmtree(R)
+        die("라운드 1 뒤 바뀐 줄이 없다 — 재검토할 수정분이 없으니 finish")
+    ranges = {ax: runs(changed & lines_of(axis_lines(targets, ax))) for ax in AXES}
+    if _oracle_off(R, targets):
         ranges["oracle"] = []
-    recheck: dict[str, list[str]] = {}
-    orphans = []
-    for f in prior:
-        loc = [moved(f["target"])]
-        k = next((k for k, sh in enumerate(shard(ranges[f["axis"]]), 1) if overlaps(loc, sh)), None)
-        if k is None:  # 4.6 "정확히 1명" 불가 — 조용히 버리면 J1이 잘못 pass
-            i, a, b = loc[0]
-            orphans.append(f"{f['id']} · {f['axis']} · {fmt_range(n, targets[i - 1]['snapshot'], a, b)}")
-            continue
-        recheck.setdefault(f"{f['axis']}-r{n}-s{k}", []).append(f["id"])
-    if orphans:
-        shutil.rmtree(R, ignore_errors=True)
-        die("recheck 담당 감사자가 없는 직전 finding(id · 축 · 새 위치):\n" + "\n".join(orphans))
-    scope = {ax: [fmt_range(n, targets[i - 1]["snapshot"], a, b) for i, a, b in rs] for ax, rs in ranges.items()}
-    (R / "scope.json").write_text(json.dumps({"ranges": scope}, ensure_ascii=False, indent=1), encoding="utf-8")
-    out = build_round(ws, n, targets, ranges, recheck)
-    write_open(ws, n)
+    out = build_round(ws, REVIEW, targets, ranges)
+    write_open(ws, REVIEW)
     return out
 
 
@@ -448,12 +433,12 @@ CLASSES = {"ref-missing", "ref-mismatch", "exec-fail", "oracle-deviation", "cros
 KEYS = ("id", "verdict", "axis", "class", "target", "claim", "evidence", "recommended", "fix_class",
         "affected", "unverified_reason", "check")
 REASONS = {"policy", "external", "tool", "context"}
-BLOCKS = ("findings", "coverage", "resolved")
+BLOCKS = ("findings", "coverage")
 _FENCE_RE = re.compile(r"^```(\w+)\n(.*?)^```$", re.M | re.S)
 
 
 def parse_report(text: str) -> dict[str, list[str]]:
-    """블록 이름 → 비어 있지 않은 줄. findings·coverage·resolved 외 펜스는 무시."""
+    """블록 이름 → 비어 있지 않은 줄. findings·coverage 외 펜스는 무시."""
     return {m.group(1): [l for l in m.group(2).splitlines() if l.strip()]
             for m in _FENCE_RE.finditer(text) if m.group(1) in BLOCKS}
 
@@ -510,7 +495,7 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
         t = [to_range(f["target"], ctx)]
         if not overlaps(t, ctx["axis_lines"][axis]):
             bad.append(f"target {f['target']!r}이 {axis} 축의 대상 줄과 겹치지 않음")
-        elif ctx["n"] >= 2 and axis != "refs" and not overlaps(t, ctx["own"]):
+        elif ctx["n"] == REVIEW and axis != "refs" and not overlaps(t, ctx["own"]):
             bad.append(f"target {f['target']!r}이 배정 범위와 겹치지 않음")
     except ValueError as e:
         bad.append(f"target: {e}")
@@ -522,17 +507,9 @@ def validate_finding(f: object, name: str, axis: str, ctx: dict) -> list[str]:
     return [f"{f.get('id')}: {b}" for b in bad]
 
 
-_RESOLVED_RE = re.compile(r"(\S+): (?:resolved|unresolved (\S+))")
-
-
-def parse_resolved(line: str) -> re.Match | None:
-    """resolved 블록 한 줄 → group(1) = id, group(2) = unresolved면 가리킨 finding id(아니면 None)."""
-    return _RESOLVED_RE.fullmatch(line.strip())
-
-
 def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]:
     """위반 사유 목록(빈 목록 = 유효). ctx = {"n", "targets", "axis_lines": {axis: [Range]}}."""
-    bad = [f"{b} 블록 없음" for b in ("findings", "coverage") if b not in blocks]
+    bad = [f"{b} 블록 없음" for b in BLOCKS if b not in blocks]
     ctx = {**ctx, "own": [to_range(r, ctx) for r in item["ranges"]]}
     ids = set()
     for line in blocks.get("findings", []):
@@ -553,23 +530,6 @@ def validate_report(name: str, blocks: dict, item: dict, ctx: dict) -> list[str]
             to_range(line, ctx)
         except ValueError as e:
             bad.append(f"coverage: {e}")
-    # 4.5.3 resolved = 배정 recheck id 전부와 그것만
-    want = set(item["recheck"])
-    if want and "resolved" not in blocks:
-        bad.append("resolved 블록 없음")
-    seen = set()
-    for line in blocks.get("resolved", []):
-        m = parse_resolved(line)
-        if not m:
-            bad.append(f"resolved 형식 위반: {line[:80]!r}")
-            continue
-        if m.group(1) not in want:
-            bad.append(f"resolved 비배정 id {m.group(1)!r}")
-        if m.group(2) is not None and m.group(2) not in ids:
-            bad.append(f"resolved {m.group(1)}: 가리킨 finding {m.group(2)!r}이 이 보고에 없음")
-        seen.add(m.group(1))
-    if want - seen and "resolved" in blocks:
-        bad.append(f"resolved 배정 id 누락 {sorted(want - seen)}")
     return bad
 
 
@@ -605,7 +565,7 @@ def run_check(cmd: str, cwd: Path, tree: Path, timeout: float = 30) -> tuple[int
 
 
 def check_text(code: int | None, out: str) -> str:
-    """재삽입 evidence·C9 output 형식: `exit <code>` 한 줄 + 출력."""
+    """finish `failed[].output` 형식: `exit <code>` 한 줄 + 출력."""
     return f"exit {'timeout' if code is None else code}\n{out}"
 
 
@@ -651,25 +611,8 @@ def verify_check(ws: Path, R: Path, targets: list[dict], tree: Path, f: dict) ->
     return [f"{f['id']}: check 재현 실패(snapshot 사본 exit {codes[0]}, 빈 줄 사본 exit {codes[1]} — 둘 다 1이어야 함)"]
 
 
-def carry_checks(ws: Path, n: int, targets: list[dict]) -> dict[str, dict]:
-    """직전 aggregate.json checks의 각 finding을 이번 스냅샷 위치(target·affected)로 옮긴다."""
-    P, R = ws / f"round-{n - 1}", ws / f"round-{n}"
-    prev = json.loads((P / "aggregate.json").read_text(encoding="utf-8")).get("checks", {})
-    ptargets = json.loads((P / "targets.json").read_text(encoding="utf-8"))["targets"]
-    idx = {t["snapshot"]: i for i, t in enumerate(ptargets)}
-
-    def mv(s: str) -> str:
-        _, snap, a, b = parse_range(s)
-        i = idx[snap]
-        old, new = _lines(P / "snapshot" / snap), _lines(R / "snapshot" / targets[i]["snapshot"])
-        return fmt_range(n, targets[i]["snapshot"], *move_range(old, new, a, b))
-
-    return {k: {**f, "target": mv(f["target"]), "affected": [mv(x) for x in f["affected"]]}
-            for k, f in prev.items()}
-
-
 def make_retry(ws: Path, n: int, item: dict, targets: list[dict], violations: list[str]) -> dict:
-    """C8 retry 항목 생성 — 같은 범위·recheck, 프롬프트(직전 위반 사유 포함)·X, assign.json에 추가."""
+    """C8 retry 항목 생성 — 같은 범위, 프롬프트(직전 위반 사유 포함)·X, assign.json에 추가."""
     R = ws / f"round-{n}"
     tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
     name = item["name"] + "-retry"
@@ -684,11 +627,20 @@ def make_retry(ws: Path, n: int, item: dict, targets: list[dict], violations: li
     return retry
 
 
-def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
+def _cell(x: object) -> str:
+    return str(x).replace("|", "\\|").replace("\n", " ")
+
+
+def cmd_aggregate(ws: Path) -> tuple[int, dict]:
+    """C3: 가장 큰 라운드의 보고를 검증·집계하고 aggregate.json·aggregate.md를 쓴다."""
     ensure_not_aborted(ws)
     restore_snapshots(ws)
+    n = max(rounds(ws), default=0)
     R = ws / f"round-{n}"
-    targets = json.loads((R / "targets.json").read_text(encoding="utf-8"))["targets"]
+    if not (R / "assign.json").is_file():
+        die(f"assign.json 없음: {R / 'assign.json'}")
+    tj = json.loads((R / "targets.json").read_text(encoding="utf-8"))
+    targets = tj["targets"]
     # ① 대상 변경 탐지(4.5.5)
     changed = [t["rel"] for t in targets if not Path(t["path"]).is_file()
                or hashlib.sha256(Path(t["path"]).read_bytes()).hexdigest() != t["sha256"]]
@@ -697,13 +649,14 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         return 3, {"target_modified": changed}
     # ② 보고 검증 — retry 항목이 있으면 그것이 유효 감사자(원래 보고 무시, 재retry 없음)
     ctx = {"n": n, "targets": targets, "axis_lines": {ax: axis_lines(targets, ax) for ax in AXES}}
-    tree = Path(json.loads((R / "targets.json").read_text(encoding="utf-8"))["tree"])
+    tree = Path(tj["tree"])
     agents = json.loads((R / "assign.json").read_text(encoding="utf-8"))["agents"]
     by_name = {a["name"]: a for a in agents}
     invalid, valid = [], []
     for orig in (a for a in agents if not a["name"].endswith("-retry")):
         item = by_name.get(orig["name"] + "-retry", orig)
         p = R / "reports" / f"{item['name']}.md"
+        blocks: dict = {}
         if not p.is_file():
             bad = ["보고 파일 없음"]
         else:
@@ -725,7 +678,7 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
     if invalid:
         return 3, {"invalid": invalid}
     # ③ 집계
-    findings, unresolved = [], []
+    findings = []
     assigned: dict[str, set] = {}
     covered: dict[str, set] = {}
     for item, blocks in valid:
@@ -736,93 +689,35 @@ def cmd_aggregate(ws: Path, n: int) -> tuple[int, dict]:
         cov -= lines_of([to_range(f["target"], ctx) for f in fs if f["unverified_reason"] == "context"])
         assigned.setdefault(item["axis"], set()).update(own)
         covered.setdefault(item["axis"], set()).update(cov)
-        unresolved += [m.group(1) for l in blocks.get("resolved", [])
-                       if (m := parse_resolved(l)) and m.group(2) is not None]
     gap = {ax: fmt_lines(assigned[ax] - covered[ax], n, targets) for ax in assigned if assigned[ax] - covered[ax]}
-    checks = carry_checks(ws, n, targets) if n >= 2 else {}
-    for fid, f in checks.items():
-        if fid in unresolved:  # 감사자가 다시 쓴 finding이 대신한다
-            continue
-        code, text = run_check(f["check"], R / "snapshot", tree)
-        if code != 0:
-            findings.append({**f, "evidence": check_text(code, text)})
-    checks.update({f["id"]: f for item, blocks in valid for l in blocks["findings"]
-                   if (f := json.loads(l))["check"] is not None})
     counts = {"fail": sum(f["verdict"] == "fail" for f in findings),
               "unverified": sum(f["verdict"] == "unverified" and f["unverified_reason"] != "context"
                                 for f in findings)}
-    out = {"findings": findings, "review_gap": gap, "unresolved": unresolved, "counts": counts, "checks": checks}
+    out = {"findings": findings, "review_gap": gap, "counts": counts}
     (R / "aggregate.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    gap_lines = sum(b - a + 1 for rs in gap.values() for r in rs for _, _, a, b in [parse_range(r)])
+    md = [f"# SPEC Audit · round {n}{' (수정분 재검토)' if n == REVIEW else ''} · 지적 {counts['fail'] + counts['unverified']}건",
+          f"대상: {', '.join(t['rel'] for t in targets)} · 플러그인 {tj['plugin_version']} · "
+          f"감사자: {', '.join(a['name'] for a in agents)}",
+          f"fail {counts['fail']} · unverified {counts['unverified']} · 미검토 {gap_lines}줄",
+          "",
+          "| id | 판정 | 축 | 위치 | 주장 | 근거 | 권고 | 영향 위치 |",
+          "|---|---|---|---|---|---|---|---|"]
+    for f in findings:
+        if f["unverified_reason"] == "context":
+            continue
+        cells = [f["id"], f["verdict"], f["axis"], f["target"], f["claim"], f["evidence"], f["recommended"],
+                 ", ".join(f["affected"])]
+        md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
+    (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     close_open(ws)
     return 0, {}
 
 
-# ---- C4 decide(J1)·C5 clean ----
+# ---- finish(D23) ----
 
-def decide(agg: dict, n: int) -> dict:
-    gap = any(agg["review_gap"].values())
-    c = agg["counts"]
-    if not (c["fail"] or c["unverified"] or gap or agg["unresolved"]):
-        action = "pass"
-    elif n >= CAP:
-        action = "cap"
-    else:
-        action = "fix"
-    fix: dict[str, list[str]] = {"align": [], "approval": []}
-    for f in agg["findings"]:
-        if f["unverified_reason"] != "context":
-            fix["align" if f["fix_class"] == "align" else "approval"].append(f["id"])
-    return {"action": action, "fix": fix}
-
-
-def _cell(x: object) -> str:
-    return str(x).replace("|", "\\|").replace("\n", " ")
-
-
-def cmd_decide(ws: Path, n: int) -> dict:
-    R = ws / f"round-{n}"
-    agg = json.loads((R / "aggregate.json").read_text(encoding="utf-8"))
-    tj = json.loads((R / "targets.json").read_text(encoding="utf-8"))
-    names = [a["name"] for a in json.loads((R / "assign.json").read_text(encoding="utf-8"))["agents"]]
-    dec = decide(agg, n)
-    gap_lines = sum(b - a + 1 for rs in agg["review_gap"].values() for r in rs
-                    for _, _, a, b in [parse_range(r)])
-    c = agg["counts"]
-    md = [f"# SPEC Audit · round {n} · {dec['action']}",
-          f"대상: {', '.join(t['rel'] for t in tj['targets'])} · 플러그인 {tj['plugin_version']} · "
-          f"감사자: {', '.join(names)}",
-          f"fail {c['fail']} · unverified {c['unverified']} · review-gap {gap_lines}줄 · "
-          f"직전 미해소 {len(agg['unresolved'])}",
-          "",
-          "| id | 판정 | 축 | 위치 | 주장 | 근거 | 수정 분류 | 영향 위치 |",
-          "|---|---|---|---|---|---|---|---|"]
-    for f in agg["findings"]:
-        cells = [f["id"], f["verdict"], f["axis"], f["target"], f["claim"], f["evidence"], f["fix_class"],
-                 ", ".join(f["affected"])]
-        md.append("| " + " | ".join(_cell(x) for x in cells) + " |")
-    (R / "aggregate.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    (R / "decision.json").write_text(json.dumps(dec, ensure_ascii=False, indent=1), encoding="utf-8")
-    plan = next((t for t in tj["targets"] if t["role"] == "plan"), None)
-    if dec["action"] == "pass" and plan:
-        rec = {"plan": plan["path"],
-               "targets": [{"path": t["path"], "sha256": t["sha256"]} for t in tj["targets"]
-                           if t["role"] in ("plan", "spec")],
-               "ws": str(ws), "round": n, "plugin_version": tj["plugin_version"]}
-        f = pass_record_path(plan["sha256"])
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
-    return dec
-
-
-def cmd_check(ws: Path) -> dict:
-    """C9: 가장 큰 라운드의 checks를 K(현재 대상 파일 사본)에서 실행."""
-    restore_snapshots(ws)
-    ns = [int(m.group(1)) for d in ws.glob("round-*") if (m := re.fullmatch(r"round-(\d+)", d.name))]
-    R = ws / f"round-{max(ns, default=0)}"
-    if not (R / "aggregate.json").is_file():
-        die(f"aggregate.json 없음: {R / 'aggregate.json'}")
-    checks = json.loads((R / "aggregate.json").read_text(encoding="utf-8")).get("checks", {})
-    tj = json.loads((R / "targets.json").read_text(encoding="utf-8"))
+def run_checks(ws: Path, tj: dict, findings: list[dict]) -> list[dict]:
+    """findings의 check를 현재 대상 파일 사본 K(스냅샷과 같은 파일 이름)에서 실행. exit 0이 아니면 실패."""
     K = tmproot() / "spec-audit" / ws.name / "check"
     shutil.rmtree(K, ignore_errors=True)
     K.mkdir(parents=True)
@@ -830,12 +725,72 @@ def cmd_check(ws: Path) -> dict:
         if Path(t["path"]).is_file():
             shutil.copyfile(t["path"], K / t["snapshot"])
     failed = []
-    for fid, f in checks.items():
+    for f in findings:
         code, text = run_check(f["check"], K, Path(tj["tree"]))
         if code != 0:
-            failed.append({"id": fid, "fix_class": f["fix_class"], "claim": f["claim"],
-                           "output": check_text(code, text)})
-    return {"failed": failed}
+            failed.append({"id": f["id"], "claim": f["claim"], "output": check_text(code, text)})
+    return failed
+
+
+def cmd_finish(ws: Path, dpath: Path) -> tuple[int, dict]:
+    """D23 끝 판정. 모든 라운드의 지적에 처분 ∧ 반영한 지적의 check 통과 ∧ 라운드 1 뒤 고쳤으면 라운드 2 집계 완료.
+    완료면 합격 기록을 현재 내용 sha로 쓴다(C11)."""
+    restore_snapshots(ws)
+    ns = [n for n in rounds(ws) if (ws / f"round-{n}" / "aggregate.json").is_file()]
+    if 1 not in ns:
+        die(f"라운드 1 aggregate.json 없음 — C3 먼저: {ws / 'round-1' / 'aggregate.json'}")
+    tj = json.loads((ws / "round-1" / "targets.json").read_text(encoding="utf-8"))
+    try:
+        disp = json.loads(dpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        die(f"처분 파일을 읽지 못함: {e}")
+    items = disp.get("findings", {}) if isinstance(disp, dict) else None
+    if not isinstance(items, dict):
+        items, bad_shape = {}, ["처분 파일 형식: {\"findings\": {\"<id>\": {\"d\", \"why\"}}} 객체여야 한다"]
+    else:
+        bad_shape = []
+    need = {f["id"]: f for n in ns
+            for f in json.loads((ws / f"round-{n}" / "aggregate.json").read_text(encoding="utf-8"))["findings"]
+            if f["unverified_reason"] != "context"}
+    invalid = bad_shape + [f"{i}: 처분 없음" for i in need if i not in items]
+    for i, d in items.items():
+        if i not in need:
+            invalid.append(f"{i}: 이 감사의 지적이 아님")
+        elif not isinstance(d, dict) or d.get("d") not in DISPOSITIONS:
+            invalid.append(f"{i}: 처분은 {'|'.join(DISPOSITIONS)} 중 하나")
+        elif d["d"] != "apply" and not d.get("why"):
+            invalid.append(f"{i}: {DISPOSITIONS[d['d']]} 사유(why) 없음")
+    applied = [need[i] for i, d in items.items()
+               if i in need and isinstance(d, dict) and d.get("d") == "apply" and need[i]["check"]]
+    failed = run_checks(ws, tj, applied)
+    # 재검토할 줄이 실제로 있을 때만 라운드 2를 요구한다 — 파일을 비우거나 지우면 C2가 배정할 줄이 없다
+    review_needed = REVIEW not in ns and any(
+        Path(t["path"]).is_file()
+        and changed_lines(_lines(ws / "round-1" / "snapshot" / t["snapshot"]), _lines(Path(t["path"])))
+        for t in tj["targets"])
+    done = not (invalid or failed or review_needed)
+    out = {"done": done, "invalid": invalid, "failed": failed, "review_needed": review_needed}
+    md = [f"# SPEC Audit · {'완료' if done else '미완'}",
+          f"라운드 {', '.join(map(str, ns))} · 처분 {sum(i in items for i in need)}/{len(need)} · check 실패 {len(failed)}"
+          + (" · 수정분 재검토 필요(C2)" if review_needed else ""), "",
+          "| id | 처분 | 사유 | 주장 |", "|---|---|---|---|"]
+    for i, f in need.items():
+        d = items.get(i)
+        d = d if isinstance(d, dict) else {}
+        md.append("| " + " | ".join(_cell(x) for x in
+                                     [i, DISPOSITIONS.get(str(d.get("d")), "없음"), d.get("why", ""), f["claim"]]) + " |")
+    last = ws / f"round-{max(ns)}"
+    (last / "result.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (last / "result.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    plan = next((t for t in tj["targets"] if t["role"] == "plan"), None)
+    if done and plan and Path(plan["path"]).is_file():
+        cur = [{"path": t["path"], "sha256": hashlib.sha256(Path(t["path"]).read_bytes()).hexdigest()}
+               for t in tj["targets"] if t["role"] in ("plan", "spec") and Path(t["path"]).is_file()]
+        rec = {"plan": plan["path"], "targets": cur, "ws": str(ws), "plugin_version": tj["plugin_version"]}
+        f = pass_record_path(next(c["sha256"] for c in cur if c["path"] == plan["path"]))
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    return (0 if done else 1), out
 
 
 def cmd_clean(ws: Path) -> None:
@@ -846,18 +801,18 @@ def cmd_clean(ws: Path) -> None:
 
 
 def cmd_gate(plan: Path) -> tuple[int, str]:
-    """C11: 이 계획 내용이 감사를 통과했고 합격 뒤 spec이 그대로인지."""
+    """C11: 이 계획 내용으로 감사를 끝냈고(finish 완료) 그 뒤 spec이 그대로인지."""
     sha = hashlib.sha256(plan.read_bytes()).hexdigest()
     f = pass_record_path(sha)
     if not f.is_file():
-        return 1, "감사 합격 기록 없음 — 이 계획 내용으로 spec-audit을 통과한 적이 없다(합격 뒤 계획이 바뀌었으면 재감사)"
+        return 1, "감사 완료 기록 없음 — 이 계획 내용으로 spec-audit finish를 끝낸 적이 없다(완료 뒤 계획이 바뀌었으면 finish를 다시 실행)"
     rec = json.loads(f.read_text(encoding="utf-8"))
     for t in rec["targets"]:
         if t["path"] == rec["plan"]:
             continue
         p = Path(t["path"])
         if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != t["sha256"]:
-            return 1, f"{t['path']}가 감사 합격 뒤 바뀌었다 — 재감사"
+            return 1, f"{t['path']}가 감사 완료 뒤 바뀌었다 — finish를 다시 실행"
     return 0, ""
 
 
@@ -865,22 +820,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit_ws.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init")
-    p.add_argument("--round", type=int, required=True)
-    p.add_argument("--ws")
     p.add_argument("--skill-version")
     p.add_argument("--plan", action="append")
     p.add_argument("--spec", action="append")
     p.add_argument("--tree")
-    p = sub.add_parser("aggregate")
+    for name in ("review", "aggregate", "clean"):
+        sub.add_parser(name).add_argument("--ws", required=True)
+    p = sub.add_parser("finish")
     p.add_argument("--ws", required=True)
-    p.add_argument("--round", type=int, required=True)
-    p = sub.add_parser("decide")
-    p.add_argument("--ws", required=True)
-    p.add_argument("--round", type=int, required=True)
-    p = sub.add_parser("clean")
-    p.add_argument("--ws", required=True)
-    p = sub.add_parser("check")
-    p.add_argument("--ws", required=True)
+    p.add_argument("--dispositions", required=True)
     p = sub.add_parser("gate")
     p.add_argument("plan")
     a = ap.parse_args(argv)
@@ -889,29 +837,20 @@ def main(argv: list[str] | None = None) -> int:
         if msg:
             print(msg, file=sys.stderr)
         return rc
-    if a.cmd == "check":
-        print(json.dumps(cmd_check(Path(a.ws).resolve()), ensure_ascii=False))
-        return 0
-    if a.cmd == "decide":
-        print(json.dumps(cmd_decide(Path(a.ws).resolve(), a.round), ensure_ascii=False))
-        return 0
     if a.cmd == "clean":
         cmd_clean(Path(a.ws).resolve())
         return 0
+    rc = 0
     if a.cmd == "aggregate":
-        rc, out = cmd_aggregate(Path(a.ws).resolve(), a.round)
-        print(json.dumps(out, ensure_ascii=False))
-        return rc
-    if a.round >= 2:
-        if not a.ws:
-            die("init --round N(N≥2)은 --ws 가 필요")
-        out = cmd_init_next(Path(a.ws).resolve(), a.round)
-    elif a.round == 1:
-        out = cmd_init_round1(a)
+        rc, out = cmd_aggregate(Path(a.ws).resolve())
+    elif a.cmd == "finish":
+        rc, out = cmd_finish(Path(a.ws).resolve(), Path(a.dispositions))
+    elif a.cmd == "review":
+        out = cmd_review(Path(a.ws).resolve())
     else:
-        die("--round 는 1 이상")
+        out = cmd_init(a)
     print(json.dumps(out, ensure_ascii=False))
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

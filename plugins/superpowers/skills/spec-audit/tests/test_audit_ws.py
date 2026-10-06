@@ -70,7 +70,7 @@ class Base(unittest.TestCase):
         return p.returncode, data, p.stderr
 
     def c1(self, *args: str) -> tuple[int, dict | None, str]:
-        rc, out, err = self.cli("init", "--round", "1", "--skill-version", audit_ws.skill_hash(), *args)
+        rc, out, err = self.cli("init", "--skill-version", audit_ws.skill_hash(), *args)
         if rc == 0:
             self.ws = Path(out["ws"])
         return rc, out, err
@@ -92,11 +92,9 @@ class Base(unittest.TestCase):
         return f
 
     def report(self, ws: Path, n: int, name: str, findings: list[dict], coverage: list[str],
-               resolved: list[str] | None = None, extra: str = "") -> Path:
+               extra: str = "") -> Path:
         body = "```findings\n" + "".join(json.dumps(f, ensure_ascii=False) + "\n" for f in findings) + "```\n"
         body += "```coverage\n" + "".join(c + "\n" for c in coverage) + "```\n"
-        if resolved is not None:
-            body += "```resolved\n" + "".join(r + "\n" for r in resolved) + "```\n"
         p = Path(ws) / f"round-{n}" / "reports" / f"{name}.md"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body + extra)
@@ -115,9 +113,19 @@ class Base(unittest.TestCase):
         ws = Path(out["ws"])
         for a in out["agents"]:
             self.report(ws, 1, a["name"], (findings_by_name or {}).get(a["name"], []), a["ranges"])
-        rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        rc, _, err = self.cli("aggregate", "--ws", str(ws))
         self.assertEqual(rc, 0, err)
         return ws
+
+    def finish(self, ws: Path, disp: dict) -> tuple[int, dict | None, str]:
+        p = self.tmp / "disp.json"
+        p.write_text(json.dumps({"findings": disp}, ensure_ascii=False))
+        return self.cli("finish", "--ws", str(ws), "--dispositions", str(p))
+
+    def apply_all(self, ws: Path) -> dict:
+        """집계된 모든 라운드의 처분 대상 finding에 apply."""
+        return {f["id"]: {"d": "apply"} for p in sorted(ws.glob("round-*/aggregate.json"))
+                for f in json.loads(p.read_text())["findings"] if f["unverified_reason"] != "context"}
 
 
 class OpenStateTest(Base):
@@ -153,21 +161,25 @@ class OpenStateTest(Base):
     def test_c3_target_modified_removes_open(self):
         ws = self.start()
         (self.d / "plans/p.md").write_text("changed\n")
-        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws))
         self.assertEqual(rc, 3)
         self.assertIn("target_modified", out)
         self.assertFalse(self.open_json(ws).exists())
 
     def test_c3_invalid_keeps_open(self):
         ws = self.start()
-        rc, out, _ = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        rc, out, _ = self.cli("aggregate", "--ws", str(ws))
         self.assertEqual(rc, 3)
         self.assertIn("invalid", out)
         self.assertTrue(self.open_json(ws).exists())
 
-    def test_c2_writes_open_round2(self):
+    def edit_and_review(self) -> tuple[Path, tuple]:
         ws = self.round1_done(self.FILES)
-        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        Path(json.loads((ws / "round-1/targets.json").read_text())["targets"][0]["path"]).write_text("# p2\n")
+        return ws, self.cli("review", "--ws", str(ws))
+
+    def test_c2_writes_open_round2(self):
+        ws, (rc, _, err) = self.edit_and_review()
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads(self.open_json(ws).read_text())["round"], 2)
 
@@ -183,21 +195,21 @@ class OpenStateTest(Base):
         self.assertFalse((ws / audit_ws.ABORTED).exists())
 
     def aborted_round2(self) -> Path:
-        ws = self.round1_done(self.FILES)
-        self.assertEqual(self.cli("init", "--round", "2", "--ws", str(ws))[0], 0)
+        ws, (rc, _, err) = self.edit_and_review()
+        self.assertEqual(rc, 0, err)
         self.assertEqual(self.cli("clean", "--ws", str(ws))[0], 0)
         return ws
 
     def test_c2_after_abort_fails(self):
         ws = self.aborted_round2()
-        rc, _, err = self.cli("init", "--round", "2", "--ws", str(ws))
+        rc, _, err = self.cli("review", "--ws", str(ws))
         self.assertNotEqual(rc, 0)
         self.assertIn("감사 중단됨", err)
 
     def test_c3_after_abort_fails(self):
         ws = self.start()
         self.cli("clean", "--ws", str(ws))
-        rc, _, err = self.cli("aggregate", "--ws", str(ws), "--round", "1")
+        rc, _, err = self.cli("aggregate", "--ws", str(ws))
         self.assertNotEqual(rc, 0)
         self.assertIn("감사 중단됨", err)
 
@@ -300,14 +312,29 @@ class C1Test(Base):
         self.assertEqual(tj["targets"][1]["sha256"], hashlib.sha256(Path(s).read_bytes()).hexdigest())
         self.assertEqual(tj["tree"], str(repo.resolve()))
         self.assertTrue((W / "round-1/snapshot/2-s.md").exists())
-        self.assertEqual(set(out), {"ws", "agents"})
+        self.assertEqual((set(out), out["round"]), ({"ws", "round", "agents"}, 1))
         self.assertTrue({"name", "prompt"} <= set(out["agents"][0]))
         self.assertEqual(json.loads((W / "round-1/assign.json").read_text()), {"agents": out["agents"]})
         (W / "round-2").mkdir()
         (self.tmproot() / "spec-audit" / W.name / "stale").mkdir(parents=True)
-        self.ok("--plan", p, "--spec", s)  # D6 재생성
+        self.ok("--plan", p, "--spec", s)  # D6 재생성(이전 W는 보관)
         self.assertEqual(sorted(x.name for x in W.iterdir()), ["round-1"])
         self.assertFalse((self.tmproot() / "spec-audit" / W.name / "stale").exists())
+
+    def test_c1_archives_previous_ws(self):
+        repo = self.repo({"docs/specs/s.md": "# S\nx\n"})
+        s = str(repo / "docs/specs/s.md")
+        W = Path(self.ok("--spec", s)["ws"])
+        (W / "round-1/marker").write_text("1")
+        self.ok("--spec", s)
+        (W / "round-1/marker").write_text("2")
+        self.ok("--spec", s)  # 같은 초에 두 번 보관해도 덮지 않는다
+        old = sorted(x for x in W.parent.iterdir() if x.name.startswith(W.name + "."))
+        self.assertEqual(len(old), 2, old)
+        for x in old:
+            self.assertRegex(x.name, re.escape(W.name) + r"\.\d{8}-\d{6}(-\d+)?$")
+        self.assertEqual(sorted((x / "round-1/marker").read_text() for x in old), ["1", "2"])
+        self.assertFalse((W / "round-1/marker").exists())
 
     def test_T01_order_independent(self):
         repo = self.repo({"docs/specs/a.md": "a\n", "docs/specs/b.md": "b\n"})
@@ -469,11 +496,11 @@ class C1Test(Base):
     def test_skill_version(self):
         repo = self.repo({"docs/specs/s.md": "s\n"})
         s = str(repo / "docs/specs/s.md")
-        rc, _, err = self.cli("init", "--round", "1", "--skill-version", "0" * 12, "--spec", s)
+        rc, _, err = self.cli("init", "--skill-version", "0" * 12, "--spec", s)
         self.assertNotEqual(rc, 0)
         self.assertIn("/reload-plugins", err)
         self.assertFalse((repo / ".superpowers").exists())
-        rc, _, err = self.cli("init", "--round", "1", "--spec", s)
+        rc, _, err = self.cli("init", "--spec", s)
         self.assertNotEqual(rc, 0)
         self.assertIn("--skill-version 필요", err)
         self.assertNotIn("/reload-plugins", err)
@@ -604,7 +631,7 @@ class C3Test(Base):
                 self.report(self.ws, 1, name, (findings or {}).get(name, []), (coverage or {}).get(name, a["ranges"]))
 
     def agg(self) -> tuple[int, dict | None, str]:
-        return self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
+        return self.cli("aggregate", "--ws", str(self.ws))
 
     def ok(self) -> dict:
         rc, out, err = self.agg()
@@ -678,7 +705,7 @@ class C3Test(Base):
                 self.assertIn(key, inv["reason"])
                 orig, retry = self.agents[victim], inv["retry"]
                 self.assertEqual(retry["name"], victim + "-retry")
-                self.assertEqual((retry["ranges"], retry["recheck"]), (orig["ranges"], orig["recheck"]))
+                self.assertEqual(retry["ranges"], orig["ranges"])
                 if orig["axis"] in audit_ws.EXEC_AXES:
                     self.assertTrue(Path(retry["exec_dir"]).is_dir())
                 agents = json.loads((self.ws / "round-1/assign.json").read_text())["agents"]
@@ -774,7 +801,26 @@ class C3Test(Base):
         agg = self.ok()
         self.assertEqual(agg["counts"], {"fail": 2, "unverified": 1})
         self.assertEqual(len(agg["findings"]), 4)
-        self.assertEqual(agg["unresolved"], [])
+        self.assertEqual(set(agg), {"findings", "review_gap", "counts"})
+
+    def test_aggregate_md(self):
+        self.start()
+        self.write_all({R1: [self.finding(R1, 1, claim="a|b\nc")],
+                        S1: [self.finding(S1, 1, verdict="unverified", unverified_reason="context")]})
+        self.ok()
+        md = (self.ws / "round-1/aggregate.md").read_text()
+        lines = md.splitlines()
+        version = json.loads(PLUGIN_JSON.read_text())["version"]
+        self.assertEqual(lines[0], "# SPEC Audit · round 1 · 지적 1건")
+        self.assertTrue(lines[1].startswith("대상: docs/specs/s.md, docs/canon/c.md · "), lines[1])
+        self.assertIn(f"플러그인 {version}", lines[1])
+        for name in self.agents:
+            self.assertIn(name, lines[1])
+        self.assertRegex(lines[2], r"^fail 1 · unverified 0 · 미검토 1줄$")
+        self.assertIn("| id | 판정 | 축 | 위치 | 주장 | 근거 | 권고 | 영향 위치 |", md)
+        i = lines.index("|---|---|---|---|---|---|---|---|")
+        self.assertEqual(len(lines) - i - 1, 1)  # context finding은 표에 없다
+        self.assertIn("a\\|b c", lines[i + 1])
 
     def test_rf_unknown_fence_ignored(self):
         self.start()
@@ -793,68 +839,8 @@ class C3Test(Base):
         ws = self.round1_done(self.FILES)
         self.assertTrue((ws / "round-1/aggregate.json").is_file())
 
-class C4Test(Base):
+class CleanTest(Base):
     FILES = {"docs/specs/s.md": "".join(f"s{k}\n" for k in range(1, 21))}
-
-    @staticmethod
-    def agg(fail=0, unv=0, gap=None, unres=(), findings=()):
-        return {"findings": list(findings), "review_gap": gap or {}, "unresolved": list(unres),
-                "counts": {"fail": fail, "unverified": unv}}
-
-    def fnd(self, i, **over):
-        f = {"id": i, "verdict": "fail", "fix_class": "align", "unverified_reason": None}
-        f.update(over)
-        return f
-
-    def test_T14(self):
-        d = audit_ws.decide
-        self.assertEqual(d(self.agg(), 1)["action"], "pass")
-        self.assertEqual(d(self.agg(fail=1), 1)["action"], "fix")
-        r = d(self.agg(gap={"refs": ["round-1/snapshot/1-s.md:1"]}), 1)
-        self.assertEqual(r, {"action": "fix", "fix": {"align": [], "approval": []}})
-        self.assertEqual(d(self.agg(unres=["x"]), 1)["action"], "fix")
-
-    def test_T15(self):
-        self.assertEqual(audit_ws.decide(self.agg(unv=1), 2)["action"], "fix")
-
-    def test_T16(self):
-        d = audit_ws.decide
-        self.assertEqual(d(self.agg(fail=1), 5)["action"], "cap")
-        self.assertEqual(d(self.agg(), 5)["action"], "pass")
-        self.assertEqual(d(self.agg(fail=1), 3)["action"], "fix")
-
-    def test_T17(self):
-        fs = [self.fnd("a"), self.fnd("r", fix_class="requirement"),
-              self.fnd("c", verdict="unverified", unverified_reason="context")]
-        r = audit_ws.decide(self.agg(fail=2, findings=fs), 1)
-        self.assertEqual(r["fix"], {"align": ["a"], "approval": ["r"]})
-
-    def test_T18(self):
-        ws = self.round1_done(self.FILES)
-        a = json.loads((ws / "round-1/assign.json").read_text())["agents"]
-        refs = next(x for x in a if x["axis"] == "refs")
-        self.report(ws, 1, refs["name"], [self.finding(refs["name"], 1, claim="a|b\nc")], refs["ranges"])
-        self.assertEqual(self.cli("aggregate", "--ws", str(ws), "--round", "1")[0], 0)
-        rc, out, err = self.cli("decide", "--ws", str(ws), "--round", "1")
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(out["action"], "fix")
-        self.assertEqual(json.loads((ws / "round-1/decision.json").read_text()), out)
-        md = (ws / "round-1/aggregate.md").read_text()
-        lines = md.splitlines()
-        tj = json.loads((ws / "round-1/targets.json").read_text())
-        rels = [t["rel"] for t in tj["targets"]]
-        version = json.loads(PLUGIN_JSON.read_text())["version"]
-        self.assertEqual(lines[0], "# SPEC Audit · round 1 · fix")
-        self.assertTrue(lines[1].startswith("대상: " + ", ".join(rels) + " · "))
-        self.assertIn(f"플러그인 {version}", lines[1])
-        self.assertIn("감사자: ", lines[1])
-        for x in a:
-            self.assertIn(x["name"], lines[1])
-        self.assertRegex(lines[2], r"^fail 1 · unverified 0 · review-gap \d+줄 · 직전 미해소 0$")
-        self.assertIn("| id | 판정 | 축 | 위치 | 주장 | 근거 | 수정 분류 | 영향 위치 |", md)
-        i = lines.index("|---|---|---|---|---|---|---|---|")
-        self.assertEqual(len(lines) - i - 1, 1)
-        self.assertIn("a\\|b c", lines[i + 1])
 
     def test_T19_clean(self):
         ws = self.round1_done(self.FILES)
@@ -865,16 +851,6 @@ class C4Test(Base):
         self.assertFalse(tmp.exists())
         self.assertTrue(ws.exists())
 
-    def test_rf_empty_all_pass(self):
-        d = self.repo({"docs/specs/e.md": ""})
-        rc, out, err = self.c1("--spec", str(d / "docs/specs/e.md"))
-        self.assertEqual(rc, 0, err)
-        for a in out["agents"]:
-            self.report(self.ws, 1, a["name"], [], a["ranges"])
-        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws), "--round", "1")[0], 0)
-        rc, out, err = self.cli("decide", "--ws", str(self.ws), "--round", "1")
-        self.assertEqual((rc, out["action"]), (0, "pass"), err)
-
 
 def lines(n: int) -> list[str]:
     return [f"s{k}\n" for k in range(1, n + 1)]
@@ -884,7 +860,6 @@ SP = "docs/specs/s.md"
 CANON_FILES = {SP: "상위 정본: `docs/canon/c.md`\n" + "".join(lines(40)[1:]),
                "docs/canon/c.md": "".join(f"c{k}\n" for k in range(1, 11))}
 RR, SC2 = "refs-r2-s1", "selfcontained-r2-s1"
-F1 = "refs-r1-s1-001"
 
 
 def r(n: int, a: int, b: int | None = None, snap: str = "1-s.md") -> str:
@@ -897,9 +872,10 @@ class GateTest(Base):
     SDD = Path(audit_ws.__file__).resolve().parents[2] / "subagent-driven-development" / "scripts" / "sdd-workspace"
 
     def passed(self, files: dict[str, str] | None = None) -> tuple[Path, dict]:
+        """init → 보고 → aggregate → finish(전부 apply, check 없음)."""
         ws = self.round1_done(files or self.FILES)
-        rc, out, err = self.cli("decide", "--ws", str(ws), "--round", "1")
-        self.assertEqual((rc, out["action"]), (0, "pass"), err)
+        rc, out, err = self.finish(ws, self.apply_all(ws))
+        self.assertEqual((rc, out["done"]), (0, True), err)
         tj = json.loads((ws / "round-1" / "targets.json").read_text())
         return ws, {Path(t["path"]).name: Path(t["path"]) for t in tj["targets"]}
 
@@ -911,14 +887,13 @@ class GateTest(Base):
         return rc, err
 
     def test_pass_with_plan_writes_record(self):
-        _, f = self.passed()
+        ws, f = self.passed()
         sha = hashlib.sha256(f["p-plan.md"].read_bytes()).hexdigest()
         rec = json.loads(audit_ws.pass_record_path(sha).read_text())
         self.assertEqual(rec["plan"], str(f["p-plan.md"]))
         self.assertEqual({t["path"] for t in rec["targets"]}, {str(f["p-plan.md"]), str(f["s-spec.md"])})
         self.assertTrue(all(set(t) == {"path", "sha256"} for t in rec["targets"]))
-        self.assertEqual((rec["round"], rec["plugin_version"]),
-                         (1, json.loads(PLUGIN_JSON.read_text())["version"]))
+        self.assertEqual((rec["ws"], rec["plugin_version"]), (str(ws), json.loads(PLUGIN_JSON.read_text())["version"]))
 
     def test_pass_without_plan_no_record(self):
         self.passed({self.SPEC: "# s\n"})
@@ -931,9 +906,9 @@ class GateTest(Base):
         for i, a in enumerate(out["agents"]):
             fs = [self.finding(a["name"], 1)] if i == 0 else []
             self.report(Path(out["ws"]), 1, a["name"], fs, a["ranges"])
-        self.assertEqual(self.cli("aggregate", "--ws", out["ws"], "--round", "1")[0], 0)
-        rc, dec, err = self.cli("decide", "--ws", out["ws"], "--round", "1")
-        self.assertEqual(dec["action"], "fix", err)
+        self.assertEqual(self.cli("aggregate", "--ws", out["ws"])[0], 0)
+        rc, res, err = self.finish(Path(out["ws"]), {})
+        self.assertEqual((rc, res["done"]), (1, False), err)
         self.assertEqual(self.records(), [])
 
     def test_record_excludes_other(self):
@@ -963,28 +938,28 @@ class GateTest(Base):
         d = self.repo(self.FILES)
         rc, err = self.gate(d / self.PLAN)
         self.assertEqual(rc, 1)
-        self.assertIn("감사 합격 기록 없음", err)
+        self.assertIn("감사 완료 기록 없음", err)
 
     def test_gate_plan_changed(self):
         _, f = self.passed()
         f["p-plan.md"].write_text("# p changed\n")
         rc, err = self.gate(f["p-plan.md"])
         self.assertEqual(rc, 1)
-        self.assertIn("감사 합격 기록 없음", err)
+        self.assertIn("감사 완료 기록 없음", err)
 
     def test_gate_spec_changed(self):
         _, f = self.passed()
         f["s-spec.md"].write_text("# s changed\n")
         rc, err = self.gate(f["p-plan.md"])
         self.assertEqual(rc, 1)
-        self.assertIn(f"{f['s-spec.md']}가 감사 합격 뒤 바뀌었다", err)
+        self.assertIn(f"{f['s-spec.md']}가 감사 완료 뒤 바뀌었다", err)
 
     def test_gate_spec_missing(self):
         _, f = self.passed()
         f["s-spec.md"].unlink()
         rc, err = self.gate(f["p-plan.md"])
         self.assertEqual(rc, 1)
-        self.assertIn(f"{f['s-spec.md']}가 감사 합격 뒤 바뀌었다", err)
+        self.assertIn(f"{f['s-spec.md']}가 감사 완료 뒤 바뀌었다", err)
 
     def test_gate_other_changed_passes(self):
         _, f = self.passed({self.PLAN: "# p\n", self.SPEC: "# s\n상위 정본: `docs/canon.md`\n",
@@ -1008,7 +983,7 @@ class GateTest(Base):
         d = self.repo(self.FILES)
         p = self.sdd(d / self.PLAN, True)
         self.assertEqual(p.returncode, 1)
-        self.assertIn("감사 합격 기록 없음", p.stderr)
+        self.assertIn("감사 완료 기록 없음", p.stderr)
 
     def test_sdd_workspace_gate_on_passes(self):
         _, f = self.passed()
@@ -1017,7 +992,7 @@ class GateTest(Base):
         self.assertEqual(Path(p.stdout.strip()).parent.name, "sdd")
 
 
-class C2Test(Base):
+class ReviewTest(Base):
     def setup1(self, files: dict[str, str], findings: dict | None = None) -> Path:
         ws = self.round1_done(files, findings)
         self.targets = json.loads((ws / "round-1/targets.json").read_text())["targets"]
@@ -1026,16 +1001,13 @@ class C2Test(Base):
     def write(self, L: list[str], k: int = 0) -> None:
         Path(self.targets[k]["path"]).write_text("".join(L))
 
-    def c2(self, ws: Path, n: int = 2) -> tuple[int, dict | None, str]:
-        return self.cli("init", "--ws", str(ws), "--round", str(n))
+    def c2(self, ws: Path) -> tuple[int, dict | None, str]:
+        return self.cli("review", "--ws", str(ws))
 
     def ok2(self, ws: Path) -> dict:
         rc, out, err = self.c2(ws)
         self.assertEqual(rc, 0, err)
         return out
-
-    def scope(self, ws: Path) -> dict:
-        return json.loads((ws / "round-2/scope.json").read_text())["ranges"]
 
     def axis_ranges(self, out: dict) -> dict:
         res: dict[str, list] = {}
@@ -1043,18 +1015,12 @@ class C2Test(Base):
             res.setdefault(a["axis"], []).extend(a["ranges"])
         return res
 
-    def write2(self, ws: Path, out: dict, findings: dict | None = None, resolved: dict | None = None) -> None:
+    def write2(self, ws: Path, out: dict, findings: dict | None = None) -> None:
         for a in out["agents"]:
-            default = [f"{i}: resolved" for i in a["recheck"]] if a["recheck"] else None
-            res = (resolved or {}).get(a["name"], default)
-            self.report(ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"], res)
+            self.report(ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"])
 
     def agg2(self, ws: Path) -> tuple[int, dict | None, str]:
-        return self.cli("aggregate", "--ws", str(ws), "--round", "2")
-
-    def set_agg(self, ws: Path, **over) -> None:
-        p = ws / "round-1/aggregate.json"
-        p.write_text(json.dumps({**json.loads(p.read_text()), **over}))
+        return self.cli("aggregate", "--ws", str(ws))
 
     def test_T09_changed(self):
         ws = self.setup1({SP: "".join(lines(10))})
@@ -1062,10 +1028,7 @@ class C2Test(Base):
         L[3] = "X4\n"
         self.write(L)
         out = self.ok2(ws)
-        sc = self.scope(ws)
-        for ax in ("refs", "selfcontained", "rootcause"):
-            self.assertEqual(sc[ax], [r(2, 4)], ax)
-        self.assertEqual(sc["oracle"], [])
+        self.assertEqual(out["round"], 2)
         self.assertEqual(self.axis_ranges(out), {ax: [r(2, 4)] for ax in ("refs", "selfcontained", "rootcause")})
         patch = (ws / "round-2/diff.patch").read_bytes()
         for part in (b"-s4\n", b"+X4\n", SP.encode()):
@@ -1077,27 +1040,6 @@ class C2Test(Base):
         self.assertEqual(audit_ws.changed_lines(old, old[1:]), {1})
         self.assertEqual(audit_ws.changed_lines(old, old[:-1]), {9})
 
-    def test_T09_move(self):
-        ws = self.setup1({SP: "".join(lines(10))}, {R1: [self.finding(R1, 1, target=r(1, 7))]})
-        L = lines(10)
-        L[1:1] = ["n1\n", "n2\n", "n3\n"]
-        self.write(L)
-        self.ok2(ws)
-        sc = self.scope(ws)
-        self.assertEqual(sc["refs"], [r(2, 2, 4), r(2, 10)])
-        self.assertEqual(sc["selfcontained"], [r(2, 2, 4)])
-        enc = lambda xs: [x.encode() for x in xs]
-        self.assertEqual(audit_ws.move_range(enc(lines(10)), enc(L), 7, 7), (10, 10))
-        self.assertEqual(audit_ws.move_range(enc(lines(10)), enc(L), 1, 3), (1, 6))
-
-    def test_T09_gap(self):
-        ws = self.setup1({SP: "".join(lines(40))})
-        self.set_agg(ws, review_gap={"refs": [r(1, 20, 25)]})
-        out = self.ok2(ws)
-        sc = self.scope(ws)
-        self.assertEqual((sc["refs"], sc["selfcontained"], sc["rootcause"]), ([r(2, 20, 25)], [], []))
-        self.assertEqual({a["axis"] for a in out["agents"]}, {"refs"})
-
     def three(self, n: int = 3000) -> list[str]:
         L = lines(n)
         for k in (100, 200, 300):
@@ -1105,24 +1047,14 @@ class C2Test(Base):
         return L
 
     def test_T05_basic(self):
-        ws = self.setup1({SP: "".join(lines(3000))})
+        ws = self.setup1({SP: "".join(lines(3000))}, {R1: [self.finding(R1, 1, target=r(1, 50))]})
         self.write(self.three())
         out = self.ok2(ws)
-        want = [r(2, 100), r(2, 200), r(2, 300)]
+        want = [r(2, 100), r(2, 200), r(2, 300)]  # 지적 위치(50)가 아니라 바뀐 줄만
         for ax in ("refs", "selfcontained", "rootcause"):
             got = [a for a in out["agents"] if a["axis"] == ax]
             self.assertEqual([a["ranges"] for a in got], [want], ax)
         self.assertFalse([a for a in out["agents"] if a["axis"] == "oracle"])
-
-    def test_T05_recheck(self):
-        ws = self.setup1({SP: "".join(lines(3000))}, {R1: [self.finding(R1, 1, target=r(1, 50))]})
-        self.write(self.three())
-        out = self.ok2(ws)
-        ar = self.axis_ranges(out)
-        self.assertEqual(ar["refs"], [r(2, 50), r(2, 100), r(2, 200), r(2, 300)])
-        self.assertNotIn(r(2, 50), ar["selfcontained"] + ar["rootcause"])
-        owners = [a["name"] for a in out["agents"] if F1 in a["recheck"]]
-        self.assertEqual(owners, [RR])
         self.assertEqual(json.loads((ws / "round-2/assign.json").read_text()), {"agents": out["agents"]})
 
     def test_T05_other_only(self):
@@ -1130,25 +1062,6 @@ class C2Test(Base):
         self.write([f"c{k}\n" if k != 2 else "X\n" for k in range(1, 11)], k=1)
         out = self.ok2(ws)
         self.assertEqual(self.axis_ranges(out), {"refs": [r(2, 2, snap="2-c.md")]})
-
-    def test_T05_boundary(self):
-        ws = self.setup1({SP: "".join(lines(3000))}, {S1: [self.finding(S1, 1, target=r(1, 1499, 1502))]})
-        self.write([x if 1499 <= k <= 1502 else f"X{k}\n" for k, x in enumerate(lines(3000), 1)])
-        out = self.ok2(ws)
-        sc = [a for a in out["agents"] if a["axis"] == "selfcontained"]
-        self.assertEqual([a["name"] for a in sc], ["selfcontained-r2-s1", "selfcontained-r2-s2"])
-        self.assertEqual([a["recheck"] for a in sc], [["selfcontained-r1-s1-001"], []])
-
-    def test_T05_context(self):
-        ctx = self.finding(S1, 1, verdict="unverified", unverified_reason="context", target=r(1, 10, 20))
-        ws = self.setup1({SP: "".join(lines(40))}, {S1: [ctx]})
-        out = self.ok2(ws)
-        self.assertFalse([a for a in out["agents"] if ctx["id"] in a["recheck"]])
-        self.assertEqual(self.scope(ws)["selfcontained"], [r(2, 10, 20)])
-        self.set_agg(ws, review_gap={})
-        out = self.ok2(ws)
-        self.assertEqual(self.scope(ws)["selfcontained"], [])
-        self.assertEqual(out["agents"], [])
 
     def test_T05_oracle(self):
         ws = self.setup1({SP: "".join(lines(40))})
@@ -1164,30 +1077,42 @@ class C2Test(Base):
         orc = [a for a in out["agents"] if a["axis"] == "oracle"]
         self.assertEqual([(a["name"], a["ranges"]) for a in orc], [("oracle-r2-s1", [r(2, 42, 44)])])
 
+    def test_unchanged_fails(self):
+        ws = self.setup1({SP: "".join(lines(10))})
+        rc, _, err = self.c2(ws)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("바뀐 줄이 없다", err)
+        self.assertFalse((ws / "round-2").exists())
+
     def r2_basic(self) -> tuple[Path, dict]:
-        """40줄 spec, 라운드 1 refs finding F1(:1), 4번째 줄 수정 후 C2."""
+        """40줄 spec, 라운드 1 refs finding(:1), 4번째 줄 수정 후 C2."""
         ws = self.setup1({SP: "".join(lines(40))}, {R1: [self.finding(R1, 1, target=r(1, 1))]})
         L = lines(40)
         L[3] = "X4\n"
         self.write(L)
         return ws, self.ok2(ws)
 
-    def test_T35_unresolved(self):
+    def test_second_review_fails(self):
         ws, out = self.r2_basic()
-        self.assertEqual({a["name"]: a["recheck"] for a in out["agents"]}[RR], [F1])
-        self.write2(ws, out, {RR: [self.finding(RR, 1)]}, {RR: [f"{F1}: unresolved {RR}-001"]})
-        rc, res, err = self.agg2(ws)
-        self.assertEqual((rc, res), (0, {}), err)
-        agg = json.loads((ws / "round-2/aggregate.json").read_text())
-        self.assertEqual(agg["unresolved"], [F1])
-        self.assertEqual(audit_ws.decide(agg, 2)["action"], "fix")
+        r2 = lines(40)
+        r2[3] = "X4\n"
+        before = (ws / "round-2/assign.json").read_text()
 
-    def test_unresolved_leading_space(self):
-        ws, out = self.r2_basic()
-        self.write2(ws, out, {RR: [self.finding(RR, 1)]}, {RR: [f"  {F1}: unresolved {RR}-001"]})
-        rc, res, err = self.agg2(ws)
-        self.assertEqual((rc, res), (0, {}), err)
-        self.assertEqual(json.loads((ws / "round-2/aggregate.json").read_text())["unresolved"], [F1])
+        def again() -> None:
+            more = list(r2)
+            more[9] = "X10\n"
+            self.write(more)
+            rc, _, err = self.c2(ws)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("한 번뿐", err)
+            self.assertFalse((ws / "round-3").exists())
+            self.assertEqual((ws / "round-2/assign.json").read_text(), before)
+            self.write(r2)
+
+        again()  # C2 직후
+        self.write2(ws, out)
+        self.assertEqual(self.agg2(ws)[:2], (0, {}))
+        again()  # C3 뒤
 
     def test_diff_patch_no_final_newline(self):
         ws = self.setup1({"docs/plans/p.md": "a\nb", SP: "c\nd"})
@@ -1220,7 +1145,7 @@ class C2Test(Base):
         self.assertEqual(rc, 0, err)
         for a in out["agents"]:
             self.report(self.ws, 1, a["name"], [], a["ranges"])
-        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws), "--round", "1")[0], 0)
+        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws))[0], 0)
         (Q / "q.txt").write_text("Q2\n")
         git(Q, "commit", "-q", "-am", "q")
         (P / SP).write_text("# S\ny\n")
@@ -1233,7 +1158,9 @@ class C2Test(Base):
         d = self.repo({SP: "# S\nx\n"})
         rc, _, err = self.c1("--spec", str(d / SP))
         self.assertEqual(rc, 0, err)
-        self.assertNotEqual(self.c2(self.ws)[0], 0)
+        rc, _, err = self.c2(self.ws)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("aggregate.json 없음", err)
 
     def test_T33_c2_missing_other(self):
         ws = self.setup1(CANON_FILES)
@@ -1244,54 +1171,32 @@ class C2Test(Base):
 
     def test_T34_c2(self):
         ws, out = self.r2_basic()
+        self.assertTrue(out["agents"])
         for a in out["agents"]:
             text = Path(a["prompt"]).read_text()
-            for part in [*a["recheck"], str(ws / "round-2/scope.json"), str(ws / "round-1/aggregate.json"),
-                         str(ws / "round-2/diff.patch")]:
+            for part in [*a["ranges"], str(ws / "round-2/diff.patch"), "라운드: 2 (수정분 재검토)"]:
                 self.assertIn(part, text, a["name"])
-        self.assertIn(F1, Path({a["name"]: a for a in out["agents"]}[RR]["prompt"]).read_text())
+        r1 = json.loads((ws / "round-1/assign.json").read_text())["agents"]
+        self.assertNotIn("- diff.patch(", Path(r1[0]["prompt"]).read_text())
 
-    def test_T10_n2(self):
-        cases = [("resolved 블록 없음", RR, {}, {RR: None}),
-                 ("비배정", RR, {}, {RR: [f"{F1}: resolved", "refs-r1-s1-009: resolved"]}),
-                 ("누락", RR, {}, {RR: []}),
-                 ("가리킨 finding", RR, {}, {RR: [f"{F1}: unresolved {RR}-009"]}),
-                 ("배정 범위", SC2, {SC2: [self.finding(SC2, 1, target=r(2, 10))]}, {})]
-        ws, _ = self.r2_basic()
-        for key, victim, findings, resolved in cases:
-            with self.subTest(key):
-                out = self.ok2(ws)
-                self.write2(ws, out, findings, resolved)
-                rc, res, err = self.agg2(ws)
-                self.assertEqual(rc, 3, err)
-                self.assertEqual(len(res["invalid"]), 1, res)
-                self.assertIn(victim, res["invalid"][0]["reason"])
-                self.assertIn(key, res["invalid"][0]["reason"])
+    def test_T10_n2_target_outside_assignment(self):
+        ws, out = self.r2_basic()
+        self.write2(ws, out, {SC2: [self.finding(SC2, 1, target=r(2, 10))]})
+        rc, res, err = self.agg2(ws)
+        self.assertEqual(rc, 3, err)
+        self.assertEqual(len(res["invalid"]), 1, res)
+        self.assertIn(SC2, res["invalid"][0]["reason"])
+        self.assertIn("배정 범위", res["invalid"][0]["reason"])
 
     def test_T25_n2(self):
         ws, out = self.r2_basic()
         self.write2(ws, out, {SC2: [self.finding(SC2, 1, target=r(2, 3, 5))],
-                              RR: [self.finding(RR, 1, target=r(2, 10))]})
+                              RR: [self.finding(RR, 1, target=r(2, 10))]})  # refs는 배정 밖도 허용
         rc, res, err = self.agg2(ws)
         self.assertEqual((rc, res), (0, {}), err)
-
-    def no_owner(self, ws: Path, fid: str) -> None:
-        rc, _, err = self.c2(ws)
-        self.assertNotEqual(rc, 0)
-        self.assertIn(fid, err)
-        self.assertFalse((ws / "round-2").exists())
-
-    def test_T05_no_owner_empty(self):
-        ws = self.setup1({SP: "".join(lines(40))}, {S1: [self.finding(S1, 1, target=r(1, 1))]})
-        self.write([])
-        self.no_owner(ws, f"{S1}-001")
-
-    def test_T05_no_owner_oracle(self):
-        o1 = "oracle-r1-s1"
-        head = ["# S\n", "## Reference Oracle\n", "\n", "원본 legacy/p.c v1 전체\n"]
-        ws = self.setup1({SP: "".join(head + lines(10))}, {o1: [self.finding(o1, 1, target=r(1, 4))]})
-        self.write(head[:1] + lines(10))
-        self.no_owner(ws, f"{o1}-001")
+        agg = json.loads((ws / "round-2/aggregate.json").read_text())
+        self.assertEqual(sorted(f["id"] for f in agg["findings"]), [f"{RR}-001", f"{SC2}-001"])
+        self.assertTrue((ws / "round-2/aggregate.md").read_text().startswith("# SPEC Audit · round 2 (수정분 재검토)"))
 
     def test_rf_crlf_no_final_newline(self):
         old = b"a\r\nb\r\nc".splitlines(keepends=True)
@@ -1313,6 +1218,8 @@ def spec20(**edits: str) -> list[str]:
 
 
 class CheckTest(Base):
+    """C3 ② check 재현 검증(verify_check)."""
+
     def r1(self, check: str | None = CHK, **over) -> tuple[int, dict | None, str]:
         """spec 20줄(5줄 timeout=60) C1 → refs finding(:5, check) + 나머지 빈 보고 → C3."""
         d = self.repo({SP: "".join(spec20())})
@@ -1323,21 +1230,10 @@ class CheckTest(Base):
                                    "check": check, **over})
         for a in out["agents"]:
             self.report(self.ws, 1, a["name"], [f] if a["name"] == R1 else [], a["ranges"])
-        return self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
+        return self.cli("aggregate", "--ws", str(self.ws))
 
     def agg(self, n: int = 1) -> dict:
         return json.loads((self.ws / f"round-{n}/aggregate.json").read_text())
-
-    def round2(self, L: list[str], findings: dict | None = None, resolved: dict | None = None,
-               ) -> tuple[int, dict | None, str]:
-        self.spec.write_text("".join(L))
-        rc, out, err = self.cli("init", "--ws", str(self.ws), "--round", "2")
-        self.assertEqual(rc, 0, err)
-        for a in out["agents"]:
-            default = [f"{i}: resolved" for i in a["recheck"]] if a["recheck"] else None
-            self.report(self.ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"],
-                        (resolved or {}).get(a["name"], default))
-        return self.cli("aggregate", "--ws", str(self.ws), "--round", "2")
 
     def ok(self, res: tuple) -> None:
         self.assertEqual(res[:2], (0, {}), res[2])
@@ -1348,25 +1244,13 @@ class CheckTest(Base):
         self.assertEqual(len(out["invalid"]), 1, out)
         self.assertIn("check", out["invalid"][0]["reason"])
 
-    def set_check(self, cmd: str) -> None:
-        p = self.ws / "round-1/aggregate.json"
-        agg = json.loads(p.read_text())
-        agg["checks"][FC]["check"] = cmd
-        p.write_text(json.dumps(agg))
-
-    def c9(self) -> tuple[int, dict | None, str]:
-        return self.cli("check", "--ws", str(self.ws))
-
     def test_check_valid(self):
         self.ok(self.r1())
-        checks = self.agg()["checks"]
-        self.assertEqual(list(checks), [FC])
-        self.assertEqual(checks[FC]["check"], CHK)
-        self.assertEqual(checks[FC], next(f for f in self.agg()["findings"] if f["id"] == FC))
+        self.assertEqual([(f["id"], f["check"]) for f in self.agg()["findings"]], [(FC, CHK)])
 
     def test_check_null(self):
         self.ok(self.r1(None))
-        self.assertEqual(self.agg()["checks"], {})
+        self.assertIsNone(self.agg()["findings"][0]["check"])
 
     def test_check_not_reproducing(self):
         self.bad(self.r1("exit 0"))
@@ -1388,7 +1272,7 @@ class CheckTest(Base):
         f = self.finding(R1, 1, **{"class": "ref-mismatch", "target": r(1, 5), "affected": [r(1, 5)], "check": cmd})
         agents = json.loads((self.ws / "round-1/assign.json").read_text())["agents"]
         self.report(self.ws, 1, R1, [f], next(a for a in agents if a["name"] == R1)["ranges"])
-        self.bad(self.cli("aggregate", "--ws", str(self.ws), "--round", "1"))
+        self.bad(self.cli("aggregate", "--ws", str(self.ws)))
         self.assertEqual(sorted(x.name for x in (self.ws / "round-1").iterdir() if "snapshot" in x.name),
                          ["snapshot"])
         self.assertEqual([x.name for x in snap.iterdir()], ["1-s.md"])
@@ -1397,7 +1281,7 @@ class CheckTest(Base):
         self.ok(self.r1())
         snap = self.ws / "round-1/snapshot"
         snap.rename(snap.with_name("snapshot.verifying"))
-        rc, out, err = self.c9()
+        rc, out, err = self.finish(self.ws, {FC: {"d": "reject", "why": "w"}})
         self.assertEqual(rc, 0, err)
         self.assertTrue(snap.is_dir())
         self.assertFalse(snap.with_name("snapshot.verifying").exists())
@@ -1407,12 +1291,12 @@ class CheckTest(Base):
         snap = self.ws / "round-1/snapshot"
         hid = snap.with_name("snapshot.verifying")
         shutil.copytree(snap, hid)
-        rc, out, err = self.c9()
-        self.assertNotEqual(rc, 0)
-        self.assertIn(str(hid), err)
-        rc, out, err = self.cli("aggregate", "--ws", str(self.ws), "--round", "1")
-        self.assertNotEqual(rc, 0)
-        self.assertIn(str(hid), err)
+        for cmd in (["finish", "--ws", str(self.ws), "--dispositions", str(self.tmp / "none.json")],
+                    ["aggregate", "--ws", str(self.ws)], ["review", "--ws", str(self.ws)]):
+            with self.subTest(cmd[0]):
+                rc, out, err = self.cli(*cmd)
+                self.assertNotEqual(rc, 0)
+                self.assertIn(str(hid), err)
 
     def test_run_check_timeout(self):
         self.assertIsNone(audit_ws.run_check("sleep 5", self.tmp, self.tmp, timeout=1)[0])
@@ -1423,94 +1307,122 @@ class CheckTest(Base):
         cmd = 'test -f 1-s.md && test "$TREE" = ' + shlex.quote(str(tree))
         self.assertEqual(audit_ws.run_check(cmd, self.ws / "round-1/snapshot", tree)[0], 0)
 
-    def test_check_fixed_kept(self):
-        self.ok(self.r1())
-        self.ok(self.round2(spec20(L5="timeout=30\n")))
-        agg = self.agg(2)
-        self.assertNotIn(FC, [f["id"] for f in agg["findings"]])
-        self.assertTrue(agg["checks"][FC]["target"].startswith("round-2/"))
-
-    def test_check_regression_readded(self):
-        self.ok(self.r1())
-        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n")))
-        agg = self.agg(2)
-        f = next(f for f in agg["findings"] if f["id"] == FC)
-        self.assertTrue(f["target"].startswith("round-2/"))
-        self.assertTrue(all(a.startswith("round-2/") for a in f["affected"]) and f["affected"])
-        self.assertTrue(f["evidence"].startswith("exit 1"))
-        self.assertIn("1-s.md:12", f["evidence"])
-        self.assertEqual(agg["counts"]["fail"], 1)
-        rc, dec, err = self.cli("decide", "--ws", str(self.ws), "--round", "2")
-        self.assertEqual((rc, dec["action"]), (0, "fix"), err)
-
-    def test_check_error_readded(self):
-        self.ok(self.r1())
-        self.set_check("exit 2")
-        self.ok(self.round2(spec20(L5="timeout=30\n")))
-        self.assertIn(FC, [f["id"] for f in self.agg(2)["findings"]])
-
-    def test_check_unresolved_not_duplicated(self):
-        self.ok(self.r1())
-        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n"),
-                            {RR: [self.finding(RR, 1, target=r(2, 5))]}, {RR: [f"{FC}: unresolved {RR}-001"]}))
-        agg = self.agg(2)
-        self.assertNotIn(FC, [f["id"] for f in agg["findings"]])
-        self.assertEqual(agg["counts"]["fail"], 1)
-
-    def test_checks_cumulative(self):
-        self.ok(self.r1())
-        chk2 = 'grep -Hn "^X12$" 1-s.md && exit 1 || exit 0'
-        self.ok(self.round2(spec20(L12="X12\n"), {RR: [self.finding(RR, 1, target=r(2, 12), check=chk2)]}))
-        self.assertEqual(set(self.agg(2)["checks"]), {FC, f"{RR}-001"})
-
-    def test_c9_failed(self):
-        self.ok(self.r1())
-        rc, out, err = self.c9()
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(len(out["failed"]), 1, out)
-        f = out["failed"][0]
-        self.assertEqual(set(f), {"id", "fix_class", "claim", "output"})
-        self.assertEqual(f["id"], FC)
-        self.assertIn("1-s.md:5", f["output"])
-        self.assertTrue((self.tmp / "tmproot/spec-audit" / self.ws.name / "check/1-s.md").is_file())
-        self.spec.write_text("".join(spec20(L5="timeout=30\n")))
-        rc, out, err = self.c9()
-        self.assertEqual((rc, out), (0, {"failed": []}), err)
-
-    def test_c9_error(self):
-        self.ok(self.r1())
-        self.set_check("exit 2")
-        rc, out, err = self.c9()
-        self.assertEqual(rc, 0, err)
-        self.assertEqual([f["id"] for f in out["failed"]], [FC])
-
     def test_run_check_non_utf8(self):
         code, out = audit_ws.run_check(r"printf '\xff\xfe'; exit 1", self.tmp, self.tmp)
         self.assertEqual(code, 1)
         self.assertIsInstance(out, str)
 
-    def test_c9_non_utf8(self):
-        self.ok(self.r1())
-        self.set_check(r"printf '\xff\xfe'; exit 1")
-        rc, out, err = self.c9()
-        self.assertEqual(rc, 0, err)
-        self.assertEqual([f["id"] for f in out["failed"]], [FC])
 
-    def test_check_readded_recheck_r3(self):
-        self.ok(self.r1())
-        self.ok(self.round2(spec20(L5="timeout=30\n", L12="timeout=60\n")))
-        self.assertIn(FC, [f["id"] for f in self.agg(2)["findings"]])
-        rc, out, err = self.cli("init", "--ws", str(self.ws), "--round", "3")
-        self.assertEqual(rc, 0, err)
-        owners = [a["name"] for a in out["agents"] if FC in a["recheck"]]
-        self.assertEqual(len(owners), 1, out["agents"])
-        self.assertTrue(owners[0].startswith("refs-"))
+class FinishTest(Base):
+    r1 = CheckTest.r1
+    APPLY = {FC: {"d": "apply"}}
 
-    def test_c9_no_aggregate(self):
+    def fin(self, disp: dict) -> tuple[int, dict | None, str]:
+        return self.finish(self.ws, disp)
+
+    def result(self, n: int) -> dict:
+        return json.loads((self.ws / f"round-{n}/result.json").read_text())
+
+    def test_invalid_dispositions(self):
+        self.assertEqual(self.r1()[0], 0)
+        cases = [("처분 누락", {}, f"{FC}: 처분 없음"),
+                 ("reject why 누락", {FC: {"d": "reject"}}, f"{FC}: 기각 사유(why) 없음"),
+                 ("accept why 빈 값", {FC: {"d": "accept", "why": ""}}, f"{FC}: 수용 사유(why) 없음"),
+                 ("모르는 id", {FC: {"d": "reject", "why": "w"}, "refs-r1-s1-009": {"d": "apply"}},
+                  "refs-r1-s1-009: 이 감사의 지적이 아님"),
+                 ("처분 값", {FC: {"d": "fix"}}, f"{FC}: 처분은 apply|reject|accept 중 하나")]
+        for label, disp, want in cases:
+            with self.subTest(label):
+                rc, out, err = self.fin(disp)
+                self.assertEqual((rc, out["done"]), (1, False), err)
+                self.assertIn(want, out["invalid"])
+                self.assertEqual(self.result(1), out)
+                self.assertTrue((self.ws / "round-1/result.md").read_text().startswith("# SPEC Audit · 미완"))
+
+    def test_apply_check_failed(self):
+        self.assertEqual(self.r1()[0], 0)
+        rc, out, err = self.fin(self.APPLY)
+        self.assertEqual(rc, 1, err)
+        self.assertEqual((out["done"], out["invalid"], out["review_needed"]), (False, [], False))
+        self.assertEqual(len(out["failed"]), 1, out)
+        f = out["failed"][0]
+        self.assertEqual(set(f), {"id", "claim", "output"})
+        self.assertEqual(f["id"], FC)
+        self.assertTrue(f["output"].startswith("exit 1\n"), f["output"])
+        self.assertIn("1-s.md:5", f["output"])
+        self.assertTrue((self.tmp / "tmproot/spec-audit" / self.ws.name / "check/1-s.md").is_file())
+
+    def test_reject_check_ignored(self):
+        self.assertEqual(self.r1()[0], 0)
+        rc, out, err = self.fin({FC: {"d": "reject", "why": "오탐"}})
+        self.assertEqual((rc, out), (0, {"done": True, "invalid": [], "failed": [], "review_needed": False}), err)
+
+    def test_edit_without_review(self):
+        self.assertEqual(self.r1()[0], 0)
+        self.spec.write_text("".join(spec20(L5="timeout=30\n")))
+        rc, out, err = self.fin(self.APPLY)
+        self.assertEqual((rc, out), (1, {"done": False, "invalid": [], "failed": [], "review_needed": True}), err)
+        self.assertEqual(self.cli("review", "--ws", str(self.ws))[0], 0)  # 라운드 2 미집계 = 아직 재검토 전
+        rc, out, err = self.fin(self.APPLY)
+        self.assertEqual((rc, out["review_needed"]), (1, True), err)
+
+    def review_round(self, findings: dict | None = None) -> None:
+        rc, out, err = self.cli("review", "--ws", str(self.ws))
+        self.assertEqual(rc, 0, err)
+        for a in out["agents"]:
+            self.report(self.ws, 2, a["name"], (findings or {}).get(a["name"], []), a["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", str(self.ws))[:2], (0, {}))
+
+    def test_done_after_review(self):
+        self.assertEqual(self.r1()[0], 0)
+        self.spec.write_text("".join(spec20(L5="timeout=30\n")))
+        self.review_round({RR: [self.finding(RR, 1, target=r(2, 5))]})
+        rc, out, err = self.fin(self.APPLY)
+        self.assertEqual(rc, 1, err)
+        self.assertEqual(out["invalid"], [f"{RR}-001: 처분 없음"])
+        rc, out, err = self.fin({**self.APPLY, f"{RR}-001": {"d": "accept", "why": "다음 단계"}})
+        self.assertEqual((rc, out), (0, {"done": True, "invalid": [], "failed": [], "review_needed": False}), err)
+        self.assertEqual(self.result(2), out)
+        self.assertTrue((self.ws / "round-2/result.md").read_text().startswith("# SPEC Audit · 완료"))
+
+    def test_context_needs_no_disposition(self):
+        ctx = self.finding(S1, 1, verdict="unverified", unverified_reason="context", target=r(1, 2, 3))
+        ws = self.round1_done({SP: "".join(lines(10))}, {S1: [ctx]})
+        rc, out, err = self.finish(ws, {})
+        self.assertEqual((rc, out["done"]), (0, True), err)
+        rc, out, err = self.finish(ws, {ctx["id"]: {"d": "apply"}})
+        self.assertIn(f"{ctx['id']}: 이 감사의 지적이 아님", out["invalid"])
+
+    def test_rf_empty_all_pass(self):
+        ws = self.round1_done({"docs/specs/e.md": ""})
+        rc, out, err = self.finish(ws, {})
+        self.assertEqual((rc, out["done"]), (0, True), err)
+
+    def test_no_aggregate(self):
         d = self.repo({SP: "".join(spec20())})
         rc, _, err = self.c1("--spec", str(d / SP))
         self.assertEqual(rc, 0, err)
-        self.assertNotEqual(self.c9()[0], 0)
+        rc, _, err = self.fin({})
+        self.assertNotEqual(rc, 0)
+        self.assertIn("aggregate.json 없음", err)
+
+    def test_plan_record_current_sha(self):
+        plan, spec = "docs/plans/p-plan.md", "docs/specs/s-spec.md"
+        ws = self.round1_done({plan: "# p\n", spec: "# s\n"}, {R1: [self.finding(R1, 1, target=r(1, 1, snap="1-p-plan.md"))]})
+        p = Path(json.loads((ws / "round-1/targets.json").read_text())["targets"][0]["path"])
+        old = hashlib.sha256(p.read_bytes()).hexdigest()
+        p.write_text("# p2\n")
+        rc, out, err = self.cli("review", "--ws", str(ws))
+        self.assertEqual(rc, 0, err)
+        for a in out["agents"]:
+            self.report(ws, 2, a["name"], [], a["ranges"])
+        self.assertEqual(self.cli("aggregate", "--ws", str(ws))[0], 0)
+        rc, out, err = self.finish(ws, self.apply_all(ws))
+        self.assertEqual((rc, out["done"]), (0, True), err)
+        new = hashlib.sha256(p.read_bytes()).hexdigest()
+        self.assertTrue(audit_ws.pass_record_path(new).is_file())
+        self.assertFalse(audit_ws.pass_record_path(old).exists())
+        self.assertEqual(self.cli("gate", str(p))[0], 0)
 
 
 class SkillMdTest(Base):
@@ -1522,3 +1434,24 @@ class SkillMdTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishEdgeTest(Base):
+    """에이전트 보고 버그 재현: 처분 파일 형식 오류·대상 파일 비움."""
+
+    def test_findings_not_object_is_invalid(self):
+        ws = self.round1_done({"docs/specs/s-spec.md": "# s\n"})
+        p = self.tmp / "d.json"
+        p.write_text(json.dumps({"findings": []}))
+        rc, out, err = self.cli("finish", "--ws", str(ws), "--dispositions", str(p))
+        self.assertEqual(rc, 1, err)
+        self.assertTrue(out["invalid"] and "형식" in out["invalid"][0])
+
+    def test_emptied_target_needs_no_review(self):
+        ws = self.round1_done({"docs/specs/s-spec.md": "# s\na\nb\n"})
+        tj = json.loads((ws / "round-1" / "targets.json").read_text())
+        Path(tj["targets"][0]["path"]).write_text("")
+        p = self.tmp / "d.json"
+        p.write_text(json.dumps({"findings": {}}))
+        rc, out, err = self.cli("finish", "--ws", str(ws), "--dispositions", str(p))
+        self.assertEqual((rc, out["review_needed"]), (0, False), err)

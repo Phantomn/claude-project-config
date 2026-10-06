@@ -27,8 +27,9 @@ class CheckExpectedTest(Base):
         self.W = audit_ws.workspace(self.fix.resolve(), self.fix.resolve() / PLAN,
                                     [self.fix.resolve() / SPEC])
 
-    def rnd(self, n: int, findings: list[dict], action: str = "fix",
+    def rnd(self, n: int, findings: list[dict], done: bool | None = False,
             header: str = "대상: 플러그인 6.4.2-phantomn.6") -> None:
+        """done = finish 결과(result.json의 done), None이면 finish 전(result.json 없음)."""
         R = self.W / f"round-{n}"
         R.mkdir(parents=True, exist_ok=True)
         (R / "targets.json").write_text(json.dumps({"tree": "t", "plugin_version": "v", "targets": [
@@ -37,8 +38,10 @@ class CheckExpectedTest(Base):
         fails = sum(f["verdict"] == "fail" for f in findings)
         (R / "aggregate.json").write_text(json.dumps({"findings": findings, "counts": {
             "fail": fails, "unverified": len(findings) - fails}}))
-        (R / "decision.json").write_text(json.dumps({"action": action, "fix": []}))
-        (R / "aggregate.md").write_text(f"# SPEC Audit · round {n} · {action}\n{header}\n")
+        if done is not None:
+            (R / "result.json").write_text(json.dumps({"done": done, "invalid": [], "failed": [],
+                                                       "review_needed": False}))
+        (R / "aggregate.md").write_text(f"# SPEC Audit · round {n} · 지적 {len(findings)}건\n{header}\n")
 
     def f(self, cls: str, target: str, verdict: str = "fail", affected=()) -> dict:
         return {"class": cls, "verdict": verdict, "target": target, "affected": list(affected)}
@@ -74,11 +77,25 @@ class CheckExpectedTest(Base):
         self.assertEqual(self.run_exp(f"round 1 must: ref-missing @ {PLAN}:1-5, {SPEC}:1-9\n"), 0)
 
     def test_T31(self):
-        self.rnd(1, [], action="cap")
+        self.rnd(1, [])
         self.assertEqual(self.run_exp("round 1 header_contains: 6.4.2-phantomn.6\n"), 0)
         self.assertEqual(self.run_exp("round 1 header_contains: nope\n"), 1)
         self.assertEqual(self.run_exp("outcome: pass\n"), 1)
         self.assertEqual(self.run_exp("outcome: any\n"), 0)
+        self.rnd(1, [], done=True)
+        self.assertEqual(self.run_exp("outcome: pass\n"), 0)
+
+    def test_final_action_from_result(self):
+        fa = check_expected._final_action
+        self.assertEqual(fa(self.W), "none")
+        self.rnd(1, [], done=None)
+        self.assertEqual(fa(self.W), "none")
+        self.rnd(1, [], done=False)
+        self.assertEqual(fa(self.W), "open")
+        self.rnd(2, [], done=None)  # 라운드 2 미집계·finish 전 → 직전 finish 결과
+        self.assertEqual(fa(self.W), "open")
+        self.rnd(2, [], done=True)
+        self.assertEqual(fa(self.W), "pass")
 
     def test_T32(self):
         self.rnd(1, [self.f("ref-missing", self.spec(5)), self.f("ref-missing", self.spec(6)),
@@ -88,7 +105,7 @@ class CheckExpectedTest(Base):
         lines = (self.tmp / "fx" / "ACCEPTANCE-LOG.md").read_text().splitlines()
         self.assertEqual(lines[:2], LOG_HEAD)
         self.assertEqual(len(lines), 4)
-        self.assertEqual(lines[2], "| F1 | 일치 | fix | 1 | 2 | 1 | cross-doc-conflict,ref-missing |")
+        self.assertEqual(lines[2], "| F1 | 일치 | open | 1 | 2 | 1 | cross-doc-conflict,ref-missing |")
         self.assertIn("| 불일치 |", lines[3])
         self.assertNotIn("/", "".join(lines[2:]))
 
