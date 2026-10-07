@@ -258,7 +258,7 @@ class TestLead(GuardBase):
         self.make_open_audit()
         self.assertTrue((self.denied(self.lead("Bash", {"command": "ls"})[1]) or "")
                         .startswith("audit-guard: lead-bash:"))
-        ok = f"python3 {audit_ws.__file__} aggregate --ws {self.W} --round 1"
+        ok = f"python3 {audit_ws.__file__} aggregate --ws {self.W}"
         self.assertIsNone(self.denied(self.lead("Bash", {"command": ok})[1]))
 
     def test_m2_code(self):

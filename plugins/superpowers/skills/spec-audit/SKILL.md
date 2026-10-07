@@ -1,22 +1,21 @@
 ---
 name: spec-audit
-description: SPEC/PLAN을 이름 지정 병렬 opus 감사자(실재 정합·완결성·근본성, 필요 시 원본 대조, Agent 도구 스폰)로 실제 소스와 교차 검증하고, 감사→수정→재감사 루프를 ❌0·⚠️0까지 소유하는 구현 전 관문.
+description: SPEC/PLAN을 병렬 opus 감사자(실재 정합·완결성·근본성, 필요 시 원본 대조)로 실제 소스와 교차 검증하는 구현 전 관문. 감사는 최대 2회(전체 1회 + 수정분 재검토 1회)이고, 모든 지적에 처분(반영·기각·수용)을 기록하고 반영분의 check가 통과하면 끝난다.
 when_to_use: /spec-audit, spec audit, spec 검증, self-contained 검토 요청 시, 또는 writing-plans 핸드오프 직전
 ---
 
 # spec-audit
 
-## 1.2 라운드 상한 (D5)
+## 1.2 끝의 정의 (D23)
 
-| ID | 결정 | 단계 |
-|---|---|---|
-| D5 | 라운드 상한 5. 라운드 5에서 합격하지 못하면 불합격 보고 후 멈춘다. 이어서 하려면 사용자가 문서를 고친 뒤 새로 호출한다 | 1 |
+| ID | 결정 |
+|---|---|
+| D23 | 감사는 최대 2회다 — 라운드 1 = 전체 감사, 라운드 2 = 라운드 1 뒤 리드가 고친 줄만 1회 재검토(고친 것이 없으면 없음). 라운드 3은 없다. **끝 = 모든 지적에 처분(`apply` 반영 · `reject` 기각 · `accept` 한계로 수용) ∧ 반영한 지적의 check 통과 ∧ (라운드 1 뒤 고쳤으면) 라운드 2를 거침.** 판정은 C6 `finish`가 한다. "감사자가 0건을 찾을 때까지"는 끝의 정의가 아니다 — 새 감사자는 이력과 무관하게 문서 1,000줄당 15~26건을 찾아 수렴하지 않았다(DECISIONS.md D23 근거) |
 
-## 4.3 루프
+## 4.3 절차
 
-**리드는 감사 판정을 하지 않는다**(심볼·경로 확인, 측정, 실행 금지 — 정본 수집·스냅샷은 C1·C2가 한다). 명령 형식은 4.7 C표만 따른다. C명령이 이 절에 정한 처리
-없이 실패(exit ≠ 0)하면 리드는 그 stderr를 그대로 사용자에게 보이고, `ws`를 얻은 뒤의 실패면 C5 후, C1 실패면 C5 없이 멈춘다. **불합격 보고** = 마지막 `aggregate.md`(있으면) + 사유 한 줄(`target-modified`·
-`report-invalid`·`cap`·`rejected` 중 하나), 이어서 C5 후 멈춘다.
+**리드는 감사 판정을 하지 않는다**(감사 중 심볼·경로 확인, 측정, 실행 금지 — 정본 수집·스냅샷은 C1·C2가 한다). 명령 형식은 4.7 C표만 따른다. C명령이 이 절에 정한 처리
+없이 실패(exit ≠ 0)하면 리드는 그 stderr를 그대로 사용자에게 보이고 C5 후 멈춘다(C1 실패면 C5 없이).
 
 - **S0 대상 확정**
   1. 인자에 파일 경로가 있으면 그 파일들. 없으면(인자가 지시문뿐이어도) 이 대화에서 직전에 작성·수정·언급한 spec·plan. 정할 수 없으면 AskUserQuestion으로 경로를 받는다.
@@ -25,22 +24,21 @@ when_to_use: /spec-audit, spec audit, spec 검증, self-contained 검토 요청 
   3. 대상 문서가 다른 로컬 저장소를 구현 대상으로 적고 있으면 리드는 C1에 `--tree <그 저장소>`를 넘긴다. 후보 저장소가 둘 이상이면 AskUserQuestion으로 하나를 받는다.
 - **S1 시작**: C1(`--skill-version` = 로드된 SKILL.md의 `스킬 버전:` 줄 값). 출력의 `ws`를 이후 모든 C명령의 `--ws`로 쓴다.
 - **S2 스폰**: C1·C2의 `agents`, C3의 `invalid[].retry` 항목을 **한 메시지에서 병렬** `Agent`로 스폰: `subagent_type "superpowers:spec-auditor"`, `model "opus"`,
-  `name <항목 name>`, `description "spec-audit <항목 name>"`, `prompt "다음 파일을 Read하고 그 지시만 따르라: <항목 prompt>"`. 매 라운드 새로 스폰하고,
-  이전 감사자에게 SendMessage로 재감사를 맡기지 않는다. 스폰부터 C3까지 리드는 대상 문서 수정과 `<tree>`·감사자 실행 디렉토리 조회(W 제외 — 불합격 보고가 aggregate.md를 읽는다)를 하지 않는다(훅이 막는다). 감사 중(open.json 있음) C5는 그 감사를 버린다(`W/aborted`).
-- **S3 집계**: 스폰한 감사자가 모두 응답하면 C3. exit 3이고 `target_modified`가 있으면 불합격 보고(`target-modified`). `invalid`가 있으면: 모든 `retry`가
-  null이 아니면 그 항목들을 S2로 스폰하고 S3 반복, 하나라도 null이면 불합격 보고(`report-invalid`, `invalid[].reason` 목록을 함께 보인다).
-- **S4 판정**: C4. action별 행동은 J1 "리드 행동" 열.
-- **S5 수정**: C4 `fix.align` 항목은 리드가 바로 반영한다 — 각 항목의 `affected`까지 한 번에. `fix.approval` 항목은 항목별 수정안 diff와 함께 AskUserQuestion 1회
-  ("전부 승인" / "거절"). 사용자는 항목별로 다른 수정 지시를 적을 수 있고, 리드는 그 지시대로 반영한다(승인으로 본다). 리드는 finding의 옳고 그름을 확인하지
-  않는다 — 사용자의 승인·거절만 받는다(재판정 경로 없음, L12). 거절된 항목이 하나라도 있으면 반영분은 둔 채 불합격 보고(`rejected`). `fix`가 비어 있으면(미검토 줄만 남은 경우) 바로 S6.
-  반영 후 C9. `failed` 중 `fix_class`가 `align`인 항목은 다시 고치고 C9를 한 번 더 부른다(S5에서 C9는 최대 두 번, 리드는 check 결과를 판정하지 않는다). 남은 실패는 두고
-  S6 — 다음 C3가 finding으로 다시 낸다. 반영 후 수정 여부를 다시 묻지 않고 S6. 리드는 stash·커밋·되돌리기를 하지 않고 미커밋 변경을 묻지 않는다.
-- **S6 다음 라운드**: C2(`--round` = 직전 N + 1) → S2.
-- **끝**: 합격(J1 `pass`)이면 `aggregate.md`를 보고하고 C5. 단독 호출이면 멈춘다(합격 ≠ 구현 승인). writing-plans 핸드오프에서 호출됐으면 합격 시 핸드오프로
-  돌아가고 불합격이면 멈춘다. 사용자가 중단을 원하면 C5 후 멈춘다.
+  `description "spec-audit <항목 name>"`, `prompt "다음 파일을 Read하고 그 지시만 따르라: <항목 prompt>"`. **`name` 인자는 주지 않는다** — 주면 감사자가 teammate 세션으로
+  떠서 audit-guard가 감사자로 식별하지 못한 관찰이 있다(LIMITS L38). 스폰부터 C3까지 리드는 대상 문서 수정과 `<tree>`·감사자 실행 디렉토리 조회를 하지 않는다(훅이 막는다).
+- **S3 집계**: 스폰한 감사자가 모두 응답하면 C3. exit 3이고 `target_modified`가 있으면 사유를 보이고 C5 후 멈춘다. `invalid`가 있으면: 모든 `retry`가
+  null이 아니면 그 항목들을 S2로 스폰하고 S3 반복, 하나라도 null이면 `invalid[].reason` 목록을 보이고 C5 후 멈춘다.
+- **S4 처분**: `aggregate.md`를 사용자에게 보이고, 리드는 지적마다 처분 권고(`apply`·`reject`·`accept`)와 근거 한 줄을 붙여 **AskUserQuestion 1회**로 확정받는다
+  ("권고대로 확정" / 항목별 지시). 사용자는 항목별로 다른 처분·수정 지시를 적을 수 있고 리드는 그대로 따른다. 리드는 권고를 위해 `<tree>`를 조회·실측할 수 있다(감사는 끝났다).
+  확정한 처분을 `W/dispositions.json`(4.7 C6 형식)에 누적해 쓴다 — 라운드 2의 지적도 같은 파일에 더한다.
+- **S5 반영**: `apply` 항목을 고친다 — 각 항목의 `affected`까지 한 번에. 같은 사실이 문서 여러 곳에 적혀 있으면 모두 같이 고친다. 리드는 stash·커밋·되돌리기를 하지 않는다.
+- **S6 끝 판정**: C6. `done`이면 끝. 아니면 출력대로 한다 — `invalid`(처분 누락·사유 없음)는 S4로, `failed`(반영했는데 check가 아직 실패)는 다시 고친 뒤 C6,
+  `review_needed`(라운드 1 뒤 고쳤고 라운드 2가 아직 없음)는 C2 → S2(라운드 2) → S3 → S4(새 지적만) → S5 → C6. **라운드 2 뒤에는 감사를 다시 열지 않는다** — 그 뒤 남은 것은
+  처분과 check뿐이다(D23).
+- **끝**: 완료면 `result.md`를 보고하고 C5. 단독 호출이면 멈춘다(완료 ≠ 구현 승인). writing-plans 핸드오프에서 호출됐으면 완료 시 핸드오프로 돌아간다. 사용자가 중단을
+  원하면 C5 후 멈춘다.
 
-**닫힘**: C2는 S5 뒤에만, `cap`은 라운드 상한(D5)에서 나오므로 라운드는 상한을 넘지 않는다. S3·S4·S5의 모든 분기는 "다음 라운드" 또는 "보고 후 멈춤"이다. 원본 재현 문서의
-심판 부재는 라운드 1의 `oracle-missing`과 oracle 감사자로 처리한다(4.6).
+**닫힘**: 감사(S2)는 C1·C2에서만 열리고 C2는 한 번만 성공한다(라운드 2가 있으면 실패). S6의 나머지 분기(처분·check 재실행)는 결정론이라 리드의 수정으로 끝난다.
 
 ## 4.4.0 결함 판정 기준
 
@@ -68,7 +66,7 @@ finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 
 
 | axis | 소유 검사 |
 |---|---|
-| `refs` | 참조 실재(4.4.3), 심볼 3분류·경로 해석·파일 참조(4.4.2), 문서 간·문서 내부 충돌(class `cross-doc-conflict`: 대상 각 문서의 내부 모순, 대상 사이, 대상·other, other 내부), PLAN 내부 정합(Task Consumes ⊆ 앞선 Task Produces, Global Constraints 값 = spec 원문 값, 생성 Step이 사용보다 앞, 삭제 Step이 마지막 사용보다 뒤), N≥2 짝 동기화(직전 diff가 바꾼 용어·값·심볼을 언급하는 **모든 곳** — 배정 범위 밖 target 허용) |
+| `refs` | 참조 실재(4.4.3), 심볼 3분류·경로 해석·파일 참조(4.4.2), 문서 간·문서 내부 충돌(class `cross-doc-conflict`: 대상 각 문서의 내부 모순, 대상 사이, 대상·other, other 내부), PLAN 내부 정합(Task Consumes ⊆ 앞선 Task Produces, Global Constraints 값 = spec 원문 값, 생성 Step이 사용보다 앞, 삭제 Step이 마지막 사용보다 뒤), 라운드 2 짝 동기화(diff.patch가 바꾼 용어·값·심볼을 언급하는 **모든 곳** — 배정 범위 밖 target 허용) |
 | `selfcontained` | placeholder(4.4.4), **요건→Task** 커버리지(유일 소유), Step의 검증 가능한 결과, Review Focus 각 줄의 고정 테스트, Success Criteria의 기계적 판정 가능성, 구현 전 검증 가능한 명령·코드의 실제 실행(4.4.5), D7 가정 형식(4.4.7) |
 | `rootcause` | 임시 처방 여부, 과소범위, 과잉범위(spec에 없는 기능·구현 1개 인터페이스·미사용 스캐폴딩·투기적 추상화), 전제 반증(X에서 실측 가능), 회귀·동시성·보안, 프로젝트 규칙(4.4.6), 재현·이식·마이그레이션 spec의 Reference Oracle 누락(`oracle-missing`), D7 대안의 실행 가능성 |
 | `oracle` | 스폰 조건(4.6)일 때만. Reference Oracle 절이 지정한 원본(경로·버전·범위)과 spec·plan의 동작·구조·값 대조 |
@@ -81,41 +79,25 @@ finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 
 "구현 Task 1" 지정만 확인) ③ 실패 시 대안(구체 행동)을 모두 가지면 그 검증 불가 사항은 finding이 아니다. 형식 위반은 selfcontained `assumption-form`(`align`),
 대안 실행 불가는 rootcause `premise`(`requirement`).
 
-## 4.5.4 집계 원칙과 사용자 보고
+## 4.5.4 집계와 사용자 보고
 
-- 축이 다른 finding은 충돌로 보지 않고 모두 남긴다. ❌를 ⚠️로 내리는 경로도, finding을 빼는 재판정 경로도 없다.
-- **미검토 줄**(review-gap): 축별로 (각 감사자 coverage ∩ 그 감사자 배정 범위, 그 감사자 `context` finding target 제외)의 합집합이 그 축 배정 범위 합집합을 덮지 못한 줄.
-- **직전 미해소**: `resolved` 블록에서 `unresolved`인 id.
-- `aggregate.md`(C4가 쓰고 리드가 그대로 보인다):
-```markdown
-# SPEC Audit · round <N> · <action>
-대상: <targets rel> · 플러그인 <plugin_version> · 감사자: <name 목록>
-fail <n> · unverified <n> · review-gap <n줄> · 직전 미해소 <n>
-
-| id | 판정 | 축 | 위치 | 주장 | 근거 | 수정 분류 | 영향 위치 |
-|---|---|---|---|---|---|---|---|
-```
-
-## 4.7 J1 판정 규칙
-
-| action | 조건 | 리드 행동 |
-|---|---|---|
-| `pass` | counts.fail 0 ∧ counts.unverified 0 ∧ review-gap 0 ∧ 직전 미해소 0 | 4.3 "끝"의 합격 |
-| `cap` | N ≥ 라운드 상한(D5) | 불합격 보고(`cap`) |
-| `fix` | 그 외 | S5 |
+- 축이 다른 finding은 충돌로 보지 않고 모두 남긴다. finding을 빼는 재판정 경로는 없다 — 틀렸다고 보면 사유와 함께 `reject`로 처분한다.
+- **미검토 줄**: 축별로 (각 감사자 coverage ∩ 그 감사자 배정 범위, 그 감사자 `context` finding target 제외)의 합집합이 그 축 배정 범위 합집합을 덮지 못한 줄.
+  `aggregate.md` 머리에 줄 수로 보인다. 끝을 막지 않는다 — 사용자가 S4에서 보고 판단한다.
+- `aggregate.md`(C3가 쓰고 리드가 그대로 보인다): 머리 3줄(라운드·지적 수 / 대상·플러그인 버전·감사자 / fail·unverified·미검토 줄) + `| id | 판정 | 축 | 위치 | 주장 | 근거 | 권고 | 영향 위치 |` 표.
+- `result.md`(C6가 쓴다): 완료 여부, 처분 수, check 실패 수, 지적별 처분·사유.
 
 ## 4.7 명령 (audit_ws.py)
 
 호출 형식: `python3 <Base directory>/scripts/audit_ws.py <명령>`
 
-스킬 버전: 77e01016e3d1
+스킬 버전: 71e4bc8d4994
 
 | ID | 명령·형식 | 동작 |
 |---|---|---|
-| C1 | `init --round 1 --skill-version V [--plan P] [--spec S]... [--tree DIR]` | `V`가 디스크 SKILL.md(`audit_ws.py` 기준 `parents[1]/SKILL.md`)의 내용 해시 — 그 파일에서 `스킬 버전:` 줄을 뺀 내용의 sha256 앞 12자, `audit_ws.skill_hash()`(정규화는 구현 재량) — 와 다르면 실패(stderr에 `` `/reload-plugins`(플러그인을 캐시에서 로드하는 설치면 세션 재시작) 필요 ``). plan 0–1개, spec 0개 이상, 합계 1개 이상(아니면 실패). 인자 파일이 없거나 `<tree>`가 git인데 HEAD가 없으면 실패. W와 `TMPROOT/spec-audit/<slug>/`가 있으면 지우고 새로 만든다(D6). **정본 자동 수집**: spec·plan 본문에서 "정본"(부분 문자열 — "상위 정본"·"XML 정본" 등 포함)·"canonical"과 같은 줄의 백틱 토큰(첫 공백 앞까지, `~/`로 시작하면 홈 디렉토리로 펼친다) 중 `.md`로 끝나고 4.4.2 경로 해석 후보(①②③) 중 작업트리에 실재하는 파일 전부에서 C1 인자로 받은 plan·spec(realpath)을 뺀 것을 other로 추가. `.gitignore`·targets.json·스냅샷·assign.json·prompts·X 생성. 성공하면 그 라운드의 open.json을 쓴다. stdout = C8 |
-| C2 | `init --ws W --round N` (N≥2) | `W/aborted`가 있으면 실패(감사 중단됨 — 새로 시작하려면 C1). `W/round-<N-1>/`의 targets.json·스냅샷·aggregate.json이 없거나 대상 파일이 없으면 실패. 대상 = 직전 라운드 targets와 같은 파일. 새 스냅샷·targets.json·diff.patch·scope.json(C7)·배정(4.6)·prompts·X 생성. 성공하면 그 라운드의 open.json을 쓴다. stdout = C8 |
-| C3 | `aggregate --ws W --round N` | `W/aborted`가 있으면 실패(감사 중단됨 — 새로 시작하려면 C1). ① 대상 변경 탐지(4.5.5) — 바뀐 대상이 있으면 exit 3, stdout `{"target_modified":[rel]}`. ② reports/ 전체를 다시 읽는다. `<name>-retry` 보고가 있으면 원래 보고 무시. 검증 위반(4.5.1·4.5.2·4.5.3 형식, `resolved`의 비배정 id·배정 id 누락·가리킨 finding id 부재, finding `target`이 그 축의 대상 줄과 겹치지 않거나 N≥2에서 그 감사자 배정 범위와 겹치지 않음(refs 예외는 4.4.1), target·affected의 라운드가 이 라운드가 아님, `check`가 null이 아닌데 R/snapshot과 각 대상 사본 맨 앞에 그 파일의 줄 수만큼 빈 줄을 넣은 사본(위치는 구현 재량 — 앞에서 센 줄·범위 주소는 원래 내용을 가리키지 못한다) 중 하나에서라도 exit 1이 아님(0·check 오류 — 줄 위치에 묶인 check를 거른다), 배정 감사자 보고 누락) → exit 3, stdout `{"invalid":[{"reason","retry": <C8 agents 원소 또는 null>}]}`(retry 생성 = assign.json 추가·프롬프트·X). ③ 정상 → N≥2면 먼저 직전 aggregate.json `checks`의 각 finding을 이번 스냅샷 위치(target·affected, C7 새 위치)로 옮기고 check를 R/snapshot에서 실행 — exit 0이 아니면 그 finding을 옮긴 위치로 이번 라운드 findings에 넣는다(id·키 그대로, `evidence` = `exit <code>` 한 줄 + 실행 출력). 단 이번 라운드 `resolved`에서 `unresolved`로 표시된 id는 넣지 않는다(감사자가 다시 쓴 finding이 대신한다). aggregate.json = `{"findings":[유효 finding과 다시 넣은 finding],"review_gap":{axis:[범위]},"unresolved":[id],"counts":{"fail","unverified"},"checks":{id: finding}}` 작성 — `checks` = 옮긴 직전 `checks` ∪ 이번 보고의 유효 finding 중 `check`가 null이 아닌 것. stdout `{}`. 집계 성공(exit 0) 또는 exit 3 `target_modified`면 그 감사의 open.json을 지운다(exit 3 `invalid`면 둔다 — retry 중에도 감사 중) |
-| C4 | `decide --ws W --round N` | J1로 action 결정, decision.json·aggregate.md 작성. action이 `pass`이고 대상에 plan이 있으면 `STATE/audit-pass/<plan 내용 sha256>.json`에 합격 기록을 쓴다(4.4, C11 gate가 읽는다). stdout = `{"action","fix":{"align":[id],"approval":[id]}}` — `fix`는 이번 라운드 finding(4.5.1)을 `fix_class`로 나눈다 |
+| C1 | `init --skill-version V [--plan P] [--spec S]... [--tree DIR]` | 라운드 1. `V`가 디스크 SKILL.md(`audit_ws.py` 기준 `parents[1]/SKILL.md`)의 내용 해시(`스킬 버전:` 줄을 뺀 내용의 sha256 앞 12자, `audit_ws.skill_hash()`)와 다르면 실패(stderr에 `` `/reload-plugins`(플러그인을 캐시에서 로드하는 설치면 세션 재시작) 필요 ``). plan 0–1개, spec 0개 이상, 합계 1개 이상(아니면 실패). 인자 파일이 없거나 `<tree>`가 git인데 HEAD가 없으면 실패. 같은 대상의 이전 W가 있으면 지우지 않고 `<W>.<시각>`으로 옮긴다. `TMPROOT/spec-audit/<slug>/`는 지운다. **정본 자동 수집**: spec·plan 본문에서 "정본"(부분 문자열)·"canonical"과 같은 줄의 백틱 토큰(첫 공백 앞까지, `~/`는 홈으로 펼침) 중 `.md`로 끝나고 4.4.2 경로 해석 후보(①②③) 중 작업트리에 실재하는 파일 전부에서 C1 인자의 plan·spec(realpath)을 뺀 것을 other로 추가. `.gitignore`·targets.json·스냅샷·assign.json·prompts·X 생성, open.json 기록. stdout = C8 |
+| C2 | `review --ws W` | 라운드 2(수정분 재검토, 1회). `W/aborted`가 있거나, 라운드 1 aggregate.json이 없거나, 라운드 2가 이미 있거나, 라운드 1 스냅샷 뒤 바뀐 줄이 없으면 실패. 대상 = 라운드 1과 같은 파일(정본 재수집 없음). 새 스냅샷·diff.patch, 축별 배정 범위 = 바뀐 줄 ∩ 그 축의 대상 줄(삭제만이면 삭제 지점 앞뒤 1줄). prompts·X 생성, open.json 기록. stdout = C8 |
+| C3 | `aggregate --ws W` | 가장 큰 라운드를 집계한다. `W/aborted`가 있으면 실패. ① 대상 변경 탐지(4.5.5) — 바뀐 대상이 있으면 exit 3, stdout `{"target_modified":[rel]}`. ② reports/ 전체를 다시 읽는다. `<name>-retry` 보고가 있으면 원래 보고 무시. 검증 위반(4.5.1·4.5.2·4.5.3 형식, finding `target`이 그 축의 대상 줄과 겹치지 않음, 라운드 2에서 refs 밖 축의 target이 배정 범위와 겹치지 않음, target·affected의 라운드가 이 라운드가 아님, `check`가 null이 아닌데 R/snapshot 사본과 각 파일 앞에 그 줄 수만큼 빈 줄을 넣은 사본 중 하나에서라도 exit 1이 아님, 배정 감사자 보고 누락) → exit 3, stdout `{"invalid":[{"reason","retry": <C8 agents 원소 또는 null>}]}`(retry는 한 번만). ③ 정상 → aggregate.json `{"findings","review_gap":{axis:[범위]},"counts":{"fail","unverified"}}`·aggregate.md 작성, open.json 삭제, stdout `{}` |
 | C5 | `clean --ws W` | `TMPROOT/spec-audit/<slug>/` 삭제(W 유지). 그때 open.json이 있었으면(열린 감사를 끝내는 것 = 감사 중단) 먼저 `W/aborted`를 만든다 |
-| C9 | `check --ws W` | W의 가장 큰 N의 `round-<N>/aggregate.json`이 없으면 실패. K를 새로 만들어 현재 대상 파일을 그 라운드 스냅샷과 같은 이름으로 복사하고, 그 `checks`를 K에서 실행(실행 조건은 4.5.1 `check`). stdout `{"failed":[{"id","fix_class","claim","output"}]}` — exit 0이 아닌 check, `output` 형식은 C3 ③ `evidence`와 같다 |
-| C11 | `gate PLAN` | PLAN 내용 sha256의 합격 기록이 있고 기록의 plan 외 targets(spec) 각 `path`의 현재 sha256이 기록과 같으면 exit 0(출력 없음), 아니면 exit 1 + stderr 한 줄(기록 없음 또는 대상 변경·부재 — 재감사 안내). 실행 관문(4.4, opt-in `SUPERPOWERS_AUDIT_GATE=1`)이 `sdd-workspace` 경유로 부른다 |
+| C6 | `finish --ws W --dispositions F` | D23 끝 판정. F = `{"findings": {"<id>": {"d": "apply"\|"reject"\|"accept", "why": "<사유>"}}}` — 집계된 모든 라운드의 finding(`context` 제외) 각각에 처분, `reject`·`accept`는 `why` 필수. 반영(`apply`)한 finding 중 check가 있는 것을 현재 대상 파일 사본 K(스냅샷과 같은 파일 이름, 환경변수 `TREE`)에서 실행해 exit 0이 아니면 실패. 라운드 2가 없는데 대상이 라운드 1 스냅샷과 다르면 `review_needed`. stdout `{"done","invalid":[사유],"failed":[{"id","claim","output"}],"review_needed"}`, 완료면 exit 0 아니면 exit 1. 마지막 라운드에 result.md·result.json 작성. 완료이고 대상에 plan이 있으면 `STATE/audit-pass/<plan 현재 내용 sha256>.json`에 plan·spec의 현재 sha256으로 합격 기록을 쓴다(C11) |
+| C11 | `gate PLAN` | PLAN 내용 sha256의 합격 기록이 있고 기록의 plan 외 targets(spec) 각 `path`의 현재 sha256이 기록과 같으면 exit 0(출력 없음), 아니면 exit 1 + stderr 한 줄(기록 없음 또는 대상 변경·부재 — finish 재실행 안내). 실행 관문(opt-in `SUPERPOWERS_AUDIT_GATE=1`)이 `sdd-workspace` 경유로 부른다 |

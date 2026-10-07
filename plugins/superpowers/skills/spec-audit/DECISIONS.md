@@ -2,20 +2,29 @@
 
 ## 1단계 결정 요약
 
-- 종료 기준은 ❌0 그리고 ⚠️0, 예외 없음(D1).
-- 요구 의미를 바꾸지 않는 정합 수정은 리드가 자동 반영하고, 그 밖은 항목별 diff를 보이고 사용자 승인을 받는다(D2).
 - writing-plans 핸드오프를 "계획 저장 → spec-audit → 합격 후 실행 방식 선택(승인 1회)"으로 바꾼다(D3).
 - 감사 스킬이 루프 전체를 소유한다(D4).
-- 라운드 상한은 5이고, 5라운드에서 합격하지 못하면 불합격 보고 후 멈춘다(D5).
-- 호출마다 새 감사이고 이전 합격을 재사용하지 않는다(D6).
+- 호출마다 새 감사이고 이전 합격을 재사용하지 않는다(D6). 이전 W는 지우지 않고 `<W>.<시각>`으로 보관한다(2026-10-06 개정 — 이력이 지워져 루프 사후 분석이 대화 기록 파싱에 의존했다).
 - 감사 시점에 검증할 수 없는 외부 의존 항목은 "가정 + 구현 첫 Task의 실측 프로브 + 실패 시 대안"으로 해소한다(D7).
 - 실행 감사자는 `git archive HEAD` 사본에서 실행하고, 추출 실패나 사본 불일치로 실행이 실패하면 `unverified(tool)`이다(D8).
 - 단일 출처 원칙을 리드의 수정에도 적용한다(D9).
 - 판정 기준은 결함 유형 8종과 필수 근거이고 필수 근거가 없는 finding은 무효다(D14).
-- 라운드 2부터 각 축의 배정 범위는 `scope.json`이다(D15).
 - 리드는 stash·커밋·되돌리기를 하지 않고 미커밋 변경은 그대로 감사된다(D17).
-- 판정이 문서와 트리 읽기만으로 정해지는 finding에는 재현 명령(check)을 붙여 기계가 누적 재실행한다(D22).
+- 판정이 문서와 트리 읽기만으로 정해지는 finding에는 재현 명령(check)을 붙이고, 반영(`apply`)한 지적의 check는 C6 `finish`가 현재 문서에서 다시 실행한다(D22).
+- **끝의 정의는 D23이다** — 감사 최대 2회(전체 1회 + 수정분 재검토 1회), 모든 지적에 처분, 반영분 check 통과. 아래 "D23 근거".
 - 강제 계층(감사자 에이전트·audit-guard·실행 관문)은 phantomn.7에서 더했다 — 아래 "강제 계층 결정".
+
+## D23 근거: 감사 최대 2회와 처분 (2026-10-06)
+
+전수조사(세션 51·호출 172·감사 104건·감사자 스폰 약 690, 9개 프로젝트 — 분석 산출물 `~/quant/raw/audit-postmortem/`)에서 확인한 것:
+
+- **새 전체 감사는 이력과 무관하게 1,000줄당 15~26건을 찾는다.** 같은 세션에서 처음부터 다시 감사한 29건 — math 2건 뒤 새 감사 31건, quant 6건 뒤 23건. 그래서 "감사자가 0건을 찾음"은 수렴하지 않고, 합격은 범위 축소로만 나왔다(math qbank-app 라운드 5는 범위 5줄에서 pass).
+- **라운드 2 이후 지적은 수정이 만든다.** 새 지적 45건 중 24~87%(판정 규칙에 따라)가 직전 수정에서 처음 생긴 문장을 가리켰고 대부분 짝 누락·순서(`sync-miss`·`ordering`)였다. 지적 수는 문서 길이가 아니라 수정량을 따른다.
+- **상한(D5)은 끝이 아니었다.** 재설계 spec 자신이 주기 14·15·16에서 cap 뒤 새 주기로 넘어갔다. 옛 판 85건 중 66%는 합격도 중단도 없이 흐지부지 끝났다.
+- **수정분을 한 번 다시 보는 것은 효과가 있다.** 수정 유발 결함의 대부분을 라운드 2가 찾았다(math qbank-app R2 11건 중 10건). 그러나 그 수정이 또 결함을 만들므로 라운드 3부터는 같은 일의 반복이다.
+- **기계 짝 점검(백틱 토큰 개수 비교)은 원 사고 재생에서 49건 중 3건만 잡고 31곳 중 29곳이 지적 밖이었다** — 실제 짝 어긋남은 이름이 아니라 의미·순서 수준이었다. 그래서 넣지 않았다.
+
+그래서: 감사는 전체 1회 + 수정분 1회로 고정하고, 지적은 사용자가 처분한다(기각은 사유와 함께 허용 — 거절이 곧 불합격이던 L12가 "틀린 지적도 고치는" 덧셈을 강제했다). 라운드 2 뒤 수정이 만든 결함은 반영분 check와 구현 단계의 시험·리뷰가 잡는다(LIMITS L39).
 
 ## 강제 계층 결정
 
@@ -48,7 +57,7 @@ phantomn.7에서 더한 강제 계층(감사자 에이전트·audit-guard·실�
 
 - 장치 부재 지적은 실행한 명령의 출력이나 기록된 관찰만 근거로 인정하므로, 설계 단계의 보안·동시성 지적 상당수가 보고 파일의 메모로 내려간다.
 - 이미 있는 규칙의 모순을 고치며 규칙이 느는 사슬은 판정 기준으로 막지 않는다(L21).
-- D15 N≥2 범위: 라운드 2부터는 바뀐 줄과 직전 지적·미검토 줄 주변만 배정한다. 비용이 줄지만 바뀌지 않은 줄의 결함은 라운드 1 이후 다시 보지 않는다.
+- 라운드 2 범위: 바뀐 줄만 배정한다. 바뀌지 않은 줄의 결함은 라운드 1 이후 다시 보지 않는다 — 다시 보면 새 전체 감사와 같아져 수렴하지 않는다(D23).
 - 감사자는 모두 opus로 고정한다. 판정 품질을 비용보다 우선한 것이며, 저장소 규칙 "Agent Teams 비용"의 Sonnet/Haiku 권고에 대한 예외로 그 규칙 원문에 적는다.
 
 ## 구현 재량 결정
@@ -59,21 +68,28 @@ phantomn.7에서 더한 강제 계층(감사자 에이전트·audit-guard·실�
 |---|---|
 | slug 해시 | `sha256("\n".join(sorted(realpath 문자열)))`의 앞 8 hex |
 | targets 순서 | plan → spec(realpath 사전순) → other(realpath 사전순). 스냅샷 `<i>-<basename>`의 i는 이 순서(1부터) |
-| 줄 단위 | 파일을 bytes로 읽어 `splitlines(keepends=True)` — 줄끝 포함 비교(C7), 마지막 줄 개행 없음도 1줄 |
+| 줄 단위 | 파일을 bytes로 읽어 `splitlines(keepends=True)` — 줄끝 포함 비교(C2 바뀐 줄), 마지막 줄 개행 없음도 1줄 |
 | 샤드 경계 | 축의 배정 범위를 targets 순서로 이은 줄을 정확히 Z줄마다 자른다(제목 맞춤 없음) |
-| 줄 위치 옮기기 | `difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()`: equal 줄은 대응 줄, replace/delete 줄은 새 쪽 `j1+1`(파일 끝을 넘으면 마지막 줄). 범위 = 옮긴 줄들의 min–max |
-| 보고 파싱 | 정규식 ```` ^```(\w+)\n(.*?)^```$ ```` (MULTILINE·DOTALL). `findings`·`coverage`·`resolved` 외 이름의 펜스는 무시 |
-| C8 항목 키 | `name`,`axis`,`prompt`,`exec_dir`(X 또는 null),`ranges`(범위 문자열),`recheck`(id) |
+| 보고 파싱 | 정규식 ```` ^```(\w+)\n(.*?)^```$ ```` (MULTILINE·DOTALL). `findings`·`coverage` 외 이름의 펜스는 무시 |
+| C8 항목 키 | `name`,`axis`,`prompt`,`exec_dir`(X 또는 null),`ranges`(범위 문자열) |
 | C6 키 | `tree`,`plugin_version`,`targets:[{path,rel,role,sha256,lines,snapshot}]` |
 | diff.patch | 대상마다 `difflib.unified_diff`(파일 이름 = rel), 이어 붙임. 개행으로 끝나지 않는 diff 줄 뒤에는 `\ No newline at end of file` 줄을 넣는다(다음 줄·다음 대상 헤더와 붙지 않게) |
-| check 출력 | `run_check`의 출력 = stdout+stderr를 이어 붙인 것의 마지막 2000자(시간 초과면 `"timeout"`). 재삽입 finding의 `evidence`와 C9 `output` = `exit <code>`(시간 초과면 `exit timeout`) 한 줄 + 그 출력 |
-| K | C9마다 지우고 새로 만든다 |
+| check 출력 | `run_check`의 출력 = stdout+stderr를 이어 붙인 것의 마지막 2000자(시간 초과면 `"timeout"`). C6 `failed[].output` = `exit <code>`(시간 초과면 `exit timeout`) 한 줄 + 그 출력 |
+| K | C6 `finish`마다 지우고 새로 만든다 |
 | 빈 줄 사본(C3 ②) | `TMPROOT/spec-audit/<slug>/shift/` — check 검증마다 지우고 새로 만든다 |
 | check 재현 검증 격리(C3 ②) | `shift/copy/`(R/snapshot 사본)·`shift/blank/`(빈 줄 사본)에서만 실행하고, 실행 동안 W의 `round-*/snapshot`을 `snapshot.verifying`으로 옮겼다가 `finally`에서 되돌린다 — 스냅샷 절대경로를 읽는 check가 두 실행 모두 같은 원본을 읽어 통과하면 문서를 고친 뒤에도 C3 ③·C9가 영원히 실패한다(문자열 매칭은 우회 가능) |
-| 중단된 검증 복구 | verify_check가 죽어 `round-*/snapshot.verifying`이 남으면 aggregate·init C2·check C9·verify_check 시작 때 짝 `snapshot`이 없는 것을 되돌린다. 둘 다 있으면(check가 snapshot을 다시 만든 경우) 추측하지 않고 stderr에 디렉토리를 적고 중단한다. `finally` 복구는 한 디렉토리가 실패해도 나머지를 모두 시도한 뒤 오류를 올린다 |
+| 중단된 검증 복구 | verify_check가 죽어 `round-*/snapshot.verifying`이 남으면 aggregate·review C2·finish C6·verify_check 시작 때 짝 `snapshot`이 없는 것을 되돌린다. 둘 다 있으면(check가 snapshot을 다시 만든 경우) 추측하지 않고 stderr에 디렉토리를 적고 중단한다. `finally` 복구는 한 디렉토리가 실패해도 나머지를 모두 시도한 뒤 오류를 올린다 |
 | retry 프롬프트 | 배정 블록에 직전 시도의 위반 사유를 `- 직전 시도 위반: <사유>` 줄로 넣는다(사유마다 한 줄) — 같은 위반의 반복으로 `report-invalid`가 나는 것을 줄인다 |
 | SKILL.md 내용 해시(C1) | `skill_hash()`: SKILL.md를 bytes로 읽어 `splitlines(keepends=True)`, `"스킬 버전: "`(UTF-8)로 시작하는 줄을 모두 뺀 나머지를 이어 붙인 bytes의 `sha256().hexdigest()[:12]`(줄끝·인코딩 정규화 없음) |
 | C3 retry | assign.json의 `<name>-retry` 항목이 그 범위의 감사자가 된다. retry 보고도 없으면 "보고 파일 없음"이고 retry는 null이다(retry는 한 번만 — C3 행의 "retry 보고가 있으면"을 글자대로 읽으면 같은 retry를 다시 만들어 S2·S3이 반복된다) |
-| C2 재검 소유자 | 직전 비context finding 중 재검 소유자가 없는 것(target이 비었거나 oracle 절이 사라지거나 placeholder가 됨)이 있으면 C2가 실패하고 stderr에 id·axis·위치를 나열한다(4.6 "정확히 1명" — 조용히 건너뛰면 J1이 잘못 합격할 수 있다) |
-| C3 ③ superseded check | `unresolved`로 대체된 id의 check도 `checks`에 남는다(C3 ③ 글자 그대로). 같은 결함의 재삽입은 결함이 남은 동안에만 일어나고 그때 J1은 어차피 `fix`다 |
-| run_check 디코딩 | 출력을 `errors="replace"`로 디코딩한다(UTF-8이 아닌 check 출력이 C3·C9를 중단시키면 안 된다) |
+| run_check 디코딩 | 출력을 `errors="replace"`로 디코딩한다(UTF-8이 아닌 check 출력이 C3·C6를 중단시키면 안 된다) |
+
+## 폐기된 결정 (2026-10-06, D23)
+
+- 종료 기준은 ❌0 그리고 ⚠️0, 예외 없음(D1). → **폐기**: D23 — LLM 감사자 0건은 수렴하지 않는 종료 기준이었다.
+- 요구 의미를 바꾸지 않는 정합 수정은 리드가 자동 반영하고, 그 밖은 항목별 diff를 보이고 사용자 승인을 받는다(D2). → **폐기**: D23 S4 — 모든 지적은 리드 권고 + 사용자 1회 확정으로 처분한다(기각 허용).
+- 라운드 상한은 5이고, 5라운드에서 합격하지 못하면 불합격 보고 후 멈춘다(D5). → **폐기**: D23 — 상한은 루프를 끝내지 못하고 새 감사로 다시 시작하게 했다(주기 14·15·16 모두 cap 뒤 재시작).
+- 라운드 2부터 각 축의 배정 범위는 `scope.json`이다(D15). → **폐기**: D23 — 라운드 2는 수정분 1회 재검토로만 남았고 배정은 C2가 바뀐 줄로 정한다(scope.json 없음).
+- 구현 재량 행 폐기(라운드 3 이상·이월 제거): | 줄 위치 옮기기 | `difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()`: equal 줄은 대응 줄, replace/delete 줄은 새 쪽 `j1+1`(파일 끝을 넘으면 마지막 줄). 범위 = 옮긴 줄들의 min–max |
+- 구현 재량 행 폐기(라운드 3 이상·이월 제거): | C2 재검 소유자 | 직전 비context finding 중 재검 소유자가 없는 것(target이 비었거나 oracle 절이 사라지거나 placeholder가 됨)이 있으면 C2가 실패하고 stderr에 id·axis·위치를 나열한다(4.6 "정확히 1명" — 조용히 건너뛰면 J1이 잘못 합격할 수 있다) |
+- 구현 재량 행 폐기(라운드 3 이상·이월 제거): | C3 ③ superseded check | `unresolved`로 대체된 id의 check도 `checks`에 남는다(C3 ③ 글자 그대로). 같은 결함의 재삽입은 결함이 남은 동안에만 일어나고 그때 J1은 어차피 `fix`다 |
