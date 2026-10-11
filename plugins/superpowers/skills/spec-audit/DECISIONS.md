@@ -84,6 +84,14 @@ phantomn.7에서 더한 강제 계층(감사자 에이전트·audit-guard·실�
 | C3 retry | assign.json의 `<name>-retry` 항목이 그 범위의 감사자가 된다. retry 보고도 없으면 "보고 파일 없음"이고 retry는 null이다(retry는 한 번만 — C3 행의 "retry 보고가 있으면"을 글자대로 읽으면 같은 retry를 다시 만들어 S2·S3이 반복된다) |
 | run_check 디코딩 | 출력을 `errors="replace"`로 디코딩한다(UTF-8이 아닌 check 출력이 C3·C6를 중단시키면 안 된다) |
 
+## 종료코드 가림 린트 (2026-10-11)
+
+**결함**: 감사자 check `grep -Hn X f | cut -d: -f1,2 && exit 1; exit 0` 은 bash 파이프라인의 종료코드가 마지막 명령(`cut`, 늘 0)의 것이라 결함이 사라져도 exit 1 이다. C3 ② 재현 검증은 스냅샷에서 exit 1 인지만 보므로 통과하고, 고친 뒤 C6 에서 `apply` 를 영영 막았다(knowledge 저장소 `2026-10-11-search-lexical-index-plan` 감사, 2건 — 리드가 문서를 대조해 `accept` 로 바꿔야 끝났다). LIMITS L26 은 이 증상(늘 exit 1)의 사후 대처만 적었고 예방이 없었다.
+
+**실측(과거 check 전수 381개, 12 감사)**: ① `bash -o pipefail -c` 로 바꾸면 종료코드가 달라지는 check 4건 — 가림 3건은 바로잡히지만 1건(`grep -n … | awk '…END{exit bad?1:0}'`, 마지막 명령이 판정하고 결함이 사라져 grep 이 빈 결과)은 통과→실패로 뒤집힌다 → **`pipefail` 기각**(판정 명령의 위치가 check 마다 다르다). ② 출력 계약(exit 1 ⇔ 발생지 줄 ≥1) 위반은 C6 시점 3건 중 1건이 앵커 줄 이동이라 가림과 구별되지 않고, 보고된 발생지 줄을 지운 사본으로 판별하면 부재형(앵커 줄을 발생지로 찍는 check)에서 오탐 51건 → **동적 판별 기각**. ③ 정적 린트(`masked_exit`: shlex 로 따옴표를 존중해 토큰화, 파이프라인이 `cut`·`sed`·`sort`·`uniq`·`head`·`tail`·`tr`·`tee`·`cat`·`wc` 등으로 끝나면서 `&&`·`||`·`if`/`while` 조건을 정하면 위반) → 적중 5건 = 가려진 check 전부(서로 다른 check 3개), 오탐 0.
+
+**결정**: C3 ② 에서 `masked_exit` 위반을 형식 위반으로 보고 retry 한다(감사자가 판정 명령의 종료코드로 다시 쓴다). 감사자 지침(`auditors/common.md` check 행)에 금지 형태와 바른 형태를 적는다. 남는 한계는 LIMITS L26.
+
 ## 폐기된 결정 (2026-10-06, D23)
 
 - 종료 기준은 ❌0 그리고 ⚠️0, 예외 없음(D1). → **폐기**: D23 — LLM 감사자 0건은 수렴하지 않는 종료 기준이었다.

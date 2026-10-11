@@ -1,7 +1,7 @@
 # superpowers fork — 변경점
 
 Upstream: <https://github.com/obra/superpowers> (MIT, Copyright (c) 2025 Jesse Vincent)
-기준 버전: **6.4.2** · fork: `6.4.2-phantomn.8` (2026-10-06; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
+기준 버전: **6.4.2** · fork: `6.4.2-phantomn.9` (2026-10-11; 최초 fork `6.3.0-phantomn.1` 2026-08-30)
 
 ## 왜 fork 했나
 
@@ -73,3 +73,5 @@ upstream 과 **플러그인 이름이 같다**(`superpowers`). 스킬들이 서�
 `superpowers@phantomn-harness` 만 켠다.
 
 **8) spec-audit 끝의 정의 교체** (2026-10-06, `phantomn.8`) — "감사자가 0건을 찾을 때까지 재감사"를 폐기하고 감사 최대 2회(전체 1회 + 수정분 재검토 1회) + 지적별 처분(반영·기각·수용) + 반영분 check 통과로 끝낸다(D23). 근거는 9개 프로젝트 감사 104건 전수조사(spec-audit `DECISIONS.md` D23). 원본 수정: `skills/writing-plans/SKILL.md`(Execution Handoff — 감사 뒤 문서가 바뀌면 새 감사가 아니라 `finish` 재실행). C4·C9·라운드 상한 삭제, C2는 수정분 재검토 1회로, C6 `finish` 신설.
+
+**9) spec-audit check 종료코드 가림 린트** (2026-10-11, `phantomn.9`) — `grep … | cut … && exit 1` 처럼 늘 0인 필터로 끝나는 파이프라인이 분기를 정하는 check 는 결함이 사라져도 exit 1 이라 C6 를 막았다. C3 ② 가 `masked_exit` 로 거르고 감사자 지침에 바른 형태를 적었다. 근거: 과거 check 381개 전수 — `pipefail` 은 반대 형태를 뒤집어 기각, 정적 린트는 적중 5·오탐 0(spec-audit `DECISIONS.md` '종료코드 가림 린트').
