@@ -1217,6 +1217,41 @@ def spec20(**edits: str) -> list[str]:
     return L
 
 
+class MaskedExitTest(unittest.TestCase):
+    """masked_exit: 파이프라인 종료코드로 분기하는데 그 파이프라인이 늘 0 인 필터로 끝나는 check.
+    과거 check 381개 전수(12 감사)에서 적중 5건 = 실제 가려진 check 전부, 오탐 0(DECISIONS '종료코드 가림 린트')."""
+
+    MASKED = [
+        "grep -Hn x 1-a.md | cut -d: -f1,2 && exit 1; exit 0",
+        "s=2-b.md; if grep -q a $s; then r=0; grep -n b $s 1-a.md | cut -d: -f1,2 && r=1; exit $r; fi; exit 0",
+        "if grep -n x 1-a.md | head -1; then exit 1; fi; exit 0",
+        "grep -n x 1-a.md | sort | uniq || exit 0; exit 1",
+    ]
+    CLEAN = [
+        CHK,
+        "grep -q x 1-a.md && exit 1 || exit 0",
+        'out=$(grep -n x 1-a.md | cut -d: -f1); [ -z "$out" ] || { echo "$out"; exit 1; }',
+        "grep -n x 1-a.md | awk -F: '{print} END{exit NR>0}'",
+        r"grep 'a\|b' 1-a.md && exit 1 || exit 0",
+        "sed -n 5p 1-s.md | grep 60 && exit 1 || exit 0",
+        "grep -Hn x 1-a.md | cut -d: -f1,2; grep -q x 1-a.md && exit 1; exit 0",
+        "a=$(grep -n x 1-a.md | cut -d: -f1); [ -n \"$a\" ] && echo \"1-a.md:$a\" && exit 1; exit 0",
+    ]
+
+    def test_masked_forms_are_flagged(self):
+        for cmd in self.MASKED:
+            with self.subTest(cmd):
+                self.assertTrue(audit_ws.masked_exit(cmd))
+
+    def test_clean_forms_pass(self):
+        for cmd in self.CLEAN:
+            with self.subTest(cmd):
+                self.assertEqual(audit_ws.masked_exit(cmd), [])
+
+    def test_unparsable_is_not_flagged(self):
+        self.assertEqual(audit_ws.masked_exit("echo 'unterminated"), [])
+
+
 class CheckTest(Base):
     """C3 ② check 재현 검증(verify_check)."""
 
@@ -1297,6 +1332,14 @@ class CheckTest(Base):
                 rc, out, err = self.cli(*cmd)
                 self.assertNotEqual(rc, 0)
                 self.assertIn(str(hid), err)
+
+    def test_check_masked_exit_rejected(self):
+        """스냅샷에서 exit 1 로 재현되지만 종료코드를 `cut` 이 정하는 check — 고친 뒤에도 늘 exit 1 이라 C6 를 막는다(2026-10-11 실측)."""
+        cmd = "grep -Hn 'timeout=60' 1-s.md | cut -d: -f1,2 && exit 1; exit 0"
+        self.assertEqual(audit_ws.run_check(cmd, self.tmp, self.tmp)[0], 1)   # 빈 폴더(결함 없음)에서도 exit 1 — 가림 재현
+        res = self.r1(cmd)
+        self.bad(res)
+        self.assertIn("종료코드", res[1]["invalid"][0]["reason"])
 
     def test_run_check_timeout(self):
         self.assertIsNone(audit_ws.run_check("sleep 5", self.tmp, self.tmp, timeout=1)[0])

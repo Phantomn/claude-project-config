@@ -564,6 +564,64 @@ def run_check(cmd: str, cwd: Path, tree: Path, timeout: float = 30) -> tuple[int
     return p.returncode, (p.stdout + p.stderr)[-2000:]
 
 
+_MASKERS = frozenset({"cut", "sed", "sort", "uniq", "head", "tail", "tr", "tee", "cat", "wc", "column", "nl", "fold",
+                      "paste", "xargs"})   # 입력이 비어도(결함 없음) 0 으로 끝나는 필터
+
+
+def masked_exit(cmd: str) -> list[str]:
+    """종료코드 가림: 파이프라인의 종료코드로 분기(`&&`·`||`·`if`/`while` 조건)하는데 그 파이프라인이 `_MASKERS` 필터로 끝난다.
+    bash 파이프라인의 종료코드는 마지막 명령의 것이라 `grep … | cut … && exit 1` 은 결함 유무와 무관하게 exit 1 이다 —
+    스냅샷 재현(verify_check)은 통과하고 고친 뒤 C6 에서 늘 실패한다(2026-10-11 실측). `pipefail` 은 반대 형태
+    (`grep … | awk '…END{exit …}'` 처럼 마지막 명령이 판정하는데 grep 이 빈 결과)를 뒤집어 쓰지 않는다(DECISIONS).
+    따옴표 안의 `|` 는 shlex 가 단어로 묶는다. 해석할 수 없는 명령은 판정하지 않는다(빈 목록)."""
+    import shlex
+    lx = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>")
+    lx.whitespace_split = True
+    try:
+        toks = list(lx)
+    except ValueError:
+        return []
+    out: list[str] = []
+    pipes, last, start, cond = 0, None, True, False
+    pending = None          # `if 파이프라인;` 의 조건 — 다음 토큰이 then·do 면 그 조건이 분기를 정한다
+    skip = False
+    for t in toks:
+        if skip:            # 리다이렉션 대상
+            skip = False
+            continue
+        if t in ("then", "do") and pending:
+            if pending[0] and pending[1] in _MASKERS:
+                out.append(f"`{pending[1]}` 로 끝나는 파이프라인이 `{t}` 분기를 정한다")
+            pending = None
+            pipes, last, start, cond = 0, None, True, False
+            continue
+        pending = None
+        if t == "|":
+            pipes, start = pipes + 1, True
+            continue
+        if t in ("&&", "||") or (t in ("then", "do") and cond):
+            if pipes and last in _MASKERS:
+                out.append(f"`{last}` 로 끝나는 파이프라인이 `{t}` 분기를 정한다")
+            pipes, last, start, cond = 0, None, True, False
+            continue
+        if set(t) <= set(";&|()<>"):
+            if set(t) & set("<>") and not set(t) & set(";()|"):
+                skip = True                     # `>`·`2>&`·`>>` 리다이렉션: 대상 토큰을 건너뛰고 같은 명령을 계속
+                continue
+            if t == ";" and cond:
+                pending = (pipes, last)
+            pipes, last, start, cond = 0, None, True, False   # `;`·`(`·`);`·`)&&` 등 명령 경계 — 보수적으로 초기화
+            continue
+        if start:
+            if t in ("if", "while", "until", "elif"):
+                cond, pipes, last = True, 0, None
+                continue
+            if t == "!" or ("=" in t and not t.startswith("=")):    # 부정·앞에 붙은 변수 대입
+                continue
+            last, start = t.rsplit("/", 1)[-1], False
+    return out
+
+
 def check_text(code: int | None, out: str) -> str:
     """finish `failed[].output` 형식: `exit <code>` 한 줄 + 출력."""
     return f"exit {'timeout' if code is None else code}\n{out}"
@@ -667,6 +725,8 @@ def cmd_aggregate(ws: Path) -> tuple[int, dict]:
                     for l in blocks["findings"]:
                         f = json.loads(l)
                         if f["check"] is not None:
+                            bad += [f"{f['id']}: check 종료코드 가림 — {m}(판정 명령의 종료코드로 분기할 것)"
+                                    for m in masked_exit(f["check"])]
                             bad += verify_check(ws, R, targets, tree, f)
             except (OSError, UnicodeDecodeError) as e:
                 bad = [f"보고 읽기 실패: {e}"]
