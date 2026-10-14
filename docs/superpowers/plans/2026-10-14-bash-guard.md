@@ -26,14 +26,14 @@
 - 거부 사유 형식(spec §3.2): 줄마다 `거부: <작업> <대상> — <분류 설명>. 대안: <대안>`, 첫 줄 앞에 `[bash-guard] `, 마지막 줄
   `이 판정을 우회하지 말 것. 대안이 맞지 않으면 작업을 멈추고 사용자에게 보고하라.`
 - 판정기는 읽기 전용. 쓰는 곳은 상태 폴더 `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/` 아래 `bash-guard.jsonl`(10MB 초과 시
-  `.1` 로 한 번 순환)과 공유 장부 `ledger.tsv`(5MB 초과 시 `flock` 후 7일 지난 줄 제거)뿐.
+  `.1` 로 한 번 순환)과 공유 장부 `ledger.tsv`(추가·압축 모두 `flock(LOCK_EX)`, 5MB 초과 시 7일 지난 줄 제거 — `moved-in` 은 경로가 있으면 유지)뿐.
 - 시간: 판정기 내부 마감 `BUDGET_SECONDS = 5.0`, 외부 명령마다 `timeout=min(2.0, 남은 시간)`. `hooks.json` Bash timeout 10 유지, touch-ledger timeout 5.
 - 폴더 순회 상한 `DIR_ENTRY_CAP = 2000`. 생성 시각은 `stat -c '%.9W %n'`(값 0 = 읽을 수 없음).
 - `REGENERABLE_NAMES` = `node_modules dist build .next .nuxt target __pycache__ .pytest_cache .ruff_cache .mypy_cache .tox .venv venv coverage
   .coverage .gradle .parcel-cache .turbo .cache`, 재생성 확장자 `.pyc .pyo .o .class`(spec §3.4).
 - 스위치 `HARNESS_BASH_GUARD` 값 `off`(기본)·`shadow`·`on`, 그 외 → `off`. 경로의 저장소 값 = 위로 올라가 처음 만나는 `.git` 을 가진 폴더 R
-  (R 이 `$HOME`·`/` 이면 없음)의 `.claude/settings.local.json` → `.claude/settings.json` `env` 값. 명령 모드 = {세션 env, cwd 저장소 값,
-  판정 대상 작업의 대상 경로들의 저장소 값} 중 가장 강한 것(spec §3.9).
+  (R 이 `$HOME`·`/` 이면 없음)의 `.claude/settings.local.json` → `.claude/settings.json` `env` 값. 명령 모드 = {세션 env, 훅 cwd 저장소 값,
+  판정 대상 단위마다 단위 cwd 의 저장소 값, 판정 대상 작업의 대상 경로들(컨테이너는 바인드 마운트의 호스트 경로)의 저장소 값} 중 가장 강한 것(spec §3.9).
 - **공개 저장소**: 실제 세션 명령 원문·세션 기록·상태 폴더 파일을 픽스처·커밋·PR 에 넣지 않는다. 픽스처 경로는 테스트가 만든 세계의
   자리표시자(`{HOME}` `{REPO}` `{SCRATCH}` `{OUT}` `{WT}`)만 쓴다.
 - 테스트: `unittest`, 파일 단독 실행(`python3 <파일>`), 개별 실행 `python3 <파일> -k <이름>`. **대역 금지(spec D13)**: 모듈 패치·가짜
@@ -41,10 +41,12 @@
   `DOCKER_HOST=unix:///nonexistent.sock` 로 docker 데몬 부재)으로 검증. Docker 가 없거나 `sh -c 'sleep 300'` 이 도는 로컬 이미지가
   없으면 해당 테스트는 `skipTest("<사유>")`. 테스트 세계는 `$XDG_RUNTIME_DIR`(없으면 `/dev/shm`) 아래 tmpfs 에 만들고(임시 루트도
   git 저장소도 아님), `HOME`·`TMPDIR=<세계>/scratch`·`XDG_STATE_HOME` 을 세계 값으로 덮은 `environ` 을 넘긴다. 실제 홈·상태 폴더를 건드리지 않는다.
+  모든 테스트 클래스의 `setUp` 은 새 World 를 만들어 모듈 전역 `w` 에 넣고 `self.addCleanup(w.close)` 한다 — 테스트들이 세계를 바꾸므로
+  테스트끼리 세계를 공유하지 않는다(픽스처 사례도 사례마다 새 World — Task 11 `judge_case`).
 - 커밋: 사용자가 이 계획 실행 중 feature 브랜치의 작업별 커밋을 위임했다(spec D13 — 저장소 규칙 '자동 커밋 금지'의 사용자 결정 예외).
   경로 지정 커밋 `git commit -m "<msg>" -- <Files>`, 메시지 끝에 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. push·PR 은 위임 밖.
-- 각 작업 커밋 전 공통 검증: 그 작업 테스트 파일 통과, `python3 -m py_compile <바뀐 .py>`, `ruff check plugins/harness-core/hooks`,
-  바뀐 .sh 는 `shellcheck`. PR 전에는 spec §5 전체.
+- 각 작업 커밋 전 공통 검증: 그 작업 테스트 파일 통과, `python3 -m py_compile <바뀐 .py>`, `ruff check <이 작업이 만들거나 바꾼 새 .py>`(기존 파일의 기존 위반 6건은
+  범위 밖 — 2026-10-14 실측), 바뀐 .sh 는 `shellcheck -S warning`(기존 note 3건 범위 밖). PR 전에는 spec §5 전체.
 
 ## Review Focus
 
@@ -53,7 +55,7 @@ spec 이 요구하지만 기본 테스트가 직접 겨누지 않아 사용자�
 1. **거대한 명령**(수백 KB heredoc 으로 파이썬 스크립트를 넘기는 흔한 형태) — 어휘 분석이 선형이라 200KB 도 50ms 안. → Task 1 `test_large_heredoc_is_linear`
 2. **공백·한글이 든 경로**(`rm -f "보고서 초안.md"`) — 세션 생성이면 허용, 세션 전이면 거부. → Task 5 `test_unicode_space_path`
 3. **원격 HEAD 가 없는 저장소·원격 없는 저장소**의 push — 기본 브랜치를 `main`·`master` 로 대체 판정하고, 원격이 없으면 판정 대상 아님. → Task 8 `test_default_branch_fallback`
-4. **서브에이전트·다른 세션이 같은 공유 장부에 동시에 기록** — 줄이 섞이거나 깨지지 않는다. → Task 4 `test_ledger_concurrent_append`
+4. **서브에이전트·다른 세션이 같은 공유 장부에 동시에 기록** — 줄이 섞이거나 깨지지 않고, 압축과 겹쳐도 사라지지 않는다. → Task 4 `test_ledger_concurrent_append`·`test_ledger_compaction_concurrent_append`
 5. **읽을 수 없는 하위 폴더가 있는 폴더 삭제** — 순회 오류는 확정 불가(거부). 순환 심볼릭 링크는 따라가지 않아 순회가 끝난다. → Task 5 `test_unreadable_subdir_is_unresolved`·`test_symlink_loop_terminates`
 
 ---
@@ -70,7 +72,7 @@ spec 이 요구하지만 기본 테스트가 직접 겨누지 않아 사용자�
 | `plugins/harness-core/hooks/scripts/touch-ledger.py` | Write/Edit/NotebookEdit 장부 훅(스위치와 무관하게 항상 기록) | 10 |
 | `plugins/harness-core/hooks/hooks.json` | touch-ledger 등록 | 10 |
 | `plugins/harness-core/hooks/scripts/auto-approve-readonly.sh` | 입구: 기존 로직을 `old_logic` 함수로 감싸고 OLD → bash_guard | 12 |
-| `plugins/harness-core/hooks/tests/_world.py` | 테스트 세계 빌더(파일·저장소·장부·실제 docker 자원) | 4(생성)·6·7·8·11(확장) |
+| `plugins/harness-core/hooks/tests/_world.py` | 테스트 세계 빌더(파일·저장소·장부·실제 docker 자원) | 4(생성)·5·6·7·11(확장) |
 | `plugins/harness-core/hooks/tests/test_shell_parse.py` | 해석기 단위 | 1·2·3 |
 | `plugins/harness-core/hooks/tests/test_target_class.py` | 장부·분류·조회 단위 | 4·5·6 |
 | `plugins/harness-core/hooks/tests/test_policy.py` | 정책 단위 | 7·8 |
@@ -226,8 +228,11 @@ def test_assignments_recorded(self):
 def test_wrappers_stripped(self):
     for c in [r"\rm -rf x", "/bin/rm -rf x", "sudo -u root rm -rf x", "env -i A=1 rm -rf x", "command rm x", "timeout 5 rm x",
               "nice -n 5 rm x", "nohup rm x", "time -p rm x", "stdbuf -oL rm x", "flock /tmp/l rm x", "doas rm x", "exec rm x",
-              "builtin rm x", "ionice -c3 rm x", "chronic rm x"]:
+              "builtin rm x", "ionice -c3 rm x", "chronic rm x", "X=1 rm -rf x"]:
         self.assertEqual(names(c), ["rm"], c)
+def test_prefix_assignment(self):                   # spec §3.3-4 `VAR=val cmd` 접두 할당은 그 단위에만
+    a, b = segs('X=/a rm "$X"; rm "$X"')
+    self.assertEqual((a.name, a.env["X"]), ("rm", "/a")); self.assertNotIn("X", b.env)
 def test_git_dash_c(self):
     s = segs("git -C /r reset --hard")[0]
     self.assertEqual((s.name, s.cwd, [w.literal() for w in s.argv]), ("git", "/r", ["git", "reset", "--hard"]))
@@ -240,7 +245,8 @@ def test_parse_error_reported(self): self.assertIsNotNone(parse('rm -rf "x', "/w
 - [ ] **Step 2: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_shell_parse.py -k ParseTest` · Expected: `ImportError`/`AttributeError: parse`
 - [ ] **Step 3: `parse(...)` 구현(재귀·확장·컨테이너 제외)** — 토큰을 연산자로 끊어 단위를 만들고 `(` 진입 시 (cwd, env) 를 쌓았다가 `)` 에서
   복원. `NAME=값` 만 있는 단위는 env 갱신(이 작업에서는 값을 리터럴로 저장하되 `$(`·백틱이 있으면 None — Task 3 에서 `expand` 로 교체),
-  `export|declare|typeset|local` 은 옵션 무시하고 `NAME=값` 반영. `cd`/`pushd` 인자는 `~`·`$HOME` 만 풀고 그 외 변수·치환이면 cwd=None
+  `export|declare|typeset|local` 은 옵션 무시하고 `NAME=값` 반영. 단위 맨 앞 `NAME=값` 단어들 뒤에 명령이 있으면(`VAR=val cmd` 접두 할당)
+  그 단어들을 argv 에서 떼어 이 단위 env 에만 반영한다(다음 단위로 전파하지 않음). `cd`/`pushd` 인자는 `~`·`$HOME` 만 풀고 그 외 변수·치환이면 cwd=None
   (Task 3 에서 `expand` 로 교체). `popd`·`cd -` → None. 래퍼 표(spec §3.3-6): `sudo`(값 옵션 `-u -g -h -p -C -D -r -t -U`),
   `env`(`-i` `-u X` `-C X` `NAME=val`), `timeout`(옵션 `-s X -k X` + DURATION), `nice`(`-n N`), `ionice`(`-c X -n X -p X`),
   `stdbuf`(`-i/-o/-e X`), `flock`(옵션 + 파일), `time`(`-p`), 나머지(`doas command builtin exec nohup chronic`)는 단어 하나.
@@ -341,12 +347,14 @@ def test_workdir_and_compose(self):
       kind: str; session_id: str; ts: float
   def state_dir(environ: Mapping[str, str]) -> Path: ...    # ${XDG_STATE_HOME:-$HOME/.local/state}/harness-core
   class Ledger:
-      def __init__(self, environ: Mapping[str, str]) -> None: ...
+      def __init__(self, environ: Mapping[str, str], compact_bytes: int = COMPACT_BYTES) -> None: ...
       def entries(self, path: str) -> list[Entry]: ...
       def moved_in_near(self, path: str) -> str | None: ...   # path 자신·상위·하위(접두 일치) 경로 중 moved-in 기록이 있는 첫 경로
       def record(self, path: str, kind: str, session_id: str | None) -> None: ...
-          # session_id None → 아무것도 안 함. (경로, kind, 세션) 중복은 무시(touched 는 매번). 한 줄 = os.write 1회(O_APPEND).
-          # 쓰기 전 파일이 COMPACT_BYTES 초과면 fcntl.flock 후 PRUNE_SECONDS 지난 줄을 뺀 내용으로 다시 쓴다.
+          # session_id None → 아무것도 안 함. (경로, kind, 세션) 중복은 무시(touched 는 매번).
+          # 추가도 압축도 장부 파일에 fcntl.flock(LOCK_EX) 를 잡고 한다. 추가 = 잠금 안에서 한 줄 os.write 1회(O_APPEND).
+          # 쓰기 전 파일이 compact_bytes 초과면 같은 잠금 안에서 PRUNE_SECONDS 지난 줄을 뺀 내용으로 다시 쓴다
+          # (moved-in 줄은 기간으로 빼지 않고 경로가 없을 때만 뺀다 — spec §3.7).
   ```
 - Produces (`target_class.py` 1부):
   ```python
@@ -379,19 +387,26 @@ def test_workdir_and_compose(self):
     `out/`(저장소 밖·임시 루트 밖 작업 폴더).
   - 생성 순서: 세션 전 파일 → 20ms → `transcript.jsonl`(세션 시작) → 20ms → 세션 파일.
   - 세션 전: `home/data/a.txt`·`home/data/db.sqlite`·`home/data/important.csv`·`home/notes.md`·`home/.ssh/id_ed25519`, 저장소
-    `src/main.py`(추적)·`README.md`(추적, 커밋 뒤 수정해 둠 = 세션 전 수정)·`.gitignore`(`build/`, `.env`, `*.sqlite`)·`build/out.o`(재생성 산출물)·
+    `src/main.py`(추적)·`README.md`(추적, 커밋 뒤 수정해 둠 = 세션 전 수정)·`.gitignore`(추적·커밋됨 — 그래서 worktree 체크아웃에도 들어 있다. 내용 `build/`, `.env`, `*.sqlite`)·`build/out.o`(재생성 산출물)·
     `local.sqlite`(ignore 대상, 재생성 이름 아님)·`notes_presession.txt`(미추적)·`.env`(`.gitignore` 대상), 세션 전 `stash@{1}`.
   - 세션 파일: `home/proj/src/probe.ts`, `home/proj/out/`, `scratch/s1/x.txt`, 세션 중 `stash@{0}`.
   - 위치: `$XDG_RUNTIME_DIR`(없으면 `/dev/shm`) 아래 `tempfile.mkdtemp` — 임시 루트도 git 저장소도 아닌 tmpfs(생성 시각 지원 실측
     2026-10-14). `close()` 에서 지운다.
   - `environ`: HOME=세계 홈, TMPDIR=`<세계>/scratch`(그래서 `{SCRATCH}` 가 실제 환경 변수로 임시 루트), XDG_STATE_HOME=세계 상태 폴더,
     PATH=실제 PATH, GIT 작성자 값.
+  - `World(worktree=False)`: `True` 면 transcript **전에** `{WT}`(= `out/wt`, 브랜치 `wt-b`)를 만들고 그 안에 ignore 대상 세션 전 파일
+    `local.sqlite`(재생성 이름 아님)와 `build/out.o`(재생성 산출물)를 둔다(`make_worktree()` 와 함께 쓰지 않는다).
   - `World(docker=False)`: `True` 이고 docker 를 쓸 수 있으면 transcript **전에** 실제 docker 자원을 만든다(Task 6 이 채움). 결과는 `w.docker`(없으면 None).
+  - 속성: `root`(세계 폴더), `transcript`(transcript.jsonl 경로), `session_id`, `session_start`(transcript 생성 시각), `environ`, `docker`.
   - 메서드: `fmt(s)`(자리표시자 `{HOME}` `{REPO}` `{SCRATCH}` `{OUT}` `{WT}` 치환), `payload(command, cwd="{REPO}", session_id=None)`,
-    `edit_payload(path, tool="Edit")`, `ctx(budget=5.0, transcript=<기본>, session_id=<기본>, environ_extra=None)`(environ_extra = environ 에 덮어쓸 값), `sh(cmd, cwd="{REPO}")`(실제 실행),
+    `edit_payload(path, tool="Edit")`, `ctx(budget=5.0, transcript=<기본>, session_id=<기본>, environ_extra=None)`(environ_extra = environ 에 덮어쓸 값), `sh(cmd, cwd="{REPO}")`(실제 실행, `fmt` 적용, 종료 코드 ≠ 0 이면 `subprocess.CalledProcessError`),
     `clean_tree()`, `dirty_before_session(path)`(내용 변경 후 mtime 을 세션 시작 60초 전으로), `touch_modify(path)`(세션 중 내용 변경),
     `checkout(branch, upstream=None)`, `drop_origin_head()`, `remove_remote(name)`, `make_worktree()`(`{WT}` = `out/wt`, 브랜치 `wt-b`),
-    `local_branch(name, pushed: bool, before_session: bool)`. 경로 인자는 자리표시자 문자열이며 `fmt` 후 절대경로로 쓴다.
+    `local_branch(name, pushed: bool, before_session: bool, extra_unpushed: int = 0, delete_remote: bool = False, squash_merged: bool = False)`.
+    `local_branch` 순서: main 의 기존 커밋에서 분기해 브랜치마다 고유한 커밋 1개(파일 `<name>.txt` 에 브랜치 이름) → `pushed` 면 `push -u origin` → `squash_merged` 면 그 내용을 origin 의 main 에
+    스쿼시 커밋으로 넣고 fetch → `delete_remote` 면 원격 브랜치 삭제 후 `fetch --prune`(upstream 설정은 남고 추적 ref 만 없어짐) → 로컬에만 커밋
+    `extra_unpushed` 개. `before_session` 이면 이 git 동작 전부를 `GIT_COMMITTER_DATE`·`GIT_AUTHOR_DATE` = 세션 시작 60초 전으로 해
+    reflog 항목 시각도 세션 전이 된다(실측 2026-10-14). 경로 인자는 자리표시자 문자열이며 `fmt` 후 절대경로로 쓴다.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — `class LedgerTest`, `class BasicsTest`, `class SwitchTest`:
 
@@ -404,7 +419,12 @@ def test_ledger_roundtrip_and_dedupe(self):
 def test_ledger_concurrent_append(self):            # Review Focus 4
     # 프로세스 2개가 같은 장부에 서로 다른 경로 500개씩 record → 1000줄, 모든 줄이 탭 4칸이고 경로가 손상 없음
 def test_ledger_compaction(self):
-    # COMPACT_BYTES 를 넘긴 장부(8일 전 시각 줄 + 최근 줄) 에 record 1회 → 8일 전 줄 사라지고 최근 줄·새 줄 남음
+    # Ledger(env, compact_bytes=200) 를 넘긴 장부(8일 전 일반 줄 + 최근 줄 + 8일 전 moved-in 2줄: 경로 있음·없음)에 record 1회
+    # → 8일 전 일반 줄과 경로 없는 moved-in 은 사라지고, 경로 있는 moved-in·최근 줄·새 줄은 남음
+def test_ledger_compaction_concurrent_append(self):   # Review Focus 4, 재감사 rootcause-r1-s1-006
+    # 프로세스 A: Ledger(env, compact_bytes=1) 로 경로 300개 record(매번 압축), 프로세스 B: Ledger(env) 로 다른 경로 300개 동시 record
+    # → 600개 경로 전부 entries 에 남음
+def stat_birth(p): return float(subprocess.check_output(["stat", "-c", "%.9W", p], text=True))   # 테스트 파일의 독립 구현(오라클)
 def test_session_start(self):
     self.assertAlmostEqual(session_start(w.transcript, w.environ), stat_birth(w.transcript), places=3)
     self.assertIsNone(session_start(None, w.environ)); self.assertIsNone(session_start("/nope", w.environ))
@@ -446,7 +466,7 @@ def test_switch_mode(self):
 ### Task 5: 대상 7분류·폴더 규칙·작업 영역·장부 기록 규칙 (`target_class` 2부)
 
 **Files:**
-- Modify: `plugins/harness-core/hooks/scripts/target_class.py`
+- Modify: `plugins/harness-core/hooks/scripts/target_class.py`, `plugins/harness-core/hooks/tests/_world.py` (`rewrite_atomic` 추가)
 - Test: `plugins/harness-core/hooks/tests/test_target_class.py`
 
 **Interfaces:**
@@ -502,12 +522,20 @@ def test_other_session_created_is_not_mine(self):          # D12
 def test_dir_rule(self):
     self.assertEqual(k("{REPO}/out"), SESSION_NEW); self.assertEqual(k("{REPO}/build"), IGNORED_ARTIFACT)
     self.assertEqual(k("{REPO}/src"), GIT_TRACKED); self.assertEqual(k("{HOME}/data"), PRESERVED)
+def test_session_repo_is_scratch_data(self):      # spec §3.4 분류 1b, 재감사 rootcause-r1-s1-001
+    w.sh("git clone -q {REPO} {SCRATCH}/s1/clone"); self.assertEqual(k("{SCRATCH}/s1/clone"), SCRATCH)
+    w.sh("git clone -q {REPO} {OUT}/c2"); self.assertEqual(k("{OUT}/c2"), SCRATCH); self.assertEqual(k("{OUT}/c2/.git/config"), SCRATCH)
+    w.sh("mkdir -p {SCRATCH}/s1/many && cd {SCRATCH}/s1/many && seq 2001 | xargs touch"); self.assertEqual(k("{SCRATCH}/s1/many"), SCRATCH)
+    w.sh("mkdir -p {SCRATCH}/old && echo k > {SCRATCH}/old/k.pem"); self.assertEqual(k("{SCRATCH}/old"), PROTECTED_NAME)   # 임시 폴더라도 보호 이름(재감사 rootcause-r2-s1-001)
+    self.assertEqual(k("{SCRATCH}/s1"), SCRATCH)                                       # 안의 세션 clone(.git)으로는 내려가지 않음
+    ctx = w.ctx(); ctx.ledger.record(w.fmt("{SCRATCH}/s1/clone/kept.txt"), KIND_MOVED_IN, ctx.session_id)
+    self.assertEqual(k("{SCRATCH}/s1/clone", ctx), PRESERVED)                     # 분류 1a 가 먼저
 def test_mv_into_session_dir_is_preserved(self):           # 감사 rootcause-s1-003
     w.sh("mv {HOME}/notes.md {REPO}/out/"); self.assertEqual(k("{REPO}/out"), PRESERVED)
 def test_moved_in_record_protects(self):                    # D14
     ctx = w.ctx(); ctx.ledger.record(w.fmt("{REPO}/build/a.txt"), KIND_MOVED_IN, ctx.session_id); w.sh("mv {HOME}/data/a.txt {REPO}/build/")
     self.assertEqual(k("{REPO}/build/a.txt", ctx), PRESERVED); self.assertEqual(k("{REPO}/build", ctx), PRESERVED)
-def test_dir_cap(self):  # 세션 전 미추적 폴더에 2001개 → UNRESOLVED, detail 에 "2000"
+def test_dir_cap(self):  # {HOME}/big(세션 전, 임시 루트·저장소 밖) 에 2001개 → UNRESOLVED, detail 에 "2000"(임시 루트 폴더는 상한 없음 — test_session_repo_is_scratch_data)
 def test_unreadable_subdir_is_unresolved(self):    # Review Focus 5: 세션 폴더 안 chmod 000 하위 폴더 → UNRESOLVED (끝나면 권한 복구)
 def test_symlink_loop_terminates(self):           # Review Focus 5: a/loop → a 순환 링크가 있는 세션 폴더 → 1초 안에 끝나고 SESSION_NEW
 def test_unicode_space_path(self):                 # Review Focus 2: 세션 '{REPO}/보고서 초안.md' → SESSION_NEW, 세션 전 '{HOME}/보고 서.md' → PRESERVED
@@ -526,10 +554,13 @@ def test_session_start_missing_disables_session_new(self):
 
 - [ ] **Step 2: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_target_class.py -k ClassifyTest` · Expected: FAIL
 - [ ] **Step 3: 구현** — `classify`: `normalize` → `os.path.lexists` 없으면 MISSING → spec §3.4 순서(분류 1a: `ledger.moved_in_near(path)` 가 있으면
-  PRESERVED, detail "옮겨진 유일본" — UNRESOLVED 다음, PROTECTED_NAME 보다 먼저). git 조회는 저장소당 한 번
+  PRESERVED, detail "옮겨진 유일본" — UNRESOLVED 다음, PROTECTED_NAME 보다 먼저). 그다음 분류 1b(세션 저장소): 경로 자신부터 위로
+  올라가 처음 만나는 `.git` 폴더를 가진 폴더(`repo_root` 와 같은 상향 탐색, `.git` 내부 경로는 그 `.git` 의 부모)가 SESSION_NEW 조건이면 SCRATCH
+  (분류 2·3·폴더 순회 생략). 임시 루트 하위는 분류 3 다음 SCRATCH(순서 4)이고, 폴더면 이름만 보는 순회(상한 없음·시간 예산 안, 1b 저장소는
+  내려가지 않음)로 보호 이름이 있으면 PROTECTED_NAME. git 조회는 저장소당 한 번
   (`git -C repo ls-files -z -- <경로들>`, `check-ignore -z --stdin`), 생성 시각은 `births` 일괄. SESSION_NEW = `birth >= session_start` ∧
   이 세션의 `pre-session` 없음 ∧ 다른 세션의 `created` 없음. IGNORED_ARTIFACT = ignore ∧ (저장소 상대경로 구성요소 ∩ `REGENERABLE_NAMES` ≠ ∅ ∨
-  확장자 ∈ `REGENERABLE_SUFFIXES`), 아니면 PRESERVED. 폴더: IGNORED_ARTIFACT 폴더만 순회 생략. 그 외는 `os.walk(followlinks=False — 순환
+  확장자 ∈ `REGENERABLE_SUFFIXES`), 아니면 PRESERVED. 폴더: 분류 1b·IGNORED_ARTIFACT 면 순회 생략, 임시 루트 폴더는 위 이름 순회. 그 외는 `os.walk(followlinks=False — 순환
   심볼릭 링크를 따라가지 않아 순회가 끝난다, onerror=…)` 로 항목(링크는 `lstat` 기준 링크 자체)을 모아 `DIR_ENTRY_CAP` 초과·onerror 발생 시
   UNRESOLVED, 아니면 각 항목 분류의 `SEVERITY` 최댓값(동률이면 먼저 만난 것). `in_workspace`: 정규화 후 `is_scratch`, 또는 `git_toplevel` 이
   있고 그 값이 `HOME`·`/` 가 아니며 `<top>/.git` 아래가 아님. `note_touch`: spec §3.7 기록 주체 규칙(경로 없음+Write → `created`; 있으면
@@ -551,10 +582,6 @@ def test_session_start_missing_disables_session_new(self):
 
 **Interfaces:**
 - Consumes: Task 5
-- Test: `plugins/harness-core/hooks/tests/test_target_class.py`
-
-**Interfaces:**
-- Consumes: Task 5
 - Produces:
   ```python
   def git_dirty(repo: str, pathspecs: list[str], ctx: Ctx) -> list[str] | None: ...   # 추적 파일 index/worktree 변경(절대경로). 실패 None
@@ -564,9 +591,11 @@ def test_session_start_missing_disables_session_new(self):
   def git_upstream_branch(repo: str, ctx: Ctx) -> str | None: ...
   def git_stash_created(repo: str, ref: str, ctx: Ctx) -> float | None: ...
   def git_clean_preview(repo: str, clean_args: list[str], ctx: Ctx) -> list[str] | None: ...
+  def git_extra_items(worktree: str, ctx: Ctx) -> list[str] | None: ...   # linked worktree 의 미추적·ignore 항목(절대경로, 폴더는 폴더 하나). 실패 None
   @dataclass(frozen=True)
   class BranchInfo:
       has_upstream: bool; upstream_ref_exists: bool; ahead: int | None; reachable_elsewhere: bool; created_at: float | None
+      merged_into_default: bool   # spec §3.5 '병합 판정'(cherry 에 + 없음 또는 스쿼시 patch-id 일치)
       # ahead = `git rev-list --count <upstream>..B` (upstream 추적 ref 가 없으면 None)
   def git_branch_info(repo: str, branch: str, ctx: Ctx) -> BranchInfo | None: ...
   def find_preview(args: list[str], cwd: str, ctx: Ctx) -> list[str] | None: ...
@@ -603,7 +632,15 @@ def test_branch_info(self):
     pi = git_branch_info(w.fmt("{REPO}"), "pushed", ctx); self.assertEqual((pi.has_upstream, pi.ahead), (True, 0))
     self.assertEqual(git_branch_info(w.fmt("{REPO}"), "ahead", ctx).ahead, 1)
     li = git_branch_info(w.fmt("{REPO}"), "lonely", ctx); self.assertFalse(li.has_upstream or li.reachable_elsewhere)
-    self.assertGreaterEqual(git_branch_info(w.fmt("{REPO}"), "mine", ctx).created_at, ctx.session_start)
+    self.assertGreaterEqual(git_branch_info(w.fmt("{REPO}"), "mine", ctx).created_at, ctx.session_start)   # 세션 전 커밋에서 분기 — %ct 면 실패
+    self.assertLess(li.created_at, ctx.session_start)
+    w.local_branch("squashed", pushed=True, before_session=True, squash_merged=True, delete_remote=True)
+    w.local_branch("gone", pushed=True, before_session=True, delete_remote=True)
+    si = git_branch_info(w.fmt("{REPO}"), "squashed", ctx); self.assertEqual((si.upstream_ref_exists, si.merged_into_default), (False, True))
+    self.assertFalse(git_branch_info(w.fmt("{REPO}"), "gone", ctx).merged_into_default)
+def test_worktree_extra_items(self):
+    w2 = World(worktree=True); self.addCleanup(w2.close)
+    self.assertEqual(sorted(git_extra_items(w2.fmt("{WT}"), w2.ctx())), [w2.fmt("{WT}/build"), w2.fmt("{WT}/local.sqlite")])
 def test_find_preview(self):
     ctx = w.ctx(); r = w.fmt("{REPO}")
     self.assertEqual(sorted(find_preview([r, "-name", "*.o", "-delete"], r, ctx)), [w.fmt("{REPO}/build/out.o")])
@@ -627,8 +664,11 @@ def test_docker_unavailable(self):
 - [ ] **Step 3: 구현** — `git_dirty`: `git status --porcelain=v1 -z --untracked-files=no -- <pathspecs>`(이름 변경은 두 이름). `is_session_change`:
   `mtime >= session_start` ∧ 이 세션 `pre-dirty` 없음 ∧ `ts >= session_start` 인 다른 세션 `touched` 없음. `git_default_branch`:
   `refs/remotes/<remote>/HEAD` → 없으면 `main` → `master`(로컬 또는 원격 추적 ref 존재) → None. `git_branch_info`: `git config branch.<b>.remote`, upstream 추적 ref 존재(`git rev-parse --verify -q <b>@{u}`)와
-  `git rev-list --count <b>@{u}..<b>`(ahead), `git for-each-ref --contains <b끝> --format=%(refname)` 에서 `refs/heads/<b>`·그 upstream 추적 ref 를 뺀 것이 있으면 reachable, `git reflog show --format=%ct
-  refs/heads/<b>` 의 마지막 줄(가장 오래된 기록). `find_preview` 허용 토큰: 첫 `-` 전 경로들, `-name -iname -path -ipath -wholename -regex -type
+  `git rev-list --count <b>@{u}..<b>`(ahead), `git for-each-ref --contains <b끝> --format=%(refname)` 에서 `refs/heads/<b>`·그 upstream 추적 ref 를 뺀 것이 있으면 reachable, `git reflog show --date=unix --format=%gd
+  refs/heads/<b>` 의 마지막 줄 `<b>@{<epoch>}` 의 epoch(가장 오래된 reflog 항목 시각. `%ct` 는 그 항목이 가리키는 커밋 시각이라 쓰지 않는다).
+  `merged_into_default` = spec §3.5 병합 판정(`git cherry D <b>` 에 `+` 없음, 또는 `git diff <merge-base> <b> | git patch-id --stable` 의 id 가
+  `git log -p <merge-base>..D | git patch-id --stable` 의 id 중 하나). `git_extra_items`: `git -C <wt> status --porcelain=v1 -z --ignored=matching
+  --untracked-files=normal` 의 `??`·`!!` 항목(끝 `/` 제거). `find_preview` 허용 토큰: 첫 `-` 전 경로들, `-name -iname -path -ipath -wholename -regex -type
   -mtime -mmin -newer -size -empty -maxdepth -mindepth -prune -o -or -a -and -not ! ( )` 와 값, 동작 정확히 하나(`-delete` 또는 `-exec|-execdir rm
   [-r|-f|-rf|-fr|-R]... {} (;|+)`); 동작을 `-print0` 로 바꿔 실행, 결과는 cwd 기준 절대경로. docker: `docker inspect --format
   '{{json .Mounts}}|{{.Config.WorkingDir}}' <c>`, `docker volume inspect --format '{{.CreatedAt}}' <v>`(RFC3339 → epoch; 3.10 호환 위해 `Z`·
@@ -658,9 +698,11 @@ def test_docker_unavailable(self):
       def reason(self) -> str: ...   # f"거부: {op} {target} — {KIND_TEXT[kind]}. 대안: {advice}"
   def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]: ...
   def is_judged_op(seg: Segment) -> bool: ...
-  def judged_targets(seg: Segment) -> list[str]: ...   # 판정 대상 작업의 확정된 대상 경로들(모드 결정용, Task 9)
+  def judged_targets(seg: Segment, ctx: Ctx) -> list[str]: ...   # 판정 대상 작업의 확정된 대상 경로들(모드 결정용, Task 9).
+      # 컨테이너 문맥 단위는 바인드 마운트 대상의 호스트 경로만(볼륨·마운트 밖 제외) — 그 분기는 Task 8 이 채운다
   SYSTEM_ROOTS = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot")
   BENIGN_DEVICES = ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
+  DEVICE_EXEMPT = BENIGN_DEVICES + ("/dev/shm/",)   # 장치 경로 = "/dev/" 아래이고 이것들로 시작하지 않음(spec §3.5 디스크 규칙)
   ```
   `KIND_TEXT`: `UNRESOLVED`="대상을 확정할 수 없다", `PROTECTED_NAME`="보호 대상 파일(비밀·설정·.git)", `GIT_TRACKED`="git 이 추적하는 파일",
   `PRESERVED`="세션 전부터 있던 유일본", `DIRTY`="커밋 안 된 수정이 있다", `SYSTEM`="호스트 시스템 경로",
@@ -671,8 +713,8 @@ def test_docker_unavailable(self):
   xargs rm: "`find … -delete` 나 리터럴 경로를 써라", 임시 루트 와일드카드: "자기 세션 폴더로 범위를 좁혀라", 폴더 상한: "범위를 좁혀라",
   DIRTY(덮어쓰기): "먼저 커밋하거나 `git stash` 하라").
   **판정 대상 작업**(`is_judged_op` True): 처리기 표의 명령(`rm unlink shred find`(동작 있을 때) `xargs`→`rm` `rsync`(`--delete*`) `cp mv install tee
-  truncate dd mkfs*`, `-R` 있는 `chmod chown chgrp`), 쓰기 리다이렉트(`>` `>|` `&>`)가 있는 단위, git 하위명령 중 spec §3.5 git 표의 판정 행
-  (`reset --hard`, 경로·`.`·`-f` 를 가진 `checkout`, `switch -f|--discard-changes`, 작업 트리 대상 `restore`, `rm -f`, `worktree remove --force`,
+  truncate dd mkfs*`, `-R` 있는 `chmod chown chgrp`, 대상이 `SYSTEM_ROOTS` 하위인 `chmod chown chgrp`(옵션 무관)), 쓰기 리다이렉트(`>` `>|` `&>`)가 있는 단위, git 하위명령 중 spec §3.5 git 표의 판정 행
+  (`reset --hard`, 경로·`.`·`-f` 를 가진 `checkout`, `switch -f|--discard-changes`, 작업 트리 대상 `restore`, `rm -f`, `worktree remove`(옵션 무관),
   `clean`, `stash drop|clear`, `push`, `branch -D`, `reflog expire|delete`, `gc --prune`, `prune`, `filter-branch`, `filter-repo`), docker 볼륨 삭제
   명령, 그리고 컨테이너 문맥 단위 중 위 처리기 표에 해당하는 것. 그 외(`ls`, `git status`, `docker ps` 등)는 False.
 
@@ -711,6 +753,10 @@ def test_disk_system_chmod(self):
     self.assertEqual(ev("dd if=/dev/zero of=build/img bs=1M count=1"), []); self.assertEqual(ev("dd if=fw.bin of=rootfs.img bs=1 skip=10"), [])
     self.assertEqual(ev("dd if=/dev/zero of=/dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
     self.assertEqual(ev("mkfs.ext4 /dev/sdb1"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+    self.assertEqual(ev("echo x > /dev/nvme0n1"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")]); self.assertEqual(ev("dd if=a of={HOME}/new.img"), [])
+    self.assertEqual(ev("cp a /dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")]); self.assertEqual(ev("tee /dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+    self.assertEqual(ev("dd if=a of={HOME}/data/db.sqlite"), [("덮어쓰기", PRESERVED)])           # 장치 아닌 dd 는 덮어쓰기 규칙
+    self.assertEqual(ev("chmod 644 /etc/hosts"), [("시스템 경로 쓰기", "SYSTEM")]); self.assertEqual(ev("chown root /usr/bin/x"), [("시스템 경로 쓰기", "SYSTEM")])
     self.assertEqual(ev("echo x > /etc/hosts"), [("시스템 경로 쓰기", "SYSTEM")]); self.assertEqual(ev("sudo rm /usr/bin/x"), [("시스템 경로 쓰기", "SYSTEM")])
     self.assertEqual(ev("chmod -R 777 {HOME}"), [("재귀 권한 변경", "OUTSIDE_WORKSPACE")])
     self.assertEqual(ev("chmod -R 755 build"), []); self.assertEqual(ev("chmod 777 {HOME}/notes.md"), [])
@@ -724,7 +770,9 @@ def test_is_judged_op(self):
 - [ ] **Step 2: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_policy.py` · Expected: `ModuleNotFoundError: policy`
 - [ ] **Step 3: 구현** — `evaluate`: 컨테이너 문맥이면 Task 8 경로(이 작업에서는 빈 목록 자리만). 호스트면 ① 리다이렉트(덮어쓰기·장치·시스템)
   ② 명령 이름별 처리기 표 `HANDLERS: dict[str, Callable[[Segment, Ctx], list[Finding]]]`. 대상 = `expand` 결과(None → UNRESOLVED 하나).
-  시스템 경로 검사가 다른 분류보다 먼저. 임시 루트 와일드카드: 원형 단어가 따옴표 없는 글롭이고 디렉터리 부분이 `is_scratch_root` 면 UNRESOLVED.
+  시스템 경로 검사가 다른 분류보다 먼저(`chmod chown chgrp` 는 대상이 SYSTEM_ROOTS 하위면 옵션 무관 SYSTEM). 장치 경로(`/dev/` 아래이고
+  `DEVICE_EXEMPT` 로 시작하지 않음) 대상 덮어쓰기 작업 전부(쓰기 리다이렉트·`tee`·`truncate`·`cp mv install rsync` 목적지·`dd of=`)는 ("디스크 쓰기", OUTSIDE_WORKSPACE),
+  장치 아닌 `dd of=` 는 덮어쓰기 규칙. 임시 루트 와일드카드: 원형 단어가 따옴표 없는 글롭이고 디렉터리 부분이 `is_scratch_root` 면 UNRESOLVED.
   덮어쓰기 GIT_TRACKED 는 `git_dirty(repo, [path])` 가 비었거나 `is_session_change(path)` 면 허용, 아니면 DIRTY. 옵션은 `literal_args` 기준
   (`--` 뒤는 모두 피연산자). `cp|mv|install` 목적지 = 마지막 피연산자(`-t DIR` 지원), 존재하는 폴더면 `목적지/원본이름` 들. `rsync --delete*` 는
   목적지 폴더를 삭제 규칙으로. `judged_targets` = 이 단위에서 판정한 경로(확정된 것만).
@@ -761,23 +809,27 @@ def test_stash(self):
     self.assertEqual(ev("git stash clear"), [("git stash", "OLD_STASH")])
 def test_push(self):
     for c in ["git push origin +main", "git push --force origin main", "git push -f origin HEAD:main", "git push origin :main",
-              "git push origin --delete main", "git push --mirror"]:
+              "git push origin --delete main", "git push --mirror", "git push --force --all origin",
+              "git push origin '+refs/heads/*:refs/heads/*'"]:
         self.assertEqual([k for _, k in ev(c)], ["DEFAULT_BRANCH"], c)
     for c in ["git push -u origin feat/x", "git push --force origin feat/x", "git push --force-with-lease origin feat/x",
-              "git push origin --delete feat/x", "git push -q origin --delete feat/x; git log -1 --format=%h"]:
+              "git push origin --delete feat/x", "git push -q origin --delete feat/x; git log -1 --format=%h", "git push --all origin"]:
         self.assertEqual(ev(c), [], c)
     w.checkout("feat/x", upstream="origin/feat/x"); self.assertEqual(ev("git push --force"), [])
     w.checkout("main", upstream="origin/main"); self.assertEqual([k for _, k in ev("git push --force")], ["DEFAULT_BRANCH"])
 def test_default_branch_fallback(self):            # Review Focus 3
     w.drop_origin_head(); self.assertEqual([k for _, k in ev("git push --force origin main")], ["DEFAULT_BRANCH"])
     w.remove_remote("origin"); self.assertEqual(ev("git push --force origin main"), [])
-def test_branch_delete(self):                      # 감사 rootcause-s1-001·r2-002
+def test_branch_delete(self):                      # 감사 rootcause-s1-001·r2-002, 재감사 rootcause-r1-s1-003
     w.local_branch("pushed", pushed=True, before_session=True); w.local_branch("lonely", pushed=False, before_session=True)
     w.local_branch("mine", pushed=False, before_session=False); w.local_branch("ahead", pushed=True, before_session=True, extra_unpushed=1)
-    w.local_branch("merged", pushed=True, before_session=True, delete_remote=True)   # 병합 후 원격 삭제(upstream 추적 ref 없음)
-    self.assertEqual(ev("git branch -D pushed"), []); self.assertEqual(ev("git branch -D mine"), []); self.assertEqual(ev("git branch -D merged"), [])
-    self.assertEqual([k for _, k in ev("git branch -D ahead")], ["UNPUSHED"])
-    self.assertEqual([k for _, k in ev("git branch -D lonely")], ["UNPUSHED"]); self.assertEqual(ev("git branch -d lonely"), [])
+    w.local_branch("merged", pushed=True, before_session=True, squash_merged=True, delete_remote=True)      # 스쿼시 병합 후 원격 삭제
+    w.local_branch("merged_more", pushed=True, before_session=True, squash_merged=True, delete_remote=True, extra_unpushed=1)
+    w.local_branch("gone", pushed=True, before_session=True, delete_remote=True)                            # 병합 안 됐는데 원격만 삭제
+    for b in ["pushed", "mine", "merged"]: self.assertEqual(ev(f"git branch -D {b}"), [], b)
+    for b in ["ahead", "lonely", "merged_more", "gone"]: self.assertEqual([k for _, k in ev(f"git branch -D {b}")], ["UNPUSHED"], b)
+    self.assertTrue(w.evaluate_all(w.fmt("git branch -D gone"), "{REPO}")[0].reason().endswith("병합된 브랜치면 `git fetch` 뒤 다시 실행하라"))
+    self.assertEqual(ev("git branch -d lonely"), [])
 def test_reflog_destroyers(self):
     for c in ["git reflog expire --expire=now --all", "git gc --prune=now", "git prune", "git filter-branch -- --all", "git filter-repo --force"]:
         self.assertEqual([k for _, k in ev(c)], ["REFLOG"], c)
@@ -785,9 +837,16 @@ def test_allowed_history_ops(self):
     for c in ["git rebase origin/main", "git commit --amend -m x", "git worktree add ../wt2 -b y", "git update-ref -d refs/heads/y", "git stash pop"]:
         self.assertEqual(ev(c), [], c)
     w.make_worktree(); self.assertEqual(ev("git worktree remove {WT}"), [])
-def test_linked_worktree_rm(self):
-    w.make_worktree(); self.assertEqual(ev("rm -rf {WT}"), [])
+def test_linked_worktree_rm(self):                  # 재감사 rootcause-r1-s1-002
+    WT_FORMS = ["rm -rf {WT}", "git worktree remove {WT}", "git worktree remove --force {WT}"]
+    w.make_worktree()
+    for c in WT_FORMS: self.assertEqual(ev(c), [], c)                                       # 세션 worktree, 깨끗함
     w.dirty_before_session("{WT}/README.md"); self.assertEqual([k for _, k in ev("rm -rf {WT}")], ["DIRTY"])
+    w2 = World(worktree=True); self.addCleanup(w2.close)
+    e = lambda cmd: [k for _, k in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+    for c in WT_FORMS: self.assertEqual(e(c), [PRESERVED], c)                               # 세션 전 ignore 유일본 local.sqlite
+    self.assertIn("worktree 안에 유일본이 있다", w2.evaluate_all(w2.fmt("rm -rf {WT}"), "{REPO}")[0].reason())
+    w2.sh("rm local.sqlite", cwd="{WT}"); self.assertEqual(e("rm -rf {WT}"), [])                # 남은 build/ 는 재생성 산출물
 
 def test_container(self):
     w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
@@ -819,17 +878,20 @@ def test_docker_unavailable_policy(self):
 
 - [ ] **Step 2: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_policy.py` · Expected: FAIL
 - [ ] **Step 3: 구현** — git 하위명령 표(spec §3.5 git 표). 영향 범위: `reset --hard` → 저장소 전체, `checkout|restore` 경로 인자(`.` 이면 전체),
-  `switch -f|--discard-changes`·`checkout -f` → 전체, `rm -f|--force` → 인자, `worktree remove --force P` → P 의 작업 트리 전체(P 저장소 기준 조회).
+  `switch -f|--discard-changes`·`checkout -f` → 전체, `rm -f|--force` → 인자, `worktree remove [--force] P`·linked worktree 최상위 `rm -r P` → P 의 작업 트리 전체(P 저장소 기준 조회), 그리고 `git_extra_items(P)` 각 항목을
+  `classify` 해 SEVERITY>0 인 첫 항목이면 (`git worktree` 또는 `삭제`, 분류), 대안 "worktree 안에 유일본이 있다. 옮기거나 사용자에게 요청하라".
   판정: `git_dirty` 에서 `is_session_change` 아닌 것이 있으면 DIRTY(target = 첫 경로 + "외 N개"), 조회 실패 UNRESOLVED. `clean`(`-n|--dry-run`
   있으면 허용) → `git_clean_preview` 각 경로 `classify`, SEVERITY>0 인 첫 항목 `("git clean", 분류)`. `branch -D B`(`-D`·`--delete --force`·`-df`):
-  `git_branch_info` 로 (upstream 이 있고 그 추적 ref 가 없거나 ahead == 0) 또는 reachable_elsewhere 또는 created_at ≥ session_start 면 허용, 아니면 UNPUSHED(대안: "먼저 push 하거나 태그를 남겨라"),
+  `git_branch_info` 로 (upstream 추적 ref 가 있고 ahead == 0) 또는 merged_into_default 또는 reachable_elsewhere 또는 created_at ≥ session_start 면 허용, 아니면 UNPUSHED(대안: "먼저 push 하거나 태그를 남겨라. 병합된 브랜치면 `git fetch` 뒤 다시 실행하라" — 기준 D 가 오래됐는지는 조회로 알 수 없어 늘 붙인다),
   조회 실패 UNRESOLVED. push: 원격 = 첫 비옵션 인자(없으면 upstream 원격 또는 `origin`), `git_remote_names` 에 없으면 판정 안 함. refspec 목적지 =
   `:` 뒤(없으면 그 자체, `HEAD` → 현재 브랜치), 앞 `+` 는 강제, `refs/heads/` 제거. 강제 = `--force|-f|+refspec`, 삭제 = `--delete|-d|:dst`,
-  `--mirror` → DEFAULT_BRANCH. `--force-with-lease`·`--force-if-includes` 는 강제 아님. refspec 없는 push 는 `git_upstream_branch`.
+  `--mirror` → DEFAULT_BRANCH. `--all`·`--branches` 는 로컬 브랜치 전부(기본 브랜치가 있으면 그것), 글롭 refspec 은 목적지 패턴이
+  `refs/heads/<기본>` 과 `fnmatch` 로 맞으면 기본 브랜치 — 강제와 함께면 DEFAULT_BRANCH. `--force-with-lease`·`--force-if-includes` 는 강제 아님. refspec 없는 push 는 `git_upstream_branch`.
   컨테이너: exec 계열은 `docker_container_info`(compose 는 `compose_container_id(container, project_dir, project)` 먼저)로 마운트·WorkingDir;
   단위 cwd 가 None 이면 WorkingDir. 대상 컨테이너 경로가 마운트 Destination **자체이거나 하위**면 bind → 호스트 경로로 바꿔 Task 7 처리기
   (시스템 경로 규칙 제외), volume → `docker_volume_created` < session_start 면 OLD_VOLUME(조회 실패 UNRESOLVED). 마운트 밖·조회 실패면 판정 없음.
-  볼륨 명령: spec §3.5 Docker 표(목록: 인자 / `dangling` / `compose-project`).
+  볼륨 명령: spec §3.5 Docker 표(목록: 인자 / `dangling` / `compose-project`). `judged_targets(seg, ctx)` 의 컨테이너 문맥 분기도 같은
+  마운트 사상으로 바인드 마운트 대상의 호스트 경로만 돌려준다(볼륨·마운트 밖 제외).
 - [ ] **Step 4: 통과 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_policy.py` · Expected: `OK`(docker 없으면 skip 표시)
 - [ ] **Step 5: 커밋(위임 승인 D13)** — `feat(harness-core): bash-guard 정책 — git·Docker`
 
@@ -840,13 +902,14 @@ def test_docker_unavailable_policy(self):
 - Test: `plugins/harness-core/hooks/tests/test_bash_guard.py`
 
 **Interfaces:**
-- Consumes: `shell_parse.parse`, `target_class.make_ctx`·`note_touch`·`classify`·`switch_mode`·`MODE_RANK`, `policy.evaluate`·`is_judged_op`·`judged_targets`, `ledger.KIND_MOVED_IN`
+- Consumes: `shell_parse.parse`, `target_class.make_ctx`·`note_touch`·`classify`·`switch_mode`·`MODE_RANK`·`git_dirty`·`is_session_change`, `policy.evaluate`·`is_judged_op`·`judged_targets`, `ledger.KIND_MOVED_IN`
 - Produces:
   ```python
   BUDGET_SECONDS = 5.0
   LOG_MAX_BYTES = 10 * 1024 * 1024
   FOOTER = "이 판정을 우회하지 말 것. 대안이 맞지 않으면 작업을 멈추고 사용자에게 보고하라."
-  FAIL_WORDS: re.Pattern   # spec §3.8 (가)
+  FAIL_WORDS = re.compile(r"(?<![\w.-])(?:rm|unlink|shred|truncate|dd|mkfs[\w.]*|reset|clean|restore|checkout|push|volume|prune|-delete)(?![\w.-])|>")
+      # spec §3.8 (가) 단어 경계: 앞뒤가 영숫자·_·-·. 가 아님, > 는 위치 무관
   @dataclass
   class Decision:
       allow: bool
@@ -859,9 +922,13 @@ def test_docker_unavailable_policy(self):
   def final_output(d: Decision, old: str) -> str: ...      # on → render(d) / 그 외 → old(그대로, 빈 문자열 가능)
   def main(argv: list[str] | None = None) -> int: ...      # `--old <JSON 문자열>`. stdin payload → judge → 기록 → final_output 출력 → 0
   ```
-  모드 = max(`MODE_RANK`) over {`environ` 의 `HARNESS_BASH_GUARD`, `switch_mode(cwd)`, 판정 대상 단위들의 `judged_targets` 각 `switch_mode`}.
-  기록(`log_event`): `on` 의 거부·오류, `shadow` 의 신·구 불일치(old 의 permissionDecision 이 `ask`·`deny` 면 비허용, 그 외 허용)·오류.
-  내부 예외 → `main` 이 잡아 old 그대로 출력 + `{error}` 기록(spec §3.8 (다)).
+  모드 = max(`MODE_RANK`) over {`environ` 의 `HARNESS_BASH_GUARD`, `switch_mode(cwd)`, 판정 대상 단위마다 `switch_mode(단위 cwd)`(None 이면 생략),
+  판정 대상 단위들의 `judged_targets(seg, ctx)` 각 `switch_mode`}.
+  기록(`log_event`): `on` 의 거부, `shadow` 의 신·구 불일치(old 의 permissionDecision 이 `ask`·`deny` 면 비허용, 그 외 허용), 내부 예외(모드와 무관).
+  `judge` 는 payload 의 `cwd` 가 문자열·None 이 아니거나 `tool_input` 이 dict 가 아니면 `ValueError` 를 낸다. 내부 예외 → `main` 이 잡아
+  `{error}` 를 기록하고, 폴백 모드(세션 env 값과 — cwd 가 문자열일 때만 — `switch_mode(cwd)` 의 최댓값, 계산 실패 시 `off`)가 `on` 이면
+  `tool_input.command`(문자열일 때만)에 FAIL_WORDS 가 있으면 거부(사유 `[bash-guard] 판정기 오류 — 단순한 형태로 나눠 실행하라` + 줄바꿈 + FOOTER),
+  없으면 허용을 `render` 로 출력, 아니면 old 그대로 출력(spec §3.8 (다)).
 
 - [ ] **Step 1: 실패하는 테스트 작성** — `class JudgeTest`, `class MainTest`:
 
@@ -881,8 +948,15 @@ def test_mode_resolution(self):
     w.set_repo_switch("shadow"); self.assertEqual(judge(w.payload("rm src/main.py"), w.environ).mode, "shadow")
     # 세션 cwd 는 홈(저장소 밖)이고 대상만 스위치 저장소 안 → 대상 저장소 값으로 on
     w.set_repo_switch("on"); self.assertEqual(judge(w.payload("rm {REPO}/src/main.py", cwd="{HOME}"), w.environ).mode, "on")
+    self.assertEqual(judge(w.payload('cd {REPO} && rm -rf "$UNSET_X"', cwd="{HOME}"), w.environ).mode, "on")   # 단위 cwd 의 저장소 값
+    w2 = World(docker=True); self.addCleanup(w2.close)                                     # 컨테이너 바인드 마운트 대상(docker 없으면 이 부분 생략)
+    if w2.docker:
+        w2.set_repo_switch("on")
+        self.assertEqual(judge(w2.payload(f"docker exec {w2.docker.container} rm -rf /app/src", cwd="{HOME}"), w2.environ).mode, "on")
 def test_parse_failure_policy(self):
     self.assertTrue(judge(w.payload('echo "unterminated'), {**w.environ, **ON}).allow)
+    self.assertTrue(judge(w.payload('echo "rmdir format'), {**w.environ, **ON}).allow)              # 단어 경계: rmdir·format 은 아님
+    for c in ['find . -delete "x', 'echo "a > b']: self.assertFalse(judge(w.payload(c), {**w.environ, **ON}).allow, c)
     d = judge(w.payload('rm -rf "unterminated'), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("해석하지 못했다", d.reasons[0])
 def test_budget(self):
     self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
@@ -891,11 +965,17 @@ def test_budget(self):
 def test_inplace_edit_records_ledger(self):
     judge(w.payload("sed -i s/a/b/ {HOME}/notes.md", session_id=w.session_id), {**w.environ, **ON})
     self.assertIn(KIND_PRE_SESSION, [e.kind for e in Ledger(w.environ).entries(w.fmt("{HOME}/notes.md"))])
+    judge(w.payload("echo x >> README.md", session_id=w.session_id), w.environ)          # >> 도 장부 기록(모드 무관, 재감사 rootcause-r1-s2-004)
+    self.assertIn(KIND_PRE_DIRTY, [e.kind for e in Ledger(w.environ).entries(w.fmt("{REPO}/README.md"))])
 def test_mv_records_moved_in(self):                          # D14 — 모드 off 여도 기록
     judge(w.payload("mv {HOME}/notes.md {REPO}/build/", session_id=w.session_id), w.environ)
     self.assertEqual(Ledger(w.environ).moved_in_near(w.fmt("{REPO}/build/notes.md")), w.fmt("{REPO}/build/notes.md"))
     judge(w.payload("mv src/probe.ts {SCRATCH}/s1/", session_id=w.session_id), w.environ)    # 세션 파일 원본 → 기록 없음
     self.assertIsNone(Ledger(w.environ).moved_in_near(w.fmt("{SCRATCH}/s1/probe.ts")))
+    judge(w.payload("mv src/main.py src/app.py", session_id=w.session_id), w.environ)    # 깨끗한 추적 파일 이름 변경 → 기록 없음
+    self.assertIsNone(Ledger(w.environ).moved_in_near(w.fmt("{REPO}/src/app.py")))
+    judge(w.payload("mv README.md {SCRATCH}/s1/", session_id=w.session_id), w.environ)   # 세션 전 커밋 안 된 수정이 있는 추적 파일 → 기록
+    self.assertIsNotNone(Ledger(w.environ).moved_in_near(w.fmt("{SCRATCH}/s1/README.md")))
 def test_log_rotation(self):
     for _ in range(5): log_event({"x": "y" * 80}, w.environ, max_bytes=200)
     self.assertTrue((state_dir(w.environ) / "bash-guard.jsonl.1").exists())
@@ -907,17 +987,23 @@ def test_main_outputs(self):
     #  shadow: 'rm src/main.py' → 기록 추가 없음(둘 다 비허용)
     #  on: 'rmdir d' → stdout 이 allow JSON
     #  old 가 빈 문자열이고 off → stdout 빈 문자열
-def test_internal_error_outputs_old(self):
-    # tool_input 이 문자열인 잘못된 payload 를 --old <old> 로 → stdout == old + "\n", 기록에 error 필드 1줄
+    #  위 모든 경우 rc == 0
+def test_internal_error_fallback(self):            # spec §3.8 (다), 재감사 rootcause-r1-s2-003·selfcontained-r1-s2-006
+    # subprocess main, --old <old(ask)>:
+    #  off: tool_input 이 문자열인 payload → stdout == old + "\n", 기록에 error 필드 1줄(off 여도 기록)
+    #  on(세션 env): {"tool_name":"Bash","tool_input":{"command":"rm -rf x"},"cwd":5} → json.loads(stdout) 의 permissionDecision == "deny",
+    #     사유에 "판정기 오류"
+    #  on: {"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":5} → permissionDecision == "allow"
+    #  세 경우 모두 rc == 0, stdout 에 "ask" 는 off 경우(old)에만
 ```
 
 - [ ] **Step 2: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_bash_guard.py` · Expected: `ModuleNotFoundError`
 - [ ] **Step 3: 구현** — `judge`: `tool_name != "Bash"`·명령 없음 → allow(모드는 세션 env·cwd 로만). `ctx = make_ctx(payload, environ, budget)`;
   `parse(command, payload.get("cwd"), environ)`, `error` 있으면 (가). 단위마다 남은 시간 ≤ 0 이면, 지금까지 `is_judged_op` 단위가 있었으면 거부
   ("거부: 판정 시간 초과 — 범위를 좁혀라"), 없으면 허용으로 종료(현재 단위도 판정 대상이면 '있었음'에 포함). `evaluate` 결과를 모으고 사유 중복
-  제거. 제자리 편집(`sed -i|--in-place`, `perl -i|-pi`, `git checkout -- P`, `git restore P`) 대상마다 `note_touch(path, ctx, None)`. 모드 계산은
-  위 Interfaces. `mv` 단위(모드 무관): 원본을 `classify` 해 `GIT_TRACKED`·`PRESERVED`·`PROTECTED_NAME` 이면 목적지(폴더면 `폴더/원본이름`)를
-  `KIND_MOVED_IN` 으로 기록. `log_event` 필드: `ts`(ISO8601), `mode`, `session_id`, `agent_id`, `cwd`, `command`(2000자), `decision`, `old_decision`, `reasons`,
+  제거. 제자리 수정(spec §3.7 기록 주체 2 의 닫힌 목록: 쓰기·추가 리다이렉트 `>` `>|` `&>` `>>` `&>>` 대상, `tee`(`-a` 포함), `sed -i|--in-place`, `perl -i|-pi`, `truncate`, `cp mv install rsync`·`dd of=` 의 기존 목적지, `git checkout [--] P`, `git restore P`) 대상마다 모드와 무관하게 `note_touch(path, ctx, None)` 로 장부 기록. 모드 계산은
+  위 Interfaces. `mv` 단위(모드 무관): 원본을 `classify` 해 `PRESERVED`·`PROTECTED_NAME` 이거나, `GIT_TRACKED` 이고 `git_dirty` 에 있으며
+  `is_session_change` 가 아니면 목적지(폴더면 `폴더/원본이름`)를 `KIND_MOVED_IN` 으로 기록(깨끗한 추적 파일의 이름 변경은 기록 안 함). `log_event` 필드: `ts`(ISO8601), `mode`, `session_id`, `agent_id`, `cwd`, `command`(2000자), `decision`, `old_decision`, `reasons`,
   `ms`, `error`; 쓰기 전 파일이 `max_bytes` 를 넘으면 `.1` 로 교체.
 - [ ] **Step 4: 통과 확인** — 같은 명령 · Expected: `OK`
 - [ ] **Step 5: 커밋(위임 승인 D13)** — `feat(harness-core): bash-guard 진입점 — 모드·실패 정책·시간 예산·기록`
@@ -938,6 +1024,7 @@ def test_internal_error_outputs_old(self):
 - [ ] **Step 1: 실패하는 테스트 작성**:
 
 ```python
+HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks.json"   # plugins/harness-core/hooks/hooks.json
 def run_hook(payload_or_text, extra_env=None): # subprocess python3 touch-ledger.py, env={**w.environ, **(extra_env or {})} → (rc, stdout)
 def test_records_without_switch(self):          # 스위치 없음(off)에서도 기록
     self.assertEqual(run_hook(w.edit_payload("{HOME}/notes.md")), (0, ""))
@@ -965,18 +1052,19 @@ def test_hooks_json_registration(self):
 **Files:**
 - Create: `plugins/harness-core/hooks/tests/fixtures/false_positive.json`, `plugins/harness-core/hooks/tests/fixtures/false_negative.json`
 - Modify: `plugins/harness-core/hooks/tests/test_bash_guard.py`, `plugins/harness-core/hooks/tests/_world.py`
-  (`judge_case(case) -> Decision` = setup 적용 후 `fmt` 한 명령을 세션 env `on` 으로 judge, `judge_cmd(cmd, cwd="{REPO}") -> Decision`)
+  (모듈 함수 `judge_case(case) -> Decision` = 새 World 를 만들어 setup 적용 후 `fmt` 한 명령을 세션 env `on` 으로 judge 하고 World 를 닫는다,
+  World 메서드 `judge_cmd(cmd, cwd="{REPO}") -> Decision`)
 - Test: 같은 파일
 
 **Interfaces:**
 - Consumes: `judge`, `World`
-- Produces: 픽스처 형식 — JSON 배열, 항목 `{"id": str, "command": str, "cwd": "{REPO}" | "{HOME}" | "{OUT}", "setup": [str], "expect": "allow" | "deny", "why": str}`.
-  `setup` 은 World 준비 동작 이름 목록: `"clean_tree"`, `"dirty_before_session:{REPO}/README.md"`, `"make_worktree"`, `"no_env"`(`.gitignore` 대상인 `.env` 와 `local.sqlite` 를 지움). 실제 세션 명령 원문 금지.
+- Produces: 테스트 파일 함수 `load(name) -> list[dict]` = `fixtures/<name>` 을 `json.load`. 픽스처 형식 — JSON 배열, 항목 `{"id": str, "command": str, "cwd": "{REPO}" | "{HOME}" | "{OUT}", "setup": [str], "expect": "allow" | "deny", "why": str}`.
+  `setup` 은 World 준비 동작 이름 목록: `"clean_tree"`, `"dirty_before_session:{REPO}/README.md"`, `"make_worktree"`, `"no_env"`(`.gitignore` 대상인 `.env` 와 `local.sqlite` 를 지움), `"scratch_clone"`(`git clone -q {REPO} {SCRATCH}/s1/clone`), `"scratch_many"`(`{SCRATCH}/s1/many` 에 빈 파일 2001개 — DIR_ENTRY_CAP 초과). 실제 세션 명령 원문 금지.
   Docker 사례(컨테이너 안 `/etc` 수정, 마운트 경로 삭제, 기존 볼륨 삭제)는 실행마다 자원 이름이 바뀌므로 픽스처에 넣지 않고
   Task 8 `test_container`·`test_volume_ops` 가 담당한다.
 
 - [ ] **Step 1: 픽스처 작성** — `false_positive.json`(기대 allow): spec 부록 C 두 묶음 전 항목 + spec §8 오탐 회귀 행 항목. 최소 id:
-  `jq-arg-reset-hard`, `python-heredoc-rm`, `push-delete-then-log-format`, `rm-f-session-file`, `rm-rf-regenerable-abs-path`, `rmdir`,
+  `jq-arg-reset-hard`, `heredoc-body-line-rm`(본문 줄 맨 앞 — spec 부록 C), `rm-scratch-git-clone`(setup `scratch_clone`), `rm-rf-scratch-over-cap`(setup `scratch_many`), `push-delete-then-log-format`, `rm-f-session-file`, `rm-rf-regenerable-abs-path`, `rmdir`,
   `clean-regenerable-only`(setup `no_env`), `push-force-with-lease-feature`, `dd-file-to-file`, `xargs-git-rm-cached`, `checkout-own-change`,
   `quoted-rm-in-echo`, `grep-pattern-rm`, `rm-missing-with-redirect`, `clean-dry-run`, `rm-own-scratch`,
   `systemctl-user-stop`, `killall`, `heredoc-to-cat`, `two-redirects-2>&1`.
@@ -987,13 +1075,14 @@ def test_hooks_json_registration(self):
 
 ```python
 def test_false_positive_fixtures(self):
-    bad = [c["id"] for c in load("false_positive.json") if not w.judge_case(c).allow]; self.assertEqual(bad, [])
+    bad = [c["id"] for c in load("false_positive.json") if not judge_case(c).allow]; self.assertEqual(bad, [])
 def test_false_negative_fixtures(self):
-    bad = [c["id"] for c in load("false_negative.json") if w.judge_case(c).allow]; self.assertEqual(bad, [])
-def test_never_ask_on(self):     # Task 9 에서 옮김: 두 픽스처 전체를 on 으로 render → "ask" 없음
-    for c in load("false_positive.json") + load("false_negative.json"): self.assertNotIn('"ask"', render(w.judge_case(c)), c["id"])
+    bad = [c["id"] for c in load("false_negative.json") if judge_case(c).allow]; self.assertEqual(bad, [])
+def test_never_ask_on(self):     # SC1: on 출력은 유효 JSON 이고 결정은 allow·deny 뿐(Task 9 에서 옮김)
+    for c in load("false_positive.json") + load("false_negative.json"): out = json.loads(render(judge_case(c)))["hookSpecificOutput"]; self.assertIn(out["permissionDecision"], ("allow", "deny"), c["id"])
 def test_pr_flow_scenario(self):
     steps = ["git worktree add {OUT}/wt2 -b feat/y", "cd {OUT}/wt2 && echo a > f.txt && git add f.txt && git commit -qm a",
+             "cd {OUT}/wt2 && mv f.txt g.txt && git add -A && git commit -qm r", "cd {OUT}/wt2 && echo b > g.txt && git commit -qam b",   # 이름 변경은 moved-in 아님
              "cd {OUT}/wt2 && git push -u origin feat/y", "cd {OUT}/wt2 && git commit -q --amend -m b && git push --force",
              "git worktree remove {OUT}/wt2", "git branch -D feat/y", "git push origin --delete feat/y"]
     for s in steps: self.assertTrue(w.judge_cmd(s).allow, s); w.sh(s)
@@ -1001,6 +1090,8 @@ def test_self_revert_scenario(self):
     w.clean_tree(); w.touch_modify("{REPO}/src/main.py")
     self.assertTrue(w.judge_cmd("git checkout -- src/main.py").allow); self.assertTrue(w.judge_cmd("git reset --hard").allow)
     w.dirty_before_session("{REPO}/README.md"); self.assertFalse(w.judge_cmd("git reset --hard").allow)
+    s = "echo x >> README.md"; self.assertTrue(w.judge_cmd(s).allow); w.sh(s)              # >> 로 mtime 이 세션 중이 돼도
+    self.assertFalse(w.judge_cmd("git reset --hard").allow)                              # 장부 pre-dirty 로 deny
 ```
 
 - [ ] **Step 3: 실패 확인** — Run: `python3 plugins/harness-core/hooks/tests/test_bash_guard.py` · Expected: 실패한 id 목록이 나오면 그 항목은 Task 1~9 의 결함 →
@@ -1043,7 +1134,7 @@ exit 0
      `"mode": "shadow"` 이고 `"old_decision": "ask"` 인 줄 1개.
 - [ ] **Step 2: 실패 확인** — Run: `bash plugins/harness-core/hooks/tests/test-bash-guard-entry.sh` · Expected: 2·3·5 FAIL, 1·4 PASS(4 는 구현 전에도 파이썬을 쓰지 않아 OLD 를 낸다 — 구현 후 회귀 방지용)
 - [ ] **Step 3: 구현** — 위 Interfaces 대로. `set -euo pipefail` 아래에서 `OLD=$(old_logic)` 이 0 이 아닌 종료를 내지 않게(기존 본문은 항상 exit 0).
-- [ ] **Step 4: 통과 확인** — Run: `bash plugins/harness-core/hooks/tests/test-bash-guard-entry.sh && for t in plugins/harness-core/hooks/tests/test-*.sh; do bash "$t" || exit 1; done && python3 plugins/harness-core/hooks/t_auto_approve_rm.py && python3 plugins/harness-core/hooks/tests/test_code_read_guard.py && shellcheck plugins/harness-core/hooks/scripts/auto-approve-readonly.sh` · Expected: 모두 PASS·종료 0
+- [ ] **Step 4: 통과 확인** — Run: `bash plugins/harness-core/hooks/tests/test-bash-guard-entry.sh && for t in plugins/harness-core/hooks/tests/test-*.sh; do bash "$t" || exit 1; done && python3 plugins/harness-core/hooks/t_auto_approve_rm.py && python3 plugins/harness-core/hooks/tests/test_code_read_guard.py && shellcheck -S warning plugins/harness-core/hooks/scripts/auto-approve-readonly.sh plugins/harness-core/hooks/tests/test-bash-guard-entry.sh` · Expected: 모두 PASS·종료 0
 - [ ] **Step 5: 커밋(위임 승인 D13)** — `feat(harness-core): bash-guard 입구 — 현행 판정 OLD 를 bash_guard 로, 스위치 없으면 바이트 동일`
 
 ### Task 13: 전수 재생 도구와 검토 (spec SC3)
@@ -1074,8 +1165,8 @@ exit 0
 
 - [ ] **Step 1: 작성** — README: "담는 기준" 목록에 bash-guard 모듈 추가, env 노브 표에 `HARNESS_BASH_GUARD`(off/shadow/on, 프로젝트 settings 에만, 대상
   저장소 기준 판정) 추가, `HARNESS_RM_REPO_DIRS` 행에 "bash-guard on 안정화 후 제거 예정", 상태 폴더(기록·공유 장부) 위치, 자기검증 명령을 spec §5 로 교체.
-  DECISIONS.md = spec §2 표 두 개(D1~D13, 기각 대안)를 옮기고 맨 위에 spec 경로. LIMITS.md = spec §13 목록 + 샌드박스 재검토 조건.
-- [ ] **Step 2: 검증** — Run: `jq empty plugins/harness-core/.claude-plugin/plugin.json && test -s plugins/harness-core/DECISIONS.md && test -s plugins/harness-core/LIMITS.md && grep -q D13 plugins/harness-core/DECISIONS.md && grep -q '동시 세션' plugins/harness-core/LIMITS.md && grep -c HARNESS_BASH_GUARD plugins/harness-core/README.md # DECISIONS.md·LIMITS.md 포함 검증` · Expected: 종료 0, 마지막 출력 1 이상
+  DECISIONS.md = spec §2 표 두 개(D1~D14 전부, 기각 대안)를 옮기고 맨 위에 spec 경로. LIMITS.md = spec §13 목록 + 샌드박스 재검토 조건.
+- [ ] **Step 2: 검증** — Run: `jq empty plugins/harness-core/.claude-plugin/plugin.json && test -s plugins/harness-core/DECISIONS.md && test -s plugins/harness-core/LIMITS.md && grep -q D14 plugins/harness-core/DECISIONS.md && grep -q '동시 세션' plugins/harness-core/LIMITS.md && grep -c HARNESS_BASH_GUARD plugins/harness-core/README.md # DECISIONS.md·LIMITS.md 포함 검증` · Expected: 종료 0, 마지막 출력 1 이상
 - [ ] **Step 3: 커밋(위임 승인 D13)** — `docs(harness-core): bash-guard README·DECISIONS·LIMITS, 0.2.0`
 
 ### Task 15: 죽은 등록 게이트 (`~/.claude/check-canon.sh`) — **실행 전 사용자 승인 필요(Ask first)**
