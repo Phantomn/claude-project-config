@@ -43,7 +43,7 @@ Bash 판정기를 만든다. 판단 근거는 명령의 글자 모양이 아니�
 | ask / deny | **471 / 0** |
 | ask 중 사용자 거절 | **0건** (471건 모두 승인 후 실행) |
 | ask 로 멈춘 시간 | 중앙값 38초. 서브에이전트 198건(중앙값 59초, 최대 약 15.5시간, 10분 초과 35건) · 메인 273건. **합계 약 111시간** |
-| 위험 명령 우회 | 시험한 27종 중 **22종 allow** (부록 B) |
+| 위험 명령 우회 | 조사 때 시험한 27종 중 **22종 allow**. 부록 B 는 이를 정리·확장한 32종(감사 실측: 현행 allow 26 · ask 6) |
 | 훅 오류·취소 | 프로젝트 설정의 죽은 등록 오류 91건, 10초 제한 초과 취소 12건(모두 판정 없이 실행됨) |
 
 ask 471건의 원인(절제 실험 — 원인 하나만 바꿔 다시 넣고 판정이 바뀌는지로 확정):
@@ -123,15 +123,18 @@ R6 배포 위생(설정 검증·타임아웃·운영 clone) — 위 사슬과 �
 | ID | 결정 | 근거 |
 |---|---|---|
 | D1 | 운용 모드는 bypass 고정. 플랫폼(auto 분류기)에 역할을 넘기지 않는다 | §1.6. auto 는 멈춤이 더 잦음 |
-| D2 | **ask 를 출력하지 않는다.** 보호 대상은 즉시 deny + 사유 + 대안 | ask 471건 거절 0건, 멈춤 111시간. deny 는 Claude 가 경로를 바꿔 작업을 이어감 |
+| D2 | **`on` 모드의 새 판정기는 ask 를 출력하지 않는다.** 보호 대상은 즉시 deny + 사유 + 대안(off·shadow 는 현행 출력 그대로) | ask 471건 거절 0건, 멈춤 111시간. deny 는 Claude 가 경로를 바꿔 작업을 이어감 |
 | D3 | 판정 대상이 아닌 명령에는 지금처럼 **allow** 를 낸다 | 사용자 선택(b). bypass 에선 체감 차이 없음. auto 모드 분류기 우회는 알고 받아들이는 위험(§13) |
-| D4 | 삭제 대상은 이름이 아니라 **출처(세션이 만들었나) × 복구 가능성** 7분류로 판정 | "임시·테스트 데이터는 발동 금지, 설정·기본 파일은 보호"(사용자). 이름 목록은 블랙리스트 재발 |
+| D4 | 삭제 대상은 이름이 아니라 **출처(세션이 만들었나) × 복구 가능성** 7분류로 판정. git ignore 대상은 **재생성 산출물 이름 안쪽일 때만** 산출물로 본다 | "임시·테스트 데이터는 발동 금지, 설정·기본 파일은 보호"(사용자). 이름 목록은 블랙리스트 재발 — 단 데이터·로컬 설정도 흔히 ignore 되므로 'ignore = 재생성 가능'은 거짓(감사 rootcause-s1-004). 허용 쪽의 좁은 이름 목록(§3.4 `REGENERABLE_NAMES`)만 둔다 |
 | D5 | git 추적 파일은 일반 `rm` 거부, `git rm` 허용 | 사용자 선택(a). 삭제가 git 변경으로 명시·검토·복구 가능 |
-| D6 | git 은 "커밋 안 된 변경"과 "기본 브랜치 원격 덮어쓰기"(+ reflog 파괴)만 보호. 브랜치 삭제·reset·rebase·기능 브랜치 강제 push 는 통과 | reflog 로 복구 가능. PR 흐름 무발동 요구 |
+| D6 | git 은 "커밋 안 된 변경", "기본 브랜치 원격 덮어쓰기", reflog 파괴, **어디에도 남지 않는 커밋을 가진 브랜치 삭제**만 보호. reset·rebase·기능 브랜치 강제 push 는 통과. `branch -D` 는 push 해 둔 상태(upstream 이 있고, 그 추적 ref 가 사라졌거나 로컬에 앞선 커밋이 없음)이거나 다른 ref 에서 도달 가능하거나 이번 세션에 만든 브랜치면 통과 | reset·rebase 는 reflog 로 복구 가능. 단 linked worktree 에서 만든 미푸시 커밋은 worktree 제거 후 reflog 에 남지 않아 `branch -D` 로 사라진다(감사 rootcause-s1-001). PR 흐름 무발동 요구 — PR 브랜치는 push 로 upstream 이 남는다 |
 | D7 | 디스크 직접 쓰기·재귀 권한 변경은 작업 영역 안에서만 허용. 시스템 경로 쓰기 거부. `killall`·`systemctl stop/disable`·`rmdir` 허용 | 사용자 지정 |
 | D8 | 컨테이너 안 명령의 경로는 컨테이너 기준으로 보고 허용. **호스트 마운트·이름 볼륨만** 호스트 규칙 | 사용자 지정. 컨테이너 안 `/etc` 에 발동하던 것이 실제 문제였음 |
 | D9 | 구현은 파이썬 표준 라이브러리만. 셸 문법의 필요한 부분집합을 다루는 **자체 어휘 분석기**. shlex·외부 파서 미도입 | shlex 는 따옴표 종류·리다이렉트 위치·`2>&1` 을 잃어 단위 분해가 틀어짐(§3.3-1 실측). 외부 파서는 bashlex(GPL·정체)·tree-sitter(별도 휠) 이득 작음. 시제품 해석 p99 0.5ms 로 성능 여유 확인 |
-| D10 | 기능 스위치 `HARNESS_BASH_GUARD=off|shadow|on`, 기본 `off`. **스위치는 프로젝트 settings 에만** 둔다 | 단계적 전환·즉시 되돌림. 정의는 플러그인 한 벌, 스위치는 프로젝트(기존 `HARNESS_CODEREAD_GUARD` 와 같은 모델) |
+| D10 | 기능 스위치 `HARNESS_BASH_GUARD=off|shadow|on`, 기본 `off`. **스위치는 프로젝트 settings 에만** 두고, **대상 저장소 기준으로 판정**한다(§3.9) | 단계적 전환·즉시 되돌림. 정의는 플러그인 한 벌, 스위치는 프로젝트. 세션 env 로만 판정하면 홈에서 연 세션이 스위치 켠 저장소를 건드릴 때 꺼진다 — 코드읽기 가드가 2026-10-04 에 같은 결함으로 대상 저장소 기준이 됐다(감사 rootcause-s1-005, 사용자 결정 2026-10-14) |
+| D12 | 장부는 세션별이 아니라 **공유 장부** 하나. 다른 세션이 Write 로 만든 파일·고친 파일은 이 세션 것으로 보지 않는다 | 같은 저장소를 여러 세션이 동시에 쓰는 운용(감사 rootcause-s1-002, 사용자 결정 2026-10-14). 다른 세션이 Bash 로 만든 파일은 못 가림(§13) |
+| D14 | 공유 장부는 **스위치와 무관하게 항상 기록**한다. 판정기는 `mv` 의 원본이 보호 분류(추적·유일본·보호 이름)면 목적지를 `moved-in` 으로 기록하고, 분류 때 그 기록을 가장 먼저 본다 | 기록 시점에 꺼져 있던 파일을 나중에 켜진 판정이 오분류하는 경로, `mv` 로 재생성·임시 폴더에 옮겨 지우는 세탁 경로를 막는다(감사 라운드 2 rootcause-r2-001·004, 사용자 결정 2026-10-14). 비용: Write·Edit 마다 파이썬 약 35ms |
+| D13 | 구현 중 feature 브랜치의 작업별 커밋은 사용자가 위임했다. 테스트는 대역(모듈 패치·가짜 실행 파일·주입 데이터) 없이 인자(예산·기록 상한)와 실제 환경(실제 docker — 없으면 skip 과 사유 출력, `PYTHONHOME=/nonexistent` 로 파이썬 기동 실패)으로 검증한다 | 저장소 규칙 '자동 커밋 금지'·'Mocking 금지'(`.claude/CLAUDE.md`)와의 충돌을 사용자가 결정(2026-10-14, 감사 rootcause-s1-007·008·s2-005) |
 | D11 | 실패 정책 3종 분리(§3.8) | Codex·Gemini·cc-safety-net 모두 셋을 구분 |
 
 기각한 대안:
@@ -170,7 +173,7 @@ PreToolUse 훅 stdin JSON. 판정기가 쓰는 필드:
 
 - 허용: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`
 - 거부: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<사유>"}}`
-- **`ask` 는 어떤 경로로도 출력하지 않는다.**
+- **`on` 모드의 새 판정기는 `ask` 를 출력하지 않는다.** `off`·`shadow` 는 현행 판정(`ask` 포함)을 바이트 그대로 낸다(§3.9).
 - 출력은 반드시 `json.dumps` 로 만든다(문자열 연결 금지 — 2026-08-30 `\s` 이스케이프로 JSON 이 깨져 게이트가 증발한 전례).
 - 종료 코드는 항상 0.
 - 사유 형식(거부 근거가 여럿이면 줄마다 하나):
@@ -188,14 +191,17 @@ PreToolUse 훅 stdin JSON. 판정기가 쓰는 필드:
 ```python
 @dataclass
 class Segment:
-    argv: list[str]            # 래퍼를 벗긴 실제 명령과 인자(따옴표 제거됨)
-    raw_words: list[str]       # 변수·치환 확장 전 원형(대상 확정 가능 여부 판단용)
-    cwd: str | None            # 이 단위 실행 시점의 현재 폴더(cd 추적, 모르면 None)
-    env: dict[str, str]        # 이 시점까지 확정된 변수(같은 명령 안 할당 + os.environ 의 HOME/TMPDIR/USER/PWD)
-    redirects: list[Redirect]  # (연산자 '>' | '>|' | '&>' | '>>' | '<' …, 대상 원형)
-    context: Context           # host | container(이름, 종류 exec|run|compose-exec|compose-run, 정적 마운트)
-    stdin_from: str | None     # 파이프 앞 단위가 리터럴 셸 코드를 내는 경우 그 코드(§재귀)
+    name: str                      # 래퍼 제거 후 명령 이름(basename, 앞 \ 제거). 단어가 없으면 ""
+    argv: list[Word]               # argv[0] = 명령 단어. Word = 따옴표 종류를 보존한 조각 목록(단계 1)
+    redirects: list[Redirect]      # (op, fd, 대상 Word, heredoc 본문)
+    cwd: str | None                # 이 단위 실행 시점의 현재 폴더(cd 추적, 모르면 None)
+    env: dict[str, str | None]     # 확정 변수(None = 값 미확정). 초기값: 호출자 환경의 HOME·TMPDIR·USER 와 PWD(= cwd)
+    context: Context = HOST        # host | container(이름, 종류 exec|run|compose-exec|compose-run, 마운트, compose 프로젝트명)
+    depth: int = 0                 # 재귀 깊이(0 = 최상위)
+    via_xargs: bool = False        # xargs 가 실행하는 명령(대상은 입력에서 옴)
 ```
+파이프로 셸에 넘기는 리터럴 코드(단계 7)는 별도 필드 없이 안쪽 단위(`depth+1`)로 펼쳐 같은 목록에 넣는다.
+정확한 타입 정의는 구현 계획 Task 1~3 의 Interfaces 가 정본이다.
 
 처리 순서와 규칙:
 
@@ -215,7 +221,8 @@ class Segment:
 3. **리다이렉트 분리**: 리다이렉트 토큰과 대상 단어를 `redirects` 로 보내고 인자에서 뺀다(기존 결함: `2>/dev/null` 을 rm 대상으로 해석).
    `>&m`·`<&m`(fd 복제)은 파일 대상이 아니다.
 4. **할당·환경 추적**: 단위 맨 앞 `VAR=val` 만 있는 단위는 이후 단위의 `env` 에 반영. `export`·`declare`·`typeset`·`local`
-   (`-x` 등 옵션 무시)의 `VAR=val` 도 반영. `VAR=val cmd` 접두는 그 단위에만 적용. 값에 명령 치환이 있으면 미확정.
+   (`-x` 등 옵션 무시)의 `VAR=val` 도 반영. `VAR=val cmd` 접두는 그 단위에만 적용. 값은 할당 시점에 확장해 저장한다
+   (bash 와 같게: 앞 `~`·확정 변수·`$(pwd)` 확장). 확장할 수 없는 요소(명령 치환 등)가 있으면 미확정(None).
 5. **cd 추적**: `cd DIR`·`pushd DIR` → cwd 갱신(상대경로는 이전 cwd 기준, `~`·변수 확장). `cd`(인자 없음) → `$HOME`.
    `cd -`·`popd`·확장 실패 → cwd `None`(이후 상대경로 대상은 미확정).
    `git -C DIR`, `make -C DIR`(git 만 판정) 는 해당 명령의 cwd 로 반영.
@@ -256,14 +263,19 @@ class Segment:
 | 순서 | 분류 | 조건 | 기본 판정 |
 |---|---|---|---|
 | 1 | `UNRESOLVED` 확정 불가 | 정규화 1 | 보호 |
-| 2 | `PROTECTED_NAME` 보호 이름 | 경로 구성요소에 `.git`(폴더·파일), 파일명이 `.env` 또는 `.env.*`(단 `.env.example`·`.env.sample`·`.env.template` 제외 — 공개용 견본), `*.local.json`·`*.local.yaml`·`*.local.toml`, `*.pem`·`*.key`·`id_rsa*`·`id_ed25519*`·`id_ecdsa*`, `.netrc`, `credentials*`, 경로에 `.ssh/`·`.gnupg/`·`.aws/` | 보호 |
+| 1a | `PRESERVED`(옮겨진 유일본) | 공유 장부(§3.7)에 경로 자신, 그 상위 경로, 또는 (폴더면) 그 하위 경로의 `moved-in` 기록이 있음 | 보호 |
+| 2 | `PROTECTED_NAME` 보호 이름 | 경로 구성요소에 `.git`(폴더·파일), 파일명이 `.env` 또는 `.env.*`(단 `.env.example`·`.env.sample`·`.env.template` 제외 — 공개용 견본), `*.local.json`·`*.local.yaml`·`*.local.yml`·`*.local.toml`, `*.pem`·`*.key`·`id_rsa*`·`id_ed25519*`·`id_ecdsa*`, `.netrc`, `credentials*`, 경로에 `.ssh/`·`.gnupg/`·`.aws/` | 보호 |
 | 3 | `GIT_TRACKED` git 추적 | 가장 가까운 git 작업 트리(`git -C <부모> rev-parse --show-toplevel`) 안이고 `git ls-files --error-unmatch -- <경로>` 성공 | 작업별(§3.5) |
 | 4 | `SCRATCH` 임시 폴더 | 아래 임시 루트의 **하위**(루트 자체 아님) | 허용 |
-| 5 | `SESSION_NEW` 세션 생성 | 생성 시각 ≥ 세션 시작 **그리고** 장부에 `pre-session` 으로 기록되지 않음 | 허용 |
-| 6 | `IGNORED_ARTIFACT` 빌드 산출물 | git 작업 트리 안이고 `git check-ignore -q -- <경로>` 성공(세션 전 생성) | 허용 |
-| 7 | `PRESERVED` 보호 | 그 외 전부: 추적·무시 어느 쪽도 아닌 세션 전 파일, 저장소 밖 세션 전 파일, 생성 시각을 못 읽는 경로(`/mnt/c` 등 — 값 0) | 보호 |
+| 5 | `SESSION_NEW` 세션 생성 | 생성 시각 ≥ 세션 시작 **그리고** 공유 장부(§3.7)에 이 세션의 `pre-session` 기록이 없고 **다른 세션의 `created` 기록도 없음** | 허용 |
+| 6 | `IGNORED_ARTIFACT` 재생성 산출물 | git 작업 트리 안이고 `git check-ignore -q -- <경로>` 성공이며, **저장소 안 경로 구성요소 중 하나가 `REGENERABLE_NAMES` 이거나 확장자가 `.pyc` `.pyo` `.o` `.class`** | 허용 |
+| 7 | `PRESERVED` 보호 | 그 외 전부: 추적·무시 어느 쪽도 아닌 세션 전 파일, **재생성 이름이 아닌 ignore 대상**(데이터·로컬 설정), 저장소 밖 세션 전 파일, 생성 시각을 못 읽는 경로(`/mnt/c` 등 — 값 0) | 보호 |
 
-- **임시 루트**: `/tmp`, `/var/tmp`, `$TMPDIR`(설정 시), `~/.cache`, `/mnt/c/Users/*/AppData/Local/Temp`, `/mnt/c/Windows/Temp`.
+`REGENERABLE_NAMES` = `node_modules` `dist` `build` `.next` `.nuxt` `target` `__pycache__` `.pytest_cache` `.ruff_cache` `.mypy_cache`
+`.tox` `.venv` `venv` `coverage` `.coverage` `.gradle` `.parcel-cache` `.turbo` `.cache`(허용 쪽 목록 — 빠진 이름은 보호로 떨어진다).
+
+- **임시 루트**: `/tmp`, `/var/tmp`, `$TMPDIR`(설정 시), `~/.cache`, `/mnt/c/Windows/Temp`, 그리고 경로 패턴
+  `/mnt/c/Users/*/AppData/Local/Temp`(패턴 일치로 판정 — 그 사용자 폴더의 실재 여부와 무관).
   ★ 임시 루트 **자체**나 루트 바로 아래 와일드카드(`rm -rf /tmp/*`)는 다른 세션·프로세스의 파일까지 지우므로
   `SCRATCH` 가 아니라 확정 불가로 본다(대안: "자기 세션 폴더로 범위를 좁혀라").
 - **세션 시작**: `stat -c %.9W <transcript_path>`. 값을 못 얻으면(0·오류) `SESSION_NEW` 는 어떤 경로에도 적용하지 않는다(보수적).
@@ -272,8 +284,11 @@ class Segment:
   커널 시각 해상도가 수 ms 라 연속 생성 파일이 같은 값을 받는다 → 비교는 `>=`.
 - **폴더 규칙**: 대상이 폴더면 안의 항목을 `os.walk`(심볼릭 링크 따라가지 않음)로 최대 **2,000개**까지 분류하고,
   **가장 보호 쪽 분류**를 폴더의 분류로 한다(보호 > 추적 > 허용). 상한 초과 → 확정 불가("범위를 좁혀라").
-  최적화: 폴더 자체가 `SESSION_NEW` 면(안의 것도 모두 그 이후 생성) 순회 없이 `SESSION_NEW`.
-  폴더 자체가 ignore 대상이면 순회 없이 `IGNORED_ARTIFACT`. 폴더 아래 추적 파일 존재 여부는 `git ls-files -- <폴더>` 한 번으로 확인.
+  폴더 자체가 `SESSION_NEW` 여도 **순회한다** — `mv` 는 생성 시각을 유지하므로 세션 전 유일본을 세션 폴더로 옮겨 넣고
+  폴더째 지우는 경로를 막는다(감사 rootcause-s1-003). 순회 생략은 폴더가 `IGNORED_ARTIFACT`(재생성 이름 안쪽)일 때뿐이며 그때도 분류 1a 를 먼저 본다.
+  심볼릭 링크는 따라가지 않으므로 순환 링크도 순회가 끝나며, 링크 항목은 링크 자체(`lstat`)로 분류한다. 순회 중 읽기 오류 →
+  확정 불가. 폴더 아래 추적 파일 존재 여부는 `git ls-files -- <폴더>` 한 번으로 확인. 순회를 생략하는 재생성 산출물 폴더도
+  분류 1a(장부의 `moved-in` 접두 일치)는 먼저 확인하므로, `mv` 로 옮겨 넣은 유일본은 보호된다(D14).
 - **워크트리 최상위 예외**: 대상 폴더가 git 작업 트리의 최상위이고 `.git` 이 파일(linked worktree)이면,
   추적 파일은 커밋에 있으므로 무시하고 "커밋 안 된 변경"(§3.5 git 규칙)으로만 판정한다.
 - **작업 영역**(디스크·권한 규칙용): 임시 루트 하위, 또는 어떤 git 작업 트리 안(`.git` 내부 제외).
@@ -330,12 +345,13 @@ class Segment:
 
 판정은 해당 명령의 저장소(`-C`·cwd)에서 git 을 조회해 한다.
 
-**세션 변경 판정**(커밋 안 된 수정이 이번 세션 것인가): 수정된 파일의 수정 시각(`%Y`) ≥ 세션 시작이고, 장부에
-`pre-dirty`(세션이 처음 손대기 전부터 수정돼 있었음)로 기록되지 않았으면 이번 세션의 변경이다.
+**세션 변경 판정**(커밋 안 된 수정이 이번 세션 것인가): §3.7 '이번 세션 변경' 정의 그대로 — 수정 시각(`%Y`) ≥ 세션 시작,
+이 세션의 `pre-dirty` 없음, 세션 시작 이후 다른 세션의 `touched` 없음.
 
 | 명령 | 판정 |
 |---|---|
-| `branch -d|-D`, `reset`(`--hard` 아님), `rebase`, `commit --amend`, `update-ref -d`, `switch`/`checkout <브랜치>`(강제 아님 — 덮일 변경이 있으면 git 이 스스로 거부), `worktree add`, `worktree remove`(`--force` 없음 — 같은 이유), `stash pop|apply|push`, `rm`(`-f` 없음 — 수정된 파일은 git 이 거부), `restore --staged`만 | 허용 |
+| `branch -d`, `reset`(`--hard` 아님), `rebase`, `commit --amend`, `update-ref -d`, `switch`/`checkout <브랜치>`(강제 아님 — 덮일 변경이 있으면 git 이 스스로 거부), `worktree add`, `worktree remove`(`--force` 없음 — 같은 이유), `stash pop|apply|push`, `rm`(`-f` 없음 — 수정된 파일은 git 이 거부), `restore --staged`만 | 허용 |
+| `branch -D B` | B 가 push 해 둔 상태(upstream `branch.B.remote` 가 있고, 그 추적 ref 가 사라졌거나 — 병합 후 원격 삭제 — `git rev-list --count <upstream>..B` = 0)이거나, B 끝 커밋이 B 외 다른 ref 에서 도달 가능하거나(`git for-each-ref --contains`), B 가 이번 세션에 만들어졌으면(`git reflog show --format=%ct refs/heads/B` 의 가장 오래된 값 ≥ 세션 시작) 허용. 아니면 거부 — "어디에도 남지 않는 커밋이 있다. 먼저 push 하거나 태그를 남겨라" |
 | `push`(아래 예외 외 전부: 기능 브랜치 강제 push, `+ref`, `--delete`, `--force-with-lease` 포함) | 허용 |
 | `push` 의 대상 ref 가 **기본 브랜치**이면서 `--force`·`-f`·`+ref`·`--delete`·`:ref`, 또는 `--mirror` | 거부 — "기본 브랜치 원격 이력 덮어쓰기. 기능 브랜치로 push 하고 PR 을 열어라" |
 | `reset --hard`, `checkout [--] <경로|.>`, `checkout -f`, `switch -f|--discard-changes`, `restore <경로>`(작업 트리 대상), `rm -f|--force <경로>`, `worktree remove --force`, linked worktree 최상위 폴더의 `rm -r` | 영향 범위의 커밋 안 된 변경(`git status --porcelain=v1 -z --untracked-files=no -- <범위>`)이 없거나 전부 이번 세션 변경이면 허용, 아니면 거부 — "먼저 `git stash push -u` 하거나 커밋하라" |
@@ -355,7 +371,7 @@ class Segment:
 | `docker volume rm V…`, `docker volume prune`, `docker system prune --volumes`, `docker compose down -v|--volumes` | 각 볼륨의 `CreatedAt` ≥ 세션 시작이면 허용, 아니면 거부 — "기존 볼륨(데이터)이다. 사용자에게 요청하라" |
 | 그 외 docker 명령(`rm`, `stop`, `build`, `compose up/down`(볼륨 없이) 등) | 허용 |
 
-- 대상 볼륨 목록: `volume rm` 은 인자, `volume prune` 은 `docker volume ls -q -f dangling=true`, `compose down -v` 는
+- 대상 볼륨 목록: `volume rm` 은 인자, `volume prune`·`system prune --volumes` 는 `docker volume ls -q -f dangling=true`, `compose down -v` 는
   `docker volume ls -q -f label=com.docker.compose.project=<프로젝트명>`(프로젝트명은 `-p` 인자 또는 compose 파일 폴더명).
 - Docker 조회 실패(데몬 없음 등) → 볼륨 삭제는 확정 불가(거부), 컨테이너 안 경로는 허용.
 
@@ -364,27 +380,37 @@ class Segment:
 - `docker exec [옵션] 컨테이너 명령…` / `docker compose exec [옵션] 서비스 명령…` → 컨테이너 이름(또는
   `docker compose ps -q 서비스`의 ID)으로 `docker inspect --format '{{json .Mounts}}'` 를 **한 번** 조회해 마운트 표를 얻는다.
 - `docker run|compose run` → 마운트는 `-v/--volume SRC:DST`, `--mount type=bind|volume,source=…,target=…` 인자에서 정적으로 얻는다.
-- 안쪽 명령은 §3.3 으로 해석(`sh -c` 재귀 포함). 대상의 컨테이너 경로가 마운트 `Destination` 하위면 `Source`(bind) 또는
-  볼륨 이름(volume)으로 사상한다. 마운트 하위가 아니면 컨테이너 내부 경로 → 허용.
+- 안쪽 명령은 §3.3 으로 해석(`sh -c` 재귀 포함). 대상의 컨테이너 경로가 마운트 `Destination` 자체이거나 그 하위면 `Source`(bind) 또는
+  볼륨 이름(volume)으로 사상한다(`rm -rf /app` 처럼 Destination 자체를 지우면 Source 폴더의 내용 전체가 대상). 마운트 밖이면 컨테이너 내부 경로 → 허용.
+- compose 계열은 `-p/--project-name` 값을 컨테이너 조회(`docker compose -p <p> ps -q <서비스>`)에 쓴다.
 - 시스템 경로 거부 규칙은 **호스트 경로에만** 적용된다.
 - 세션 자체가 컨테이너 안에서 도는 경우(devcontainer)는 범위 밖(§13).
 
-### 3.7 세션 장부 (`touch-ledger.py` 와 판정기 공용)
+### 3.7 공유 장부 (`touch-ledger` 와 판정기 공용)
 
-문제: Edit 도구·`sed -i`·`git checkout` 은 파일을 바꿔치기해 생성 시각이 갱신된다(실측). 그래서 세션 전 파일을
-한 번 고치면 `SESSION_NEW` 로 오분류된다.
+문제 ①: Edit 도구·`sed -i`·`git checkout` 은 파일을 바꿔치기해 생성 시각이 갱신된다(실측) → 세션 전 파일을 한 번 고치면 `SESSION_NEW` 로 오분류된다.
+문제 ②: 같은 저장소를 동시에 쓰는 다른 세션이 만든·고친 파일도 "세션 시작 뒤"라 이 세션 것으로 보인다(D12).
 
-- 위치: `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/ledger/<session_id>.tsv`
-- 행: `<realpath>\t<kind>\t<epoch>` — `kind` 는 `pre-session`(세션 전부터 있던 파일) 또는 `pre-dirty`(세션이 처음 손대기
-  전부터 커밋 안 된 수정이 있던 추적 파일).
+- 위치: `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/ledger.tsv` — **모든 세션이 공유하는 파일 하나**.
+- 행: `<realpath>\t<kind>\t<session_id>\t<epoch>`. `kind`:
+  - `pre-session`: 기록한 세션이 처음 손대기 직전, 생성 시각이 그 세션 시작보다 앞이던 파일
+  - `pre-dirty`: 기록한 세션이 처음 손대기 전부터 커밋 안 된 수정이 있던 추적 파일
+  - `created`: 기록한 세션이 Write 로 새로 만든 파일
+  - `touched`: 기록한 세션이 Write·Edit·NotebookEdit 로 고친 파일(매번, 시각 포함)
+  - `moved-in`: 판정기가 해석한 `mv` 의 원본이 보호 분류(`GIT_TRACKED`·`PRESERVED`·`PROTECTED_NAME`)일 때 그 목적지 경로(목적지가 폴더면 `폴더/원본이름`)
+- 쓰기: 한 줄 = `os.write` 1회(`O_APPEND`). 같은 (경로, kind, 세션) 은 다시 쓰지 않는다(`touched` 는 매번).
+  파일이 5MB 를 넘으면 `fcntl.flock` 을 잡고 7일 지난 줄을 뺀 내용으로 다시 쓴다.
 - 기록 주체:
-  1. `touch-ledger.py`: PreToolUse 매처 `Write|Edit|NotebookEdit`. `tool_input.file_path` 가 존재하고 생성 시각 < 세션
-     시작이면 `pre-session` 기록. 추적 파일이고 이미 수정 상태면 `pre-dirty` 기록. 이미 있는 경로는 다시 쓰지 않는다.
-     항상 출력 없음(판정에 개입하지 않음), 종료 0. `HARNESS_BASH_GUARD` 가 `shadow`·`on` 이 아니면 즉시 종료(꺼진 프로젝트의 Write·Edit 비용 0).
-  2. 판정기: 해석한 단위가 `sed -i`·`perl -pi|-i`·`git checkout <경로>`·`git restore <경로>` 등 제자리 수정이면 같은 규칙으로 기록.
-- 조회: §3.4 분류 5, §3.5 세션 변경 판정.
-- 정리: 장부 쓰기 시 수정 시각이 7일 지난 장부 파일을 지운다.
-- 한계: 임의 스크립트가 바꿔치기한 세션 전 파일은 기록되지 않는다(§13).
+  1. `touch-ledger`(PreToolUse 매처 `Write|Edit|NotebookEdit`, 대상 = `tool_input.file_path` 또는 `notebook_path`): 경로가 없으면 `created`.
+     있으면 생성 시각 < 세션 시작이면 `pre-session`, 추적 파일이고 이 세션의 `touched` 가 아직 없는데 이미 수정 상태면 `pre-dirty`.
+     그리고 `touched`. 항상 출력 없음, 종료 0. **스위치와 무관하게 항상 기록**한다(D14) — 기록 시점에 꺼져 있던 파일도 나중에 켜진 판정이 정확히 본다.
+  2. 판정기: 해석한 단위가 `sed -i`·`perl -pi|-i`·`git checkout <경로>`·`git restore <경로>` 등 제자리 수정이면 그 대상에 같은 규칙(`created` 제외).
+     `mv` 단위는 원본을 분류해 보호 분류면 목적지를 `moved-in` 으로 기록한다. 판정기도 모드와 무관하게 기록한다.
+- 조회(세션 S 기준):
+  - `SESSION_NEW` = 생성 시각 ≥ S 시작 ∧ S 의 `pre-session` 없음 ∧ 다른 세션의 `created` 없음
+  - 이번 세션 변경 = 수정 시각 ≥ S 시작 ∧ S 의 `pre-dirty` 없음 ∧ S 시작 이후 다른 세션의 `touched` 없음
+- 조회 추가: 분류 1a — 경로 자신·상위·(폴더면) 하위 경로에 `moved-in` 이 있으면 보호.
+- 한계: 다른 세션이 Bash 로 만든·고친 파일, 임의 스크립트가 바꿔치기한 세션 전 파일, 스크립트 안의 `mv` 는 기록되지 않는다(§13).
 
 ### 3.8 실패 정책과 시간 예산
 
@@ -392,18 +418,22 @@ class Segment:
 |---|---|
 | (가) 해석 실패 | 원문에 삭제·덮어쓰기·git 파괴 관련 단어(`rm` `unlink` `shred` `truncate` `dd` `mkfs` `-delete` `reset` `clean` `restore` `checkout` `push` `volume` `prune` `>`)가 **단어 경계로** 있으면 거부("명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"), 없으면 허용 |
 | (나) 대상 확정 불가 | 해당 작업의 `UNRESOLVED` 규칙(거부 + 대안) |
-| (다) 판정기 내부 예외·잘못된 출력 | 허용 + 오류 기록(§3.9). 입구 스크립트가 파이썬 실패도 같은 규칙으로 처리 |
-| 시간 예산 초과(내부 마감 5초) | 이미 파괴 작업을 감지했으면 거부("판정 시간 초과 — 범위를 좁혀라"), 아니면 허용. 외부 명령(git·stat·docker·find)은 개별 `timeout=2`초 |
+| (다) 판정기 내부 예외·잘못된 출력 | 현행 판정(OLD)을 그대로 출력 + 오류 기록(§3.9). 입구 스크립트도 파이썬이 뜨지 않거나 출력이 비면 OLD 출력 |
+| 시간 예산 초과(내부 마감 5초) | 그때까지 **판정 대상 작업**(§3.5 표에서 판정 행에 해당하는 단위: 삭제·덮어쓰기·디스크·시스템·재귀 권한, git 의 판정 행 하위명령, docker 볼륨 삭제, 컨테이너 문맥 단위)을 만났으면 거부("판정 시간 초과 — 범위를 좁혀라"), 아니면 허용. 외부 명령(git·stat·docker·find)은 개별 `timeout=2`초 |
 
 플랫폼 제한 10초(`hooks.json` timeout)는 유지한다. 실측 지연: 파이썬 기동+import 35ms, 해석 p99 0.5ms,
 git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1ms, `docker inspect` 33~68ms.
 
 ### 3.9 기능 스위치와 기록
 
-- `HARNESS_BASH_GUARD`(프로젝트 settings `env` 또는 세션 env): `off`(기본) | `shadow` | `on`. 그 외 값 → `off`.
-  - `off`: 기존 `auto-approve-readonly.sh` 로직 그대로.
-  - `shadow`: 기존 로직이 판정·출력. 새 판정기는 같은 입력으로 판정만 하고, 신·구 결과가 다르면 기록.
-  - `on`: 새 판정기가 판정·출력.
+- 스위치 `HARNESS_BASH_GUARD`: `off`(기본) | `shadow` | `on`. 그 외 값 → `off`. **대상 저장소 기준으로 판정한다**(D10).
+  - 경로의 저장소 값: 경로에서 위로 올라가 처음 만나는 `.git`(폴더·파일)을 가진 폴더 R 의 `R/.claude/settings.local.json`·
+    `R/.claude/settings.json` 의 `env.HARNESS_BASH_GUARD`(local 우선). R 이 없거나 `$HOME`·`/` 이면 값 없음.
+  - 명령의 모드 = {세션 env 값, cwd 의 저장소 값, 판정 대상 작업의 모든 대상 경로의 저장소 값} 중 가장 강한 것(`on` > `shadow` > `off`).
+  - `off`: 현행 판정 그대로. `shadow`: 현행 판정 출력 + 새 판정과 다르면 기록. `on`: 새 판정 출력.
+- 입구 흐름: 기존 로직이 먼저 현행 판정 OLD 를 만든다 → `bash_guard.py --old "$OLD"` 가 새 판정과 모드를 정해 최종 출력을 낸다
+  (`off`·`shadow` 는 OLD 를 바이트 그대로, OLD 가 비면 출력 없음). 파이썬이 뜨지 않거나 출력이 비면 입구가 OLD 를 출력한다.
+  비용: 스위치와 무관하게 모든 Bash 호출에서 파이썬 판정이 돈다(기동 약 35ms — 사용자 수용 2026-10-14).
 - 기록 파일: `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/bash-guard.jsonl`. 한 줄 JSON:
   `{ts, mode, session_id, agent_id, cwd, command(최대 2000자), decision, old_decision(shadow), reasons[], ms, error}`.
   기록 대상: `on` 의 거부·오류, `shadow` 의 신·구 불일치·오류. 10MB 초과 시 `.1` 로 한 번 순환.
@@ -463,39 +493,31 @@ plugins/harness-core/
     │   ├── target_class.py            # 신규: §3.4 (+ 장부 조회)
     │   ├── policy.py                  # 신규: §3.5·§3.6 (정책 데이터 표)
     │   ├── ledger.py                  # 신규: §3.7 읽기·쓰기 공용
-    │   ├── touch-ledger.py            # 신규: Write|Edit 장부 훅
+    │   ├── touch-ledger.py            # 신규: Write|Edit 장부 훅(스위치와 무관하게 항상 기록)
     │   └── code-read-guard.py         # 유지(이번 범위에서 호출 방식 변경 없음 — §12)
     └── tests/
         ├── test_shell_parse.py        # 신규: 해석기 단위
-        ├── test_target_class.py       # 신규: 분류기·git·docker 조회 단위(임시 저장소, 가짜 docker)
+        ├── test_target_class.py       # 신규: 분류기·git·docker 조회 단위(임시 저장소, 실제 docker — 없으면 skip)
         ├── test_policy.py             # 신규: 작업 × 분류 판정 단위
         ├── test_bash_guard.py         # 신규: 입출력 종단 + 오탐 회귀 + 누락 + 시나리오(§8)
         ├── test_touch_ledger.py       # 신규
-        ├── test-bash-guard-entry.sh   # 신규: 입구 스위치(off 동일성·shadow·on·파이썬 실패 시 allow)
-        ├── _world.py                  # 신규: 테스트용 가상 세계(홈·저장소·bare 원격·세션 전/후 파일·가짜 docker) 빌더
+        ├── test-bash-guard-entry.sh   # 신규: 입구 스위치(off 동일성·shadow·on·파이썬 기동 실패 시 OLD)
+        ├── _world.py                  # 신규: 테스트용 세계(홈·저장소·bare 원격·세션 전/후 파일·실제 docker 자원) 빌더
         ├── fixtures/                  # 신규: 재구성 사례(JSON). 실제 세션 명령 원문 금지
         └── tools/replay_corpus.py     # 신규: 로컬 전수 재생 도구(결과는 저장소 밖)
 ```
 
-입구 스크립트 분기(개념):
+입구 스크립트 흐름(개념):
 
 ```sh
 INPUT=$(cat)
-# (기존) code-read-guard 블록 — 세 모드 공통, 지금 위치·동작 그대로. deny 가 나오면 출력하고 종료.
-mode="${HARNESS_BASH_GUARD:-off}"
-case "$mode" in
-  on)     OUT=$(printf '%s' "$INPUT" | python3 "$(dirname "$0")/bash_guard.py") \
-            && [ -n "$OUT" ] && { printf '%s\n' "$OUT"; exit 0; }
-          # 파이썬 실패·빈 출력 = §3.8 (다): allow (bash_guard 가 가능하면 오류를 기록)
-          printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n' ;;
-  shadow) OLD=$(printf '%s' "$INPUT" | old_logic)
-          printf '%s' "$INPUT" | python3 "$(dirname "$0")/bash_guard.py" --shadow-old "$OLD" >/dev/null 2>&1 || :
-          printf '%s\n' "$OLD" ;;
-  *)      printf '%s' "$INPUT" | old_logic ;;                            # 현행 그대로
-esac
+# (기존) code-read-guard 블록 — 지금 위치·동작 그대로. deny 가 나오면 출력하고 종료.
+OLD=$(printf '%s' "$INPUT" | old_logic)          # 현행 rm 가드 + 위험 패턴 + 기본 allow (현행과 같은 출력)
+OUT=$(printf '%s' "$INPUT" | python3 "$(dirname "$0")/bash_guard.py" --old "$OLD" 2>/dev/null) || OUT=""
+if [ -n "$OUT" ]; then printf '%s\n' "$OUT"; elif [ -n "$OLD" ]; then printf '%s\n' "$OLD"; fi
 ```
 
-(`old_logic` 은 현재 스크립트의 rm 가드 + 위험 패턴 + 기본 allow 부분을 stdin 을 읽는 함수로 감싼 것. `off` 출력은 현행과 바이트 단위로 같아야 한다.)
+(`bash_guard.py` 는 모드가 `off`·`shadow` 면 OLD 를 그대로 출력한다. 모든 스위치가 꺼진 상태의 출력은 현행과 바이트 단위로 같아야 한다.)
 
 ## 7. Code Style
 
@@ -504,36 +526,28 @@ esac
 
 ```python
 #!/usr/bin/env python3
-"""policy.py — 작업 × 대상 분류 → 허용/거부(사유+대안).
+"""policy.py — 명령 단위 × 대상 분류 → 거부 사유(Finding) 목록.
 
 ★왜: 명령 모양이 아니라 '무엇이 사라지는가'로 판정한다(spec 2026-10-14-bash-guard-design §3.5).
-계약: decide(op, cls) -> Verdict. 표에 없는 조합은 허용(판정기 밖 = 플랫폼 몫).
-테스트: python3 hooks/tests/test_bash_guard.py
+계약: evaluate(seg, ctx) -> list[Finding]. 빈 목록 = 이 단위는 허용(판정 대상 밖 포함).
+테스트: python3 hooks/tests/test_policy.py
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-ALLOW_ON_DELETE = {"SCRATCH", "SESSION_NEW", "IGNORED_ARTIFACT", "MISSING"}
-
-DELETE_ADVICE = {
-    "GIT_TRACKED": "`git rm <경로>` 로 삭제하라(변경 내역에 남아 검토·복구 가능)",
-    "PROTECTED_NAME": "세션 전부터 있던 유일본이다. 정말 지워야 하면 사용자에게 요청하라",
-    "PRESERVED": "세션 전부터 있던 유일본이다. 정말 지워야 하면 사용자에게 요청하라",
-    "UNRESOLVED": "대상을 리터럴 경로로, 범위를 좁혀 다시 실행하라",
-}
+KIND_TEXT = {"GIT_TRACKED": "git 이 추적하는 파일", "PRESERVED": "세션 전부터 있던 유일본"}  # 전체 표는 구현 계획 Task 7
 
 
 @dataclass(frozen=True)
-class Verdict:
-    allow: bool
-    reason: str = ""
+class Finding:
+    op: str
+    target: str
+    kind: str
+    advice: str
 
-
-def decide_delete(path: str, cls: str) -> Verdict:
-    if cls in ALLOW_ON_DELETE:
-        return Verdict(True)
-    return Verdict(False, f"거부: 삭제 {path} — {cls}. 대안: {DELETE_ADVICE[cls]}")
+    def reason(self) -> str:
+        return f"거부: {self.op} {self.target} — {KIND_TEXT[self.kind]}. 대안: {self.advice}"
 ```
 
 ## 8. Testing Strategy
@@ -544,30 +558,37 @@ def decide_delete(path: str, cls: str) -> Verdict:
 | 묶음 | 내용 | 기대 |
 |---|---|---|
 | 단위: 해석기 | 구분자·서브셸 원복·리다이렉트 분리·할당/export·cd/pushd/cd -·래퍼 6종 이상·재귀(`bash -c`, `eval`, heredoc→sh, 리터럴 `echo … \| sh`, `$( )`, 백틱)·docker 문맥·해석 실패 | 기대 Segment |
-| 단위: 분류기 | 임시 git 저장소를 만들고 세션 시작 파일(가짜 transcript)을 기준으로 7분류 각각 + 폴더 규칙(혼합 내용, 2,000 상한) + 워크트리 최상위 + 심볼릭 링크 + 없는 경로 + `/tmp/*` 루트 와일드카드 | 기대 분류 |
+| 단위: 분류기 | 임시 git 저장소를 만들고 세션 시작 파일(테스트용 transcript 파일)을 기준으로 7분류 각각 + 폴더 규칙(혼합 내용, 2,000 상한) + 워크트리 최상위 + 심볼릭 링크 + 없는 경로 + `/tmp/*` 루트 와일드카드 | 기대 분류 |
 | 단위: 정책 | 작업 × 분류 조합 전수 | 기대 판정 |
 | 오탐 회귀 (`fixtures/false_positive.json`) | §1.3 유형별 **재구성** 사례: 따옴표 안 `'rm -rf ~'`, heredoc 본문, `python -c "…rm -rf /…"`, `git push -q origin --delete feat/x; git log -1 --format=%h`, 세션 생성 파일 `rm -f src/probe.ts`, 프로젝트 안 절대경로의 ignore 산출물, `rmdir`, `git clean -n`, `--force-with-lease`, 파일 대상 `dd`, `xargs -0 git rm --cached`(xargs 뒤가 rm 이 아니라 git rm), 컨테이너 안 `/etc` 수정, `2>/dev/null` | 전부 allow |
 | 누락 (`fixtures/false_negative.json`) | 부록 B 의 정직한 실수 형태 전부(난독화 제외) | 전부 deny |
 | PR 흐름 시나리오 | worktree add → 파일 생성·커밋 → push -u → rebase 후 `push --force` → `worktree remove` → `branch -D` → `push --delete` | 전부 allow |
 | 자기 변경 되돌리기 | 세션 중 추적 파일 수정 후 `git checkout -- f`·`reset --hard` | allow. 세션 전부터 수정돼 있던 파일(장부 pre-dirty) 포함 시 deny |
-| Docker | 실제 컨테이너가 있으면: 마운트 안 된 경로 `rm -rf /var/lib/x` allow, 바인드 마운트된 프로젝트 경로 삭제 deny, 이름 볼륨(세션 전) 삭제 deny. Docker 없으면 inspect 결과를 주입하는 단위 테스트로 대체 | 기대 판정 |
-| 출력 계약 | 모든 사례에서 stdout 이 유효 JSON, `ask` 미출현, 종료 0 | — |
+| Docker | 실제 Docker 로 로컬 이미지 컨테이너·볼륨을 만들어: 마운트 안 된 경로 `rm -rf /var/lib/x` allow, 바인드 마운트된 프로젝트 경로 삭제 deny, 이름 볼륨(세션 전) 삭제 deny. Docker 가 없거나 `sh -c 'sleep'` 이 도는 로컬 이미지가 없으면 그 테스트는 skip 하고 사유를 출력(대역 금지, D13) | 기대 판정 |
+| 출력 계약 | `on` 모드 새 판정기 출력이 모든 사례에서 유효 JSON, `ask` 없음, 종료 0. off·shadow 는 현행과 바이트 동일 | — |
 | 전수 재생 (로컬, 수동) | `replay_corpus.py` 로 실제 명령 전부 판정 | 오류 0, p99 ≤ 150ms, 거부 목록 사람 검토 |
 
 픽스처 규칙:
 
 - **공개 저장소이므로 실제 세션 명령 원문을 픽스처·커밋·PR 본문에 넣지 않는다.** 유형을 재현하는 최소 사례를 새로 쓴다.
   경로는 임시 폴더와 가상 이름(`/home/u/proj`)만 쓴다.
-- 생성 시각 의존 테스트는 "가짜 transcript 생성 → 20ms 대기 → 세션 파일 생성" 순으로 만든다(커널 시각 해상도).
-  세션 전 파일은 transcript 보다 먼저 만든다.
+- 생성 시각 의존 테스트는 "세션 전 파일 생성 → 20ms 대기 → transcript 생성 → 20ms 대기 → 세션 파일 생성" 순으로
+  **양쪽 경계에 대기**를 둔다(커널 시각 해상도가 수 ms 라 연속 생성 파일은 같은 값을 받는다).
+- 테스트 세계는 임시 루트도 git 저장소도 아닌 tmpfs(`$XDG_RUNTIME_DIR`, 없으면 `/dev/shm` — 생성 시각 지원 실측)에 만들고,
+  `TMPDIR=<세계>/scratch` 실제 환경 변수로 세계의 임시 루트를 지정한다(모듈 패치 없음, D13).
+- **전수 재생 문맥**: transcript_path·session_id 없이 판정한다(세션 시작 미상 → `SESSION_NEW` 미적용, 보수적).
+  장부·기록은 재생 출력 폴더 아래 `XDG_STATE_HOME` 으로 돌려 실제 상태 폴더를 건드리지 않는다. 판정은 **현재 파일 상태** 기준이다.
+  SC3 의 거부 검토에서 '대상이 지금 없거나 당시 세션이 만든 것이었을 수 있어 생긴 거부'(세션 문맥 부재 때문)는
+  부당 거부로 세지 않고 따로 집계한다.
 
 ## 9. Boundaries
 
 - **Always**
   - worktree(`git -C ~/tools/claude-project-config worktree add …`)에서 개발. 운영 clone 은 `main` 고정(directory 소스라
     운영 clone 의 파일이 곧 모든 세션의 실행 코드).
-  - 커밋 전 §5 테스트·정적 검증 전부 통과.
-  - 출력 JSON 은 `json.dumps`, 종료 0, `ask` 미출력.
+  - 각 작업 커밋 전 그 작업의 테스트·정적 검증 통과. PR 전 §5 전체(전수 재생은 계획 Task 13 결과) 통과.
+  - 출력 JSON 은 `json.dumps`, 종료 0, `on` 모드 새 판정기 출력에 `ask` 없음.
+  - feature 브랜치의 작업별 커밋은 위임됨(D13). push·PR·병합은 Ask first.
   - 기능 스위치 기본값 `off` 유지.
 - **Ask first**
   - `HARNESS_BASH_GUARD` 를 어떤 프로젝트에서든 `shadow`·`on` 으로 켜는 것.
@@ -578,19 +599,20 @@ def decide_delete(path: str, cls: str) -> Verdict:
   - 세션 기록·명령 원문·기록 파일을 저장소에 커밋하거나 PR 에 붙이기(공개 저장소).
   - 외부 패키지 의존성 추가.
   - 훅에서 대상 파일을 실제로 지우거나 고치는 동작(판정기는 읽기 전용. find 미리보기도 `-print0` 만).
-  - 판정 결과 `ask` 출력.
+  - `on` 모드 새 판정기의 `ask` 출력.
+  - 테스트 대역(모듈 패치·가짜 실행 파일·주입 데이터) — D13.
   - 운영 clone 에서 직접 수정·브랜치 전환.
 
 ## 10. Success Criteria
 
-1. 모든 테스트 묶음(§8)에서 stdout 이 유효 JSON 이고 `ask` 출력 0건.
+1. `on` 모드 새 판정기 출력이 모든 테스트 묶음(§8)에서 유효 JSON 이고 `ask` 0건. off·shadow 출력은 현행과 바이트 동일.
 2. 오탐 회귀 묶음 100% allow, 누락 묶음 100% deny, PR 흐름·자기 변경 되돌리기 시나리오 기대대로.
 3. 전수 재생: 판정기 내부 오류 0건, 판정 시간 p99 ≤ 150ms, 거부된 명령 목록을 사람이 전부 검토해 부당 거부 0건
-   (검토 결과는 로컬에만 기록하고 요약 수치만 PR 에 적는다).
+   (재생 문맥은 §8 '전수 재생 문맥'. 검토 결과는 로컬에만 기록하고 요약 수치만 PR 에 적는다).
 4. `off` 모드에서 기존 테스트(`test-auto-approve-readonly.sh`, `t_auto_approve_rm.py`, `test_code_read_guard.py`) 전부 통과
    — 동작 불변.
 5. `shadow` 운용 후(§11) 신·구 불일치 기록을 검토해, 신 판정기 쪽이 틀린 사례 0건이면 `on` 전환.
-6. `check-canon.sh` 에 추가한 검사가 현재 agent·bounty 의 죽은 등록을 위반으로 보고하고(정리 전), 정리 후 0건.
+6. `check-canon.sh` 에 추가한 검사가 현재 죽은 등록 4곳(§12 E1)을 위반으로 보고하고(정리 전), 정리 후 0건.
 
 ## 11. Rollout & Rollback
 
@@ -599,9 +621,9 @@ def decide_delete(path: str, cls: str) -> Verdict:
    1줄 → 최소 3일·Bash 호출 5,000회 이상 수집. 전역(`~/.claude/settings.json`)에는 두지 않는다(사용자 규칙: 모든 폴더에서
    걸리는 동작의 스위치는 프로젝트에 — 2026-10-14 재확인). 대상 목록은 전환 시점에 사용자와 확정한다. 후보(ask 발생 상위):
    money, math, orca 작업공간(브랜치별 settings 파일이 따로 있음), phantomn.github.io, quant, bounty, tools, .agents.
-   **홈(`~`)에서 연 세션은 둘 곳이 전역뿐이라 수집에서 빠진다**(알고 받아들임).
+   홈(`~`)에서 연 세션도 스위치를 켠 저장소의 대상을 건드리면 그 저장소 값으로 판정된다(D10). 홈 자체의 파일은 대상 밖.
 3. 불일치 검토 → 판정기 수정 반복 → 기준 충족 시 사용자 승인 후 같은 프로젝트들에서 `on`.
-4. `on` 2주 무사고 후 사용자 승인으로 기존 로직·`HARNESS_RM_REPO_DIRS`·`t_auto_approve_rm.py` 제거(별도 PR). 이후
+4. `on` 2주 무사고 후 사용자 승인으로 기존 로직·`t_auto_approve_rm.py` 제거와 각 프로젝트 settings 의 `HARNESS_RM_REPO_DIRS` 정리(E5, 별도 PR). 이후
    `HARNESS_BASH_GUARD` 가 없는 프로젝트의 기본값을 `on` 으로 바꿀지는 그 PR 에서 결정한다.
 - **되돌리기**: 스위치를 `off` 로(코드 되돌림 불필요). 스위치로 해결 안 되는 결함은 PR revert.
 
@@ -611,7 +633,6 @@ def decide_delete(path: str, cls: str) -> Verdict:
 |---|---|
 | E1 죽은 등록 | `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-approve-readonly.sh` 를 등록한 프로젝트 settings 4곳에서 그 항목 제거: `~/agent`, `~/bounty`, `~/orca/workspaces/bounty/bounty-agoda`, `~/orca/workspaces/bounty/bounty-wordpress` 의 `.claude/settings.json`(2026-10-14 전수조사 기준. 각 저장소·브랜치 별도 커밋, Ask first). 근거: 이 변수는 플러그인 hooks.json 에서만 확장되어 91건 전부 "Hook command references ${CLAUDE_PLUGIN_ROOT} but the hook is not associated with a plugin" 오류 |
 | E2 게이트 | `~/.claude/check-canon.sh`(git 저장소 아닌 일반 파일 — Ask first)에 검사 함수 추가: `$SCAN_ROOT` 아래 depth 3~6 의 `*/.claude/settings*.json`(**orca 작업공간 포함** — 기존 `projects_for` 는 작업공간을 제외하지만 죽은 등록 오류가 작업공간에서도 났다. `node_modules` 제외, `is_ignored` 존중)에서 `hooks.*[].hooks[].command` 에 `${CLAUDE_PLUGIN_ROOT}` 가 있으면 위반(`BAD` 증가). 자체 시험에 음성·양성 사례 각 1개 |
-| E5 env 정리 | `on` 전환 후 각 프로젝트 settings 의 `HARNESS_RM_REPO_DIRS` 제거(§11-4) |
 | 코드 읽기 가드 | 이번 범위에서 호출 방식 유지. 별도 등록 분리는 후속(#42702 미재현 확인됨 — 분리 시 장애 요인 없음) |
 | 문서 | `README.md` 갱신, `DECISIONS.md`(§2)·`LIMITS.md`(§13) 신규 |
 
@@ -628,6 +649,10 @@ def decide_delete(path: str, cls: str) -> Verdict:
 - D3(allow 유지)로 인해 auto 모드에서는 분류기 판정이 건너뛰어진다(강한 정황). auto 모드를 쓰게 되면 D3 재검토.
 - devcontainer 등 세션 자체가 컨테이너 안에서 도는 경우의 시스템 경로 규칙은 다루지 않는다.
 - 훅 자체가 플랫폼 10초 제한에 걸려 취소되면 플랫폼이 판정 없이 실행한다(과부하 시 12건 실측). 내부 5초 마감으로 완화만 한다.
+- 동시 세션: 다른 세션이 Bash 로 만든·고친 파일은 장부에 없어 이 세션 것으로 보일 수 있다(D12 의 남는 구멍).
+- 스위치가 대상 저장소 기준이라 모든 Bash 호출에서 파이썬 판정이 돈다(약 35ms, 꺼진 곳 포함). 장부 훅도 스위치와 무관하게
+  모든 Write·Edit 에서 돈다(약 35ms, D14).
+- 스크립트·`make`·`npm run` 안의 `mv` 로 옮긴 유일본은 장부에 `moved-in` 이 없어, 재생성 산출물 폴더·임시 폴더로 옮겨진 뒤 지워지면 막지 못한다.
 
 ## 14. Reference Oracle
 
@@ -641,6 +666,11 @@ def decide_delete(path: str, cls: str) -> Verdict:
 
 1. `shadow` 를 켤 위치 → **프로젝트별**(§11-2). 홈 세션은 수집 제외.
 2. `on` 후 기존 로직 제거 시점 → **2주 무사고 후**(§11-4) 동의.
+3. 스위치 판정 → **대상 저장소 settings 기준**(D10, spec-audit 라운드 1).
+4. 동시 세션 → **공유 장부로 부분 반영**(D12).
+5. 저장소 규칙 충돌 → **작업별 커밋 위임 + 테스트 대역 최소화**(D13).
+6. 장부 기록 → **스위치와 무관하게 항상 기록**(D14, spec-audit 라운드 2).
+7. `mv` 세탁 → **목적지를 장부 `moved-in` 으로 보호**(D14).
 
 ---
 
@@ -660,7 +690,10 @@ def decide_delete(path: str, cls: str) -> Verdict:
 - **생성 시각 동작**: ext4 에서 `mv` 는 유지, `cp`·임시 파일 바꿔치기·Edit 도구·`sed -i`·`git checkout` 은 갱신. 9p(`/mnt/c`)는 0.
 - **훅 입력**: headless `claude -p --permission-mode bypassPermissions --settings <덤프 훅>` 로 메인 Bash·서브에이전트 Bash·Write 입력 덤프.
 
-## 부록 B. 누락 사례 (현행 allow, 새 판정기 deny 기대 — 정직한 실수 형태)
+## 부록 B. 누락 사례 (새 판정기 deny 기대 — 정직한 실수 형태)
+
+감사 실측(2026-10-14) 기준 32종 중 현행 allow 26, 현행 ask 6(`sudo rm -rf ~/data`, `ls ~/data | xargs rm`, `rm -rf ~/.ssh`,
+`git push --force origin main`, `dd if=/dev/zero of=/dev/sdb`, `chmod -R 777 ~`).
 
 `HOME` 아래 세션 전 데이터 폴더 `~/data`(가상), 세션 전 추적 파일이 있는 저장소를 전제로:
 
@@ -679,19 +712,26 @@ dd if=/dev/zero of=/dev/sdb    chmod -R 777 ~             echo x > /etc/hosts
 
 (현행에서 deny 였던 `rm -rf ~` 와 ask 였던 `rm -r ~/obsidian`, `rm -R /home/u/quant`, `git reset --hard HEAD~3` 도 포함)
 
-## 부록 C. 오탐 유형별 재구성 사례 (현행 ask/deny, 새 판정기 allow 기대)
+## 부록 C. 오탐 유형별 재구성 사례 (새 판정기 allow 기대)
+
+현행이 ask 또는 deny 를 내는 사례(오탐 재현):
 
 ```
-echo 'cleanup: rm -rf ~'                         jq -n --arg c "git reset --hard" '{c:$c}'
-grep -rn 'rm -rf' docs/                          python3 - <<'PY' … "rm -rf /" … PY
+jq -n --arg c "git reset --hard" '{c:$c}'        python3 - <<'PY' … "rm -rf /" … PY
 git push -q origin --delete feat/x; git log -1 --format=%h
-rm -f src/probe.ts(세션 생성)                     rm -rf /home/u/proj/.next(ignore 산출물, 절대경로)
-rm -rf build 2>/dev/null(없는 폴더)               rmdir empty-dir
-git clean -n                                     git clean -fdX(ignore 산출물만)
+rm -f src/probe.ts(세션 생성)                     rm -rf /home/u/proj/.next(재생성 산출물, 절대경로)
+rmdir empty-dir                                  git clean -fdX(재생성 산출물만)
 git push --force-with-lease origin feat/x        dd if=fw.bin of=rootfs.img bs=1 skip=10
 xargs -0 git rm --cached                         git checkout -- .serena/project.yml(이번 세션 수정)
 docker exec c sh -c 'echo x >> /etc/hosts && rm -rf /var/lib/x'(마운트 아님)
-rm -rf /tmp/claude-1000/<세션>/scratchpad/out     killall node    systemctl --user stop svc
+```
+
+현행도 allow 하는 사례(회귀 보호용 — 새 판정기도 allow 를 유지해야 함):
+
+```
+echo 'cleanup: rm -rf ~'                         grep -rn 'rm -rf' docs/
+rm -rf build 2>/dev/null(없는 폴더)               git clean -n
+rm -rf /tmp/claude-1000/<세션>/scratchpad/out     systemctl --user stop svc
 ```
 
 ## 부록 D. 선행 사례 조사 요약 (2026-10-14, Exa)
