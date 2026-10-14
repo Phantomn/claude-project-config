@@ -608,8 +608,8 @@ def decide_delete(path: str, cls: str) -> Verdict:
 
 | 항목 | 조치 |
 |---|---|
-| E1 죽은 등록 | `~/agent/.claude/settings.json`·`~/bounty/.claude/settings.json` 의 `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-approve-readonly.sh` 등록 제거(각 저장소 별도 커밋, Ask first). 근거: 이 변수는 플러그인 hooks.json 에서만 확장되어 91건 전부 "not associated with a plugin" 오류 |
-| E2 게이트 | `~/.claude/check-canon.sh` 에 검사 추가: 프로젝트 settings(`*.json` depth 2~4)의 `hooks.*.hooks[].command` 에 `${CLAUDE_PLUGIN_ROOT}` 가 있으면 위반. 자체 selftest 에 음성 사례 1개 추가. (이 파일은 다른 저장소 — Ask first) |
+| E1 죽은 등록 | `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-approve-readonly.sh` 를 등록한 프로젝트 settings 4곳에서 그 항목 제거: `~/agent`, `~/bounty`, `~/orca/workspaces/bounty/bounty-agoda`, `~/orca/workspaces/bounty/bounty-wordpress` 의 `.claude/settings.json`(2026-10-14 전수조사 기준. 각 저장소·브랜치 별도 커밋, Ask first). 근거: 이 변수는 플러그인 hooks.json 에서만 확장되어 91건 전부 "Hook command references ${CLAUDE_PLUGIN_ROOT} but the hook is not associated with a plugin" 오류 |
+| E2 게이트 | `~/.claude/check-canon.sh`(git 저장소 아닌 일반 파일 — Ask first)에 검사 함수 추가: `$SCAN_ROOT` 아래 depth 3~6 의 `*/.claude/settings*.json`(**orca 작업공간 포함** — 기존 `projects_for` 는 작업공간을 제외하지만 죽은 등록 오류가 작업공간에서도 났다. `node_modules` 제외, `is_ignored` 존중)에서 `hooks.*[].hooks[].command` 에 `${CLAUDE_PLUGIN_ROOT}` 가 있으면 위반(`BAD` 증가). 자체 시험에 음성·양성 사례 각 1개 |
 | E5 env 정리 | `on` 전환 후 각 프로젝트 settings 의 `HARNESS_RM_REPO_DIRS` 제거(§11-4) |
 | 코드 읽기 가드 | 이번 범위에서 호출 방식 유지. 별도 등록 분리는 후속(#42702 미재현 확인됨 — 분리 시 장애 요인 없음) |
 | 문서 | `README.md` 갱신, `DECISIONS.md`(§2)·`LIMITS.md`(§13) 신규 |
