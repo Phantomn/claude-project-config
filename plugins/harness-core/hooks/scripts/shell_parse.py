@@ -450,32 +450,60 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
 
     snap = (st["cwd"], dict(state_env))
     in_pipe = False
+
+    def restore() -> None:
+        st["cwd"] = snap[0]
+        state_env.clear()
+        state_env.update(snap[1])
+
+    def open_group(kind: str) -> None:
+        # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe 를 새로 시작한다
+        nonlocal snap, in_pipe
+        stack.append((kind, st["cwd"], dict(state_env), in_pipe))
+        in_pipe = False
+        snap = (st["cwd"], dict(state_env))
+
+    def close_group(kind: str) -> bool:
+        nonlocal snap, in_pipe
+        flush()
+        if in_pipe:  # 그룹 안 마지막 파이프 구성원
+            restore()
+        if not stack or stack[-1][0] != kind:
+            return False
+        _, cwd0, env0, outer_pipe = stack.pop()
+        if kind == "(" or outer_pipe:  # 서브셸, 또는 파이프 구성원인 { } 는 안쪽 변화가 밖으로 안 나간다
+            st["cwd"] = cwd0
+            state_env.clear()
+            state_env.update(env0)
+        in_pipe = outer_pipe
+        snap = (cwd0, env0)  # 그룹 뒤 `|`·`&` 가 오면 그룹 전체를 되돌리는 기준
+        return True
+
     for t in toks:
         if t.kind == "word":
-            words.append(t.word)
+            w = t.word
+            if not words and not redirects and not w.is_quoted() and w.literal() in ("{", "}"):
+                if w.literal() == "{":
+                    open_group("{")
+                elif not close_group("{"):
+                    return ParseResult([], "짝 없는 '}'")
+            else:
+                words.append(w)
         elif t.kind == "redir":
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
         elif t.op in _BOUNDARY:
             flush()
             if in_pipe or t.op in _SUBSHELL_OPS:
-                st["cwd"] = snap[0]
-                state_env.clear()
-                state_env.update(snap[1])
+                restore()
             in_pipe = t.op in ("|", "|&")
             snap = (st["cwd"], dict(state_env))
         elif t.op == "(":
             flush()
-            stack.append((st["cwd"], dict(state_env)))
-            snap = (st["cwd"], dict(state_env))
+            open_group("(")
         elif t.op == ")":
-            flush()
-            if not stack:
+            if not close_group("("):
                 return ParseResult([], "짝 없는 ')'")
-            st["cwd"], saved = stack.pop()
-            state_env.clear()
-            state_env.update(saved)
-            snap = (st["cwd"], dict(state_env))
     flush()
     if stack:
-        return ParseResult([], "닫히지 않은 '('")
+        return ParseResult([], "닫히지 않은 그룹")
     return ParseResult(segments)

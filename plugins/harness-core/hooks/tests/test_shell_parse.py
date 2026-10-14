@@ -164,6 +164,11 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(rm_cwd("cd /a && rm x | cat"), "/a")
         self.assertEqual(rm_cwd("cd /a && cat | wc; rm y"), "/a")
 
+    def test_group_inside_pipeline(self):
+        for c in ["cat | (cd /a; rm x); rm y", "cat | { cd /a; rm x; }; rm y"]:
+            self.assertEqual([x.cwd for x in segs(c) if x.name == "rm"], ["/a", "/w"], c)
+        self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; } | cat; rm y") if x.name == "rm"], ["/a", "/w"])
+
 
 if __name__ == "__main__":
     unittest.main()
