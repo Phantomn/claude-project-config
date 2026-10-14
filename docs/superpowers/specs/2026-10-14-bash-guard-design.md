@@ -380,7 +380,7 @@ class Segment:
 - 기록 주체:
   1. `touch-ledger.py`: PreToolUse 매처 `Write|Edit|NotebookEdit`. `tool_input.file_path` 가 존재하고 생성 시각 < 세션
      시작이면 `pre-session` 기록. 추적 파일이고 이미 수정 상태면 `pre-dirty` 기록. 이미 있는 경로는 다시 쓰지 않는다.
-     항상 출력 없음(판정에 개입하지 않음), 종료 0.
+     항상 출력 없음(판정에 개입하지 않음), 종료 0. `HARNESS_BASH_GUARD` 가 `shadow`·`on` 이 아니면 즉시 종료(꺼진 프로젝트의 Write·Edit 비용 0).
   2. 판정기: 해석한 단위가 `sed -i`·`perl -pi|-i`·`git checkout <경로>`·`git restore <경로>` 등 제자리 수정이면 같은 규칙으로 기록.
 - 조회: §3.4 분류 5, §3.5 세션 변경 판정.
 - 정리: 장부 쓰기 시 수정 시각이 7일 지난 장부 파일을 지운다.
@@ -472,6 +472,7 @@ plugins/harness-core/
         ├── test_bash_guard.py         # 신규: 입출력 종단 + 오탐 회귀 + 누락 + 시나리오(§8)
         ├── test_touch_ledger.py       # 신규
         ├── test-bash-guard-entry.sh   # 신규: 입구 스위치(off 동일성·shadow·on·파이썬 실패 시 allow)
+        ├── _world.py                  # 신규: 테스트용 가상 세계(홈·저장소·bare 원격·세션 전/후 파일·가짜 docker) 빌더
         ├── fixtures/                  # 신규: 재구성 사례(JSON). 실제 세션 명령 원문 금지
         └── tools/replay_corpus.py     # 신규: 로컬 전수 재생 도구(결과는 저장소 밖)
 ```
