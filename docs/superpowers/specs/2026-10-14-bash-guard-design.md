@@ -130,7 +130,7 @@ R6 배포 위생(설정 검증·타임아웃·운영 clone) — 위 사슬과 �
 | D6 | git 은 "커밋 안 된 변경"과 "기본 브랜치 원격 덮어쓰기"(+ reflog 파괴)만 보호. 브랜치 삭제·reset·rebase·기능 브랜치 강제 push 는 통과 | reflog 로 복구 가능. PR 흐름 무발동 요구 |
 | D7 | 디스크 직접 쓰기·재귀 권한 변경은 작업 영역 안에서만 허용. 시스템 경로 쓰기 거부. `killall`·`systemctl stop/disable`·`rmdir` 허용 | 사용자 지정 |
 | D8 | 컨테이너 안 명령의 경로는 컨테이너 기준으로 보고 허용. **호스트 마운트·이름 볼륨만** 호스트 규칙 | 사용자 지정. 컨테이너 안 `/etc` 에 발동하던 것이 실제 문제였음 |
-| D9 | 구현은 파이썬 표준 라이브러리(shlex 기반 해석기). 외부 파서 미도입 | 해석 실패 0.04%·p99 0.5ms 실측. bashlex(GPL·정체)·tree-sitter(별도 휠) 이득 작음 |
+| D9 | 구현은 파이썬 표준 라이브러리만. 셸 문법의 필요한 부분집합을 다루는 **자체 어휘 분석기**. shlex·외부 파서 미도입 | shlex 는 따옴표 종류·리다이렉트 위치·`2>&1` 을 잃어 단위 분해가 틀어짐(§3.3-1 실측). 외부 파서는 bashlex(GPL·정체)·tree-sitter(별도 휠) 이득 작음. 시제품 해석 p99 0.5ms 로 성능 여유 확인 |
 | D10 | 기능 스위치 `HARNESS_BASH_GUARD=off|shadow|on`, 기본 `off`. **스위치는 프로젝트 settings 에만** 둔다 | 단계적 전환·즉시 되돌림. 정의는 플러그인 한 벌, 스위치는 프로젝트(기존 `HARNESS_CODEREAD_GUARD` 와 같은 모델) |
 | D11 | 실패 정책 3종 분리(§3.8) | Codex·Gemini·cc-safety-net 모두 셋을 구분 |
 
@@ -199,14 +199,21 @@ class Segment:
 
 처리 순서와 규칙:
 
-1. **heredoc 분리**: 정규식 `<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)`(DOTALL)로
-   본문을 떼어 낸다. 본문은 판정 대상이 아니다. 단, heredoc 을 받는 명령이 셸(`bash`·`sh`·`zsh`·`dash`)이면
-   본문을 셸 코드로 재귀 해석한다.
-2. **토큰화**: `shlex.shlex(src, posix=True, punctuation_chars=";&|()\n")`, `whitespace=" \t\r"`, `whitespace_split=True`.
-   `;` `&&` `||` `|` `&` `\n` `(` `)` `;;` `|&` 및 구분자 문자만으로 된 토큰에서 단위를 자른다.
-   `(`…`)` 서브셸 안의 `cd`·변수 변화는 `)` 이후 원복한다.
-3. **리다이렉트 추출**: `>` `>|` `>>` `&>` `2>` `<` 등과 그 대상 토큰을 `redirects` 로 분리하고 인자에서 뺀다
-   (기존 결함: `2>/dev/null` 을 rm 대상으로 해석).
+1. **어휘 분석(자체 구현, 표준 라이브러리만)**: 한 번의 선형 스캔으로 토큰을 만든다. `shlex` 는 쓰지 않는다
+   (계획 단계 실측: ① `'$HOME'` 과 `"$HOME"` 을 구분 못 함, ② `a>b`·`2>/dev/null` 이 단어에 붙음, ③ `<>` 를 구분자로 주면
+   `2` 가 인자로 분리됨, ④ `2>&1` 의 `&` 를 명령 구분자로 잘라 **단위 분해 자체가 틀어짐** — 시제품의 실패율 0.04% 는 예외만
+   센 값이라 이 조용한 오분해를 포함하지 않는다).
+   - 단어는 조각(Part) 목록이다. 조각마다 따옴표 종류(없음 / `'` / `"`)를 보존한다. 백슬래시 이스케이프, `$'…'` 는 리터럴 조각.
+   - 단어 안의 `$(…)`·`` `…` ``·`${…}`·`$((…))` 는 중첩 괄호·따옴표를 세어 단어의 일부로 유지한다.
+   - 연산자: `;` `&&` `||` `|` `|&` `&` 줄바꿈 `(` `)` `;;`. 단어 맨 앞의 `#` 부터 줄 끝은 주석.
+   - 리다이렉트: `[n]>` `[n]>>` `[n]>|` `&>` `&>>` `[n]<` `[n]<>` `[n]>&m` `[n]<&m` `<<<`, 그리고 heredoc `<<`·`<<-`.
+     숫자 fd 는 **연산자에 공백 없이 붙어 있을 때만** fd 로 본다(`2>` 는 fd, `2 >` 는 인자 2).
+   - heredoc: 구분자 단어(따옴표 여부 기록)를 읽고, 그 줄이 끝난 다음 줄부터 구분자만 있는 줄(`<<-` 는 앞 탭 허용)까지를
+     본문으로 잘라 리다이렉트에 붙인다. 본문은 판정 대상이 아니다. 단 heredoc 을 받는 명령이 셸이면 본문을 재귀 해석한다.
+   - 닫히지 않은 따옴표·괄호, 끝나지 않은 heredoc → 해석 실패(§3.8 (가)).
+2. **단위 분해**: 연산자에서 단위를 자른다. `(`…`)` 서브셸 안의 `cd`·변수 변화는 `)` 이후 원복한다.
+3. **리다이렉트 분리**: 리다이렉트 토큰과 대상 단어를 `redirects` 로 보내고 인자에서 뺀다(기존 결함: `2>/dev/null` 을 rm 대상으로 해석).
+   `>&m`·`<&m`(fd 복제)은 파일 대상이 아니다.
 4. **할당·환경 추적**: 단위 맨 앞 `VAR=val` 만 있는 단위는 이후 단위의 `env` 에 반영. `export`·`declare`·`typeset`·`local`
    (`-x` 등 옵션 무시)의 `VAR=val` 도 반영. `VAR=val cmd` 접두는 그 단위에만 적용. 값에 명령 치환이 있으면 미확정.
 5. **cd 추적**: `cd DIR`·`pushd DIR` → cwd 갱신(상대경로는 이전 cwd 기준, `~`·변수 확장). `cd`(인자 없음) → `$HOME`.
@@ -416,9 +423,11 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
 저장소 루트(`~/tools/claude-project-config` 의 worktree)에서:
 
 ```bash
-# 단위·회귀·누락·시나리오 테스트 (pytest 미사용 — 기존 관례대로 단독 실행 스크립트)
-python3 plugins/harness-core/hooks/tests/test_bash_guard.py
-python3 plugins/harness-core/hooks/tests/test_touch_ledger.py
+# 단위·회귀·누락·시나리오 테스트 (pytest 미사용 — 표준 unittest, 파일 단독 실행. `-k 이름` 으로 개별 실행)
+for t in shell_parse target_class policy bash_guard touch_ledger; do
+  python3 "plugins/harness-core/hooks/tests/test_$t.py" || exit 1
+done
+bash plugins/harness-core/hooks/tests/test-bash-guard-entry.sh
 
 # 기존 테스트(off 경로 회귀)
 for t in plugins/harness-core/hooks/tests/test-*.sh; do bash "$t" || exit 1; done
@@ -457,8 +466,12 @@ plugins/harness-core/
     │   ├── touch-ledger.py            # 신규: Write|Edit 장부 훅
     │   └── code-read-guard.py         # 유지(이번 범위에서 호출 방식 변경 없음 — §12)
     └── tests/
-        ├── test_bash_guard.py         # 신규: 단위 + 오탐 회귀 + 누락 + 시나리오(§8)
+        ├── test_shell_parse.py        # 신규: 해석기 단위
+        ├── test_target_class.py       # 신규: 분류기·git·docker 조회 단위(임시 저장소, 가짜 docker)
+        ├── test_policy.py             # 신규: 작업 × 분류 판정 단위
+        ├── test_bash_guard.py         # 신규: 입출력 종단 + 오탐 회귀 + 누락 + 시나리오(§8)
         ├── test_touch_ledger.py       # 신규
+        ├── test-bash-guard-entry.sh   # 신규: 입구 스위치(off 동일성·shadow·on·파이썬 실패 시 allow)
         ├── fixtures/                  # 신규: 재구성 사례(JSON). 실제 세션 명령 원문 금지
         └── tools/replay_corpus.py     # 신규: 로컬 전수 재생 도구(결과는 저장소 밖)
 ```
@@ -641,7 +654,7 @@ def decide_delete(path: str, cls: str) -> Verdict:
 - **권한 모드**: 메인 세션은 레코드의 `permissionMode`, 서브에이전트(`…/subagents/*.jsonl`, 모드 미기록)는 부모 세션 파일의 최빈 모드로 귀속.
 - **원인 절제**: 명령에서 원인 후보 하나(따옴표 내용, 명령 경계, `-f`, 절대→상대경로, 리다이렉트)만 바꿔 현행 훅에 다시 넣고
   ask→allow 로 바뀌면 그 원인으로 확정. 프로젝트별 `HARNESS_RM_REPO_DIRS` 를 넣어야 재현되는 19건 중 18건 재현.
-- **해석기 시제품**: 고유 명령 88,625종(총 91,085회)에 §3.3 의 1~2단계 적용 → 실패 32종(0.04%, 모두 heredoc 경계 미검출에 따른
+- **해석기 시제품(shlex — 이후 기각, §3.3-1)**: 고유 명령 88,625종(총 91,085회)에 shlex 토큰화 적용 → 실패 32종(0.04%, 모두 heredoc 경계 미검출에 따른
   닫히지 않은 따옴표), 해석 p50 0.11ms·p99 0.5ms·최대 3.4ms.
 - **생성 시각 동작**: ext4 에서 `mv` 는 유지, `cp`·임시 파일 바꿔치기·Edit 도구·`sed -i`·`git checkout` 은 갱신. 9p(`/mnt/c`)는 0.
 - **훅 입력**: headless `claude -p --permission-mode bypassPermissions --settings <덤프 훅>` 로 메인 Bash·서브에이전트 Bash·Write 입력 덤프.
