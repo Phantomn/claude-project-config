@@ -4,8 +4,10 @@ shlex 를 쓰지 않는 이유: 따옴표 종류·리다이렉트 위치·`2>&1`
 """
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 
 
 class LexError(ValueError):
@@ -250,3 +252,200 @@ def lex(src: str) -> list[Token]:
     if pending:
         raise LexError(f"끝나지 않은 heredoc {pending[0][1]!r}")
     return toks
+
+
+@dataclass(frozen=True)
+class Mount:
+    source: str  # bind: 호스트 절대경로 / volume: 볼륨 이름
+    destination: str  # 컨테이너 안 절대경로
+    kind: str  # "bind" | "volume"
+
+
+@dataclass(frozen=True)
+class Context:
+    kind: str = "host"  # "host" | "container"
+    container: str | None = None
+    launcher: str | None = None  # "exec" | "run" | "compose-exec" | "compose-run"
+    mounts: tuple[Mount, ...] | None = None  # run 계열: 인자에서 / exec 계열: None(조회)
+    project_dir: str | None = None
+    project: str | None = None
+
+
+HOST = Context()
+
+
+@dataclass
+class Redirect:
+    op: str
+    fd: int | None
+    target: Word | None
+    body: str | None
+
+
+@dataclass
+class Segment:
+    name: str
+    argv: list[Word]
+    redirects: list[Redirect]
+    cwd: str | None
+    env: dict[str, str | None]
+    context: Context = HOST
+    depth: int = 0
+    via_xargs: bool = False
+
+
+@dataclass
+class ParseResult:
+    segments: list[Segment] = field(default_factory=list)
+    error: str | None = None
+
+
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_BOUNDARY = ("\n", ";", ";;", "&&", "||", "|", "|&", "&")
+_VAR_DECL = ("export", "declare", "typeset", "local")
+# 래퍼 -> 값을 받는 옵션. 값 없는 옵션은 '-' 로 시작하는 단어 하나로 소비한다.
+_WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
+    "sudo": ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"),
+    "timeout": ("-s", "-k"),
+    "nice": ("-n",),
+    "ionice": ("-c", "-n", "-p"),
+    "stdbuf": ("-i", "-o", "-e"),
+    "flock": ("-w", "-E"),
+    "time": (),
+}
+_WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
+_SIMPLE_WRAPPERS = ("doas", "command", "builtin", "exec", "nohup", "chronic")
+
+
+def _assign_of(w: Word) -> tuple[str, str | None] | None:
+    """`NAME=값` 단어면 (이름, 값). 값에 명령 치환이 있으면 None 값 (Task 3 에서 expand 로 교체)."""
+    if not w.parts or w.parts[0].quote != "" or not _ASSIGN.match(w.parts[0].text):
+        return None
+    head, _, rest = w.parts[0].text.partition("=")
+    if any(p.quote != "'" and ("$(" in p.text or "`" in p.text) for p in w.parts[1:]) or "$(" in rest or "`" in rest:
+        return head, None
+    return head, rest + "".join(p.text for p in w.parts[1:])
+
+
+def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
+    """cd 인자 해석. `~`·`$HOME` 만 풀고 그 외 변수·치환이면 None (Task 3 에서 expand 로 교체)."""
+    parts = list(w.parts)
+    prefix = ""
+    first = parts[0] if parts else Part("", "'")
+    for pre in ("~", "${HOME}", "$HOME"):
+        if first.quote == "" and first.text.startswith(pre) and first.text[len(pre):len(pre) + 1] in ("", "/"):
+            prefix = env.get("HOME") or ""
+            if not prefix:
+                return None
+            parts[0] = Part(first.text[len(pre):], "")
+            break
+    if any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in parts):
+        return None
+    lit = prefix + "".join(p.text for p in parts)
+    if lit == "-":
+        return None
+    if lit.startswith("/"):
+        return os.path.normpath(lit)
+    return os.path.normpath(os.path.join(cwd, lit)) if cwd is not None else None
+
+
+def _strip_wrapper(words: list[Word], env: dict[str, str | None]) -> list[Word] | None:
+    """맨 앞 래퍼 하나를 벗긴 단어 목록. 래퍼가 아니면 None."""
+    name = os.path.basename(words[0].literal())
+    i = 1
+    if name == "env":
+        while i < len(words):
+            lit = words[i].literal()
+            if (a := _assign_of(words[i])) is not None:
+                env[a[0]] = a[1]
+            elif lit in ("-u", "-C"):
+                i += 1
+            elif not lit.startswith("-") or lit == "--":
+                if lit == "--":
+                    i += 1
+                break
+            i += 1
+        return words[i:]
+    if name in _SIMPLE_WRAPPERS:
+        return words[1:]
+    if name not in _WRAPPER_VALUE_OPTS:
+        return None
+    while i < len(words) and words[i].literal().startswith("-") and words[i].literal() != "--":
+        i += 2 if words[i].literal() in _WRAPPER_VALUE_OPTS[name] else 1
+    if i < len(words) and words[i].literal() == "--":
+        i += 1
+    return words[i + _WRAPPER_TAIL.get(name, 0):]
+
+
+def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Context = HOST) -> ParseResult:
+    try:
+        toks = lex(command)
+    except LexError as e:
+        return ParseResult([], str(e))
+    state_env: dict[str, str | None] = {k: env[k] for k in ("HOME", "TMPDIR", "USER") if k in env}
+    if cwd is not None:
+        state_env["PWD"] = cwd
+    st = {"cwd": cwd}
+    stack: list[tuple[str | None, dict[str, str | None]]] = []
+    segments: list[Segment] = []
+    words: list[Word] = []
+    redirects: list[Redirect] = []
+
+    def flush() -> None:
+        nonlocal words, redirects
+        w, r, words, redirects = words, redirects, [], []
+        unit_env = dict(state_env)
+        while w and (a := _assign_of(w[0])) is not None:
+            unit_env[a[0]] = a[1]
+            w = w[1:]
+            if not w:  # 할당만 있는 단위는 이후 단위에 반영
+                state_env.update(unit_env)
+                unit_env = dict(state_env)
+        wrapped = True
+        while w and wrapped:
+            rest = _strip_wrapper(w, unit_env)
+            wrapped = rest is not None
+            w = rest if rest is not None else w
+        unit_cwd = st["cwd"]
+        name = os.path.basename(w[0].literal()) if w else ""
+        if name == "git":
+            while len(w) > 2 and w[1].literal() == "-C":
+                unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)
+                w = [w[0]] + w[3:]
+        if name in _VAR_DECL:
+            for x in w[1:]:
+                if (a := _assign_of(x)) is not None:
+                    state_env[a[0]] = a[1]
+            return
+        if w or r:
+            segments.append(Segment(name, w, r, unit_cwd, unit_env, context))
+        if name in ("cd", "pushd"):
+            args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
+            st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
+                state_env.get("HOME") if name == "cd" else None)
+            if st["cwd"] is not None:
+                state_env["PWD"] = st["cwd"]
+        elif name == "popd":
+            st["cwd"] = None
+
+    for t in toks:
+        if t.kind == "word":
+            words.append(t.word)
+        elif t.kind == "redir":
+            redirects.append(Redirect(t.op, t.fd, t.target, t.body))
+        elif t.op in _BOUNDARY:
+            flush()
+        elif t.op == "(":
+            flush()
+            stack.append((st["cwd"], dict(state_env)))
+        elif t.op == ")":
+            flush()
+            if not stack:
+                return ParseResult([], "짝 없는 ')'")
+            st["cwd"], saved = stack.pop()
+            state_env.clear()
+            state_env.update(saved)
+    flush()
+    if stack:
+        return ParseResult([], "닫히지 않은 '('")
+    return ParseResult(segments)
