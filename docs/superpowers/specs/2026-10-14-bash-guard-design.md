@@ -414,7 +414,7 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
 ## 4. Tech Stack
 
 - Python 3.10+ 호환 문법(실행은 시스템 `python3`, 현재 3.12.3). `from __future__ import annotations`, 타입 힌트,
-  `dataclass`, `pathlib`. **표준 라이브러리만**(shlex, json, re, glob, subprocess, os, time, dataclasses).
+  `dataclass`, `pathlib`. **표준 라이브러리만**(json, re, glob, subprocess, os, time, dataclasses, unittest). shlex 는 쓰지 않는다(§3.3-1).
 - 외부 명령: `git`, GNU `stat`(%.9W), `docker`(있을 때만), `find`.
 - POSIX `sh` 입구 스크립트(기존 `auto-approve-readonly.sh` 는 bash — `off`/`shadow` 경로 보존을 위해 bash 유지).
 
@@ -703,5 +703,5 @@ rm -rf /tmp/claude-1000/<세션>/scratchpad/out     killall node    systemctl --
 | Gemini CLI PolicyEngine | tree-sitter(WASM) 재귀, 파싱 실패 시 비대화형 deny | 실패 정책 근거 |
 | Cursor https://cursor.com/docs/agent/security/run-modes.md | 문자열 denylist → 우회 4종 보고 후 폐기 | 정규식 방식 기각 근거 |
 | Claude Code 샌드박스 https://code.claude.com/docs/en/sandboxing | bubblewrap OS 격리 | 기각(§2). 이슈: docker 그룹 제거 #95813, WSL2 마운트 실패 시 조용한 해제 #84563, 서브에이전트 정지 #101339 |
-| 파서 비교 | shlex 유지 권고(bashlex GPL·정체, tree-sitter 별도 휠, mvdan/sh Go) | D9 |
+| 파서 비교 | 조사는 shlex 유지 권고(bashlex GPL·정체, tree-sitter 별도 휠, mvdan/sh Go). 계획 단계 실측으로 shlex 결함 확인 → 자체 어휘 분석기 | D9 |
 | "세션이 만든 파일만 삭제 허용" | **선행 도구 없음** | 이 설계의 새 부분 → 테스트 비중 큼 |
