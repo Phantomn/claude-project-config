@@ -136,6 +136,34 @@ class ParseTest(unittest.TestCase):
         self.assertIsNotNone(parse('rm -rf "x', "/w", {}).error)
         self.assertIsNotNone(parse("rm x )", "/w", {}).error)
 
+    def test_assignment_after_wrapper(self):
+        self.assertEqual(names("sudo X=1 rm -rf x"), ["rm"])
+        self.assertEqual(segs("sudo X=1 rm x")[0].env["X"], "1")
+        self.assertNotIn("X", segs("sudo X=1 rm x; rm y")[1].env)
+
+    def test_wrapper_options_do_not_leak(self):
+        for c in ["command -p rm x", "command -- rm x", "exec -a n rm x", "exec -c rm x", "doas -u root rm x", "doas -n rm x"]:
+            self.assertEqual(names(c), ["rm"], c)
+        self.assertEqual(names("command -v rm"), ["command"])
+        self.assertEqual(names("command -pv rm"), ["command"])
+
+    def test_control_words_stripped(self):
+        for c in ["{ rm -rf x; }", "if true; then rm x; fi", "for i in a b; do rm x; done", "while true; do rm x; done", "! rm x",
+                  "until false; do rm x; done", "if a; then b; elif c; then rm x; else d; fi"]:
+            n = names(c)
+            self.assertIn("rm", n, c)
+            self.assertFalse({"{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "for"} & set(n), c)
+
+    def test_brace_group_is_not_subshell(self):
+        self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; }; rm y") if x.name == "rm"], ["/a", "/a"])
+
+    def test_pipeline_and_background_are_subshells(self):
+        self.assertEqual(rm_cwd("cd /a | cat; rm y"), "/w")
+        self.assertEqual(rm_cwd("cat | cd /a; rm y"), "/w")
+        self.assertEqual(rm_cwd("cd /a & rm y"), "/w")
+        self.assertEqual(rm_cwd("cd /a && rm x | cat"), "/a")
+        self.assertEqual(rm_cwd("cd /a && cat | wc; rm y"), "/a")
+
 
 if __name__ == "__main__":
     unittest.main()

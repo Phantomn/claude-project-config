@@ -302,9 +302,11 @@ class ParseResult:
 
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _BOUNDARY = ("\n", ";", ";;", "&&", "||", "|", "|&", "&")
+_SUBSHELL_OPS = ("|", "|&", "&")  # 파이프 구성원·배경 명령은 서브셸이라 cd·변수가 밖으로 안 나간다
 _VAR_DECL = ("export", "declare", "typeset", "local")
 # 래퍼 -> 값을 받는 옵션. 값 없는 옵션은 '-' 로 시작하는 단어 하나로 소비한다.
 _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
+    "command": (),
     "sudo": ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"),
     "timeout": ("-s", "-k"),
     "nice": ("-n",),
@@ -312,9 +314,14 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
     "stdbuf": ("-i", "-o", "-e"),
     "flock": ("-w", "-E"),
     "time": (),
+    "exec": ("-a",),
+    "doas": ("-u", "-C"),
 }
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
-_SIMPLE_WRAPPERS = ("doas", "command", "builtin", "exec", "nohup", "chronic")
+_SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
+# 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
+_RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done")
+_LOOP_HEAD = ("for", "select")
 
 
 def _assign_of(w: Word) -> tuple[str, str | None] | None:
@@ -368,6 +375,13 @@ def _strip_wrapper(words: list[Word], env: dict[str, str | None]) -> list[Word] 
         return words[i:]
     if name in _SIMPLE_WRAPPERS:
         return words[1:]
+    if name == "command":  # -v/-V 는 실행이 아니라 조회라 벗기지 않는다
+        for x in words[1:]:
+            lit = x.literal()
+            if lit == "--" or not lit.startswith("-"):
+                break
+            if "v" in lit or "V" in lit:
+                return None
     if name not in _WRAPPER_VALUE_OPTS:
         return None
     while i < len(words) and words[i].literal().startswith("-") and words[i].literal() != "--":
@@ -395,17 +409,23 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
         nonlocal words, redirects
         w, r, words, redirects = words, redirects, [], []
         unit_env = dict(state_env)
-        while w and (a := _assign_of(w[0])) is not None:
-            unit_env[a[0]] = a[1]
-            w = w[1:]
-            if not w:  # 할당만 있는 단위는 이후 단위에 반영
-                state_env.update(unit_env)
-                unit_env = dict(state_env)
-        wrapped = True
-        while w and wrapped:
-            rest = _strip_wrapper(w, unit_env)
-            wrapped = rest is not None
-            w = rest if rest is not None else w
+        first = True
+        while True:
+            while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
+                w = w[1:]
+            while w and (a := _assign_of(w[0])) is not None:
+                unit_env[a[0]] = a[1]
+                w = w[1:]
+                if not w and first:  # 할당만 있는 단위는 이후 단위에 반영
+                    state_env.update(unit_env)
+                    return
+            first = False
+            rest = _strip_wrapper(w, unit_env) if w else None
+            if rest is None:
+                break
+            w = rest
+        if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
+            return
         unit_cwd = st["cwd"]
         name = os.path.basename(w[0].literal()) if w else ""
         if name == "git":
@@ -428,6 +448,8 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
         elif name == "popd":
             st["cwd"] = None
 
+    snap = (st["cwd"], dict(state_env))
+    in_pipe = False
     for t in toks:
         if t.kind == "word":
             words.append(t.word)
@@ -435,9 +457,16 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
         elif t.op in _BOUNDARY:
             flush()
+            if in_pipe or t.op in _SUBSHELL_OPS:
+                st["cwd"] = snap[0]
+                state_env.clear()
+                state_env.update(snap[1])
+            in_pipe = t.op in ("|", "|&")
+            snap = (st["cwd"], dict(state_env))
         elif t.op == "(":
             flush()
             stack.append((st["cwd"], dict(state_env)))
+            snap = (st["cwd"], dict(state_env))
         elif t.op == ")":
             flush()
             if not stack:
@@ -445,6 +474,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
             st["cwd"], saved = stack.pop()
             state_env.clear()
             state_env.update(saved)
+            snap = (st["cwd"], dict(state_env))
     flush()
     if stack:
         return ParseResult([], "닫히지 않은 '('")
