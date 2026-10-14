@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | 초안 — 사용자 검토 대기 |
+| 상태 | 초안 — 남은 질문 해소, 최종 승인 대기 |
 | 작성 | 2026-10-14 |
 | 소유 | Phantomn (harness-core) |
 | 대상 저장소 | `Phantomn/claude-project-config` (**공개 저장소**) |
@@ -131,7 +131,7 @@ R6 배포 위생(설정 검증·타임아웃·운영 clone) — 위 사슬과 �
 | D7 | 디스크 직접 쓰기·재귀 권한 변경은 작업 영역 안에서만 허용. 시스템 경로 쓰기 거부. `killall`·`systemctl stop/disable`·`rmdir` 허용 | 사용자 지정 |
 | D8 | 컨테이너 안 명령의 경로는 컨테이너 기준으로 보고 허용. **호스트 마운트·이름 볼륨만** 호스트 규칙 | 사용자 지정. 컨테이너 안 `/etc` 에 발동하던 것이 실제 문제였음 |
 | D9 | 구현은 파이썬 표준 라이브러리(shlex 기반 해석기). 외부 파서 미도입 | 해석 실패 0.04%·p99 0.5ms 실측. bashlex(GPL·정체)·tree-sitter(별도 휠) 이득 작음 |
-| D10 | 기능 스위치 `HARNESS_BASH_GUARD=off|shadow|on`, 기본 `off` | 단계적 전환·즉시 되돌림 |
+| D10 | 기능 스위치 `HARNESS_BASH_GUARD=off|shadow|on`, 기본 `off`. **스위치는 프로젝트 settings 에만** 둔다 | 단계적 전환·즉시 되돌림. 정의는 플러그인 한 벌, 스위치는 프로젝트(기존 `HARNESS_CODEREAD_GUARD` 와 같은 모델) |
 | D11 | 실패 정책 3종 분리(§3.8) | Codex·Gemini·cc-safety-net 모두 셋을 구분 |
 
 기각한 대안:
@@ -581,10 +581,14 @@ def decide_delete(path: str, cls: str) -> Verdict:
 ## 11. Rollout & Rollback
 
 1. 구현·테스트 → PR → 병합 → 운영 clone `git pull --ff-only`(스위치 `off` 라 동작 불변).
-2. 사용자 승인 후 홈(`~/.claude/settings.json` 의 `env`) 또는 주요 프로젝트에 `HARNESS_BASH_GUARD=shadow` → 최소 3일·
-   Bash 호출 5,000회 이상 수집.
-3. 불일치 검토 → 판정기 수정 반복 → 기준 충족 시 사용자 승인 후 `on`.
-4. `on` 2주 무사고 후 사용자 승인으로 기존 로직·`HARNESS_RM_REPO_DIRS`·`t_auto_approve_rm.py` 제거(별도 PR).
+2. 사용자 승인 후 **프로젝트별** settings(`<프로젝트>/.claude/settings.json` 의 `env`)에 `HARNESS_BASH_GUARD=shadow`
+   1줄 → 최소 3일·Bash 호출 5,000회 이상 수집. 전역(`~/.claude/settings.json`)에는 두지 않는다(사용자 규칙: 모든 폴더에서
+   걸리는 동작의 스위치는 프로젝트에 — 2026-10-14 재확인). 대상 목록은 전환 시점에 사용자와 확정한다. 후보(ask 발생 상위):
+   money, math, orca 작업공간(브랜치별 settings 파일이 따로 있음), phantomn.github.io, quant, bounty, tools, .agents.
+   **홈(`~`)에서 연 세션은 둘 곳이 전역뿐이라 수집에서 빠진다**(알고 받아들임).
+3. 불일치 검토 → 판정기 수정 반복 → 기준 충족 시 사용자 승인 후 같은 프로젝트들에서 `on`.
+4. `on` 2주 무사고 후 사용자 승인으로 기존 로직·`HARNESS_RM_REPO_DIRS`·`t_auto_approve_rm.py` 제거(별도 PR). 이후
+   `HARNESS_BASH_GUARD` 가 없는 프로젝트의 기본값을 `on` 으로 바꿀지는 그 PR 에서 결정한다.
 - **되돌리기**: 스위치를 `off` 로(코드 되돌림 불필요). 스위치로 해결 안 되는 결함은 PR revert.
 
 ## 12. 운영 위생 작업 (이번 변경에 포함)
@@ -619,8 +623,10 @@ def decide_delete(path: str, cls: str) -> Verdict:
 
 ## 15. Open Questions
 
-1. `shadow` 를 켤 위치: 전역(`~/.claude/settings.json` env — 모든 프로젝트) vs 주요 프로젝트별. 제안: 전역.
-2. `on` 안정화 후 기존 로직 제거 시점(§11-4 의 2주)이 적절한가.
+없음. 해소 기록(2026-10-14 사용자 결정):
+
+1. `shadow` 를 켤 위치 → **프로젝트별**(§11-2). 홈 세션은 수집 제외.
+2. `on` 후 기존 로직 제거 시점 → **2주 무사고 후**(§11-4) 동의.
 
 ---
 
