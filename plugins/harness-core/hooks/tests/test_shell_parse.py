@@ -52,6 +52,12 @@ class LexTest(unittest.TestCase):
             words(lex('echo "$(rm -rf "a b")" `ls`')), ["echo", '$(rm -rf "a b")', "`ls`"]
         )
 
+    def test_dq_substitution_body_is_raw(self):
+        w = lex('"$(echo \\" ; rm x ; echo \\")"')[0].word
+        self.assertEqual(w.parts, (Part('$(echo \\" ; rm x ; echo \\")', '"'),))
+        self.assertIn("rm", [t.word.literal() for t in lex(w.literal()[2:-1]) if t.kind == "word"])
+        self.assertEqual(lex('"a\\"b\\\\c"')[0].word.literal(), 'a"b\\c')
+
     def test_heredoc_body(self):
         t = lex("cat <<'EOF' > f\nrm -rf ~\nEOF\necho done")
         hd = next(x for x in t if x.kind == "redir" and x.op == "<<")

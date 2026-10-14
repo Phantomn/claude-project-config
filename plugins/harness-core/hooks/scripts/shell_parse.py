@@ -106,6 +106,29 @@ def _skip_to(s: str, i: int, closer: str) -> int:
     raise LexError(f"닫히지 않은 {closer!r}")
 
 
+def _read_dq(s: str, i: int) -> tuple[str, int]:
+    """큰따옴표 본문. 평문 구간만 \\" 와 \\\\ 를 해제하고 치환($(..) ${..} 백틱)은 원문 유지(해제하면 안쪽 명령이 가려진다)."""
+    out: list[str] = []
+    n = len(s)
+    while i < n:
+        m = _DQ_STOP.search(s, i)
+        if not m:
+            break
+        out.append(s[i : m.start()])
+        i, c = m.start(), s[m.start()]
+        if c == '"':
+            return "".join(out), i + 1
+        if c == "\\":
+            nxt = s[i + 1 : i + 2]
+            out.append(nxt if nxt in ('"', "\\") else s[i : i + 2])
+            i += 2
+        else:
+            j = _skip_sub(s, i)
+            out.append(s[i:j])
+            i = j
+    raise LexError("닫히지 않은 큰따옴표")
+
+
 def _read_word(s: str, i: int) -> tuple[Word, int]:
     n = len(s)
     parts: list[Part] = []
@@ -129,10 +152,8 @@ def _read_word(s: str, i: int) -> tuple[Word, int]:
             add(s[i + 1 : j], "'")
             i = j + 1
         elif c == '"':
-            j = _skip_dq(s, i + 1)
-            # 큰따옴표 안 \" 와 \\ 만 이스케이프 해제, 나머지(\$ 등)는 원문 유지
-            add(re.sub(r'\\(["\\])', r"\1", s[i + 1 : j - 1]), '"')
-            i = j
+            text, i = _read_dq(s, i + 1)
+            add(text, '"')
         elif c == "\\":
             if s[i + 1 : i + 2] == "\n":
                 i += 2
