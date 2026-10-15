@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from shell_parse import LexError, Part, lex, parse
+from shell_parse import LexError, Mount, Part, expand, lex, literal_args, parse
 
 
 def words(toks):
@@ -168,6 +170,99 @@ class ParseTest(unittest.TestCase):
         for c in ["cat | (cd /a; rm x); rm y", "cat | { cd /a; rm x; }; rm y"]:
             self.assertEqual([x.cwd for x in segs(c) if x.name == "rm"], ["/a", "/w"], c)
         self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; } | cat; rm y") if x.name == "rm"], ["/a", "/w"])
+
+
+def ex(word_src, cwd="/w", env=None):
+    s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]
+    return expand(s.argv[1], s)
+
+
+class ExpandTest(unittest.TestCase):
+    def test_expand_basic(self):
+        self.assertEqual(ex("~/x"), ["/h/x"])
+        self.assertEqual(ex('"$HOME/x"'), ["/h/x"])
+        self.assertEqual(ex("'$HOME'"), ["/w/$HOME"])
+        self.assertEqual(ex("$(pwd)/x"), ["/w/x"])
+        self.assertEqual(ex("`pwd`/x"), ["/w/x"])
+        self.assertEqual(ex("$PWD/x"), ["/w/x"])
+        self.assertEqual(ex("{a,b}.txt"), ["/w/a.txt", "/w/b.txt"])
+        self.assertEqual(ex("a/../b"), ["/w/a/../b"])
+
+    def test_expand_unresolved(self):
+        for w in ["$(date)", "${X:-a}", "$NOPE/x", "~bob/x", "`hostname`"]:
+            self.assertIsNone(ex(w), w)
+        self.assertIsNone(ex("rel", cwd=None))
+
+    def test_assignment_value_expanded(self):
+        s = parse('x=~/d; y=$HOME/e; rm -rf "$x" "$y"', "/w", {"HOME": "/h"}).segments[-1]
+        self.assertEqual([expand(w, s) for w in s.argv[2:]], [["/h/d"], ["/h/e"]])
+
+    def test_glob(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm") as d:
+            for n in ("a1.log", "a2.log", ".h.log"):
+                Path(d, n).touch()
+            self.assertEqual(ex("*.log", cwd=d), [f"{d}/a1.log", f"{d}/a2.log"])
+            self.assertEqual(ex("*.none", cwd=d), [f"{d}/*.none"])
+            self.assertEqual(ex('"*.log"', cwd=d), [f"{d}/*.log"])
+
+    def test_cd_tilde_user_unknown(self):
+        self.assertIsNone(rm_cwd("cd ~bob; rm y"))
+
+    def test_literal_args(self):
+        self.assertEqual(literal_args(segs("rm -r'f' \"$X\"")[0]), ["-rf", "$X"])
+
+
+def inner(cmd):
+    return [(s.name, s.depth, s.cwd) for s in parse(cmd, "/w", {"HOME": "/h"}).segments if s.depth > 0]
+
+
+class RecursionTest(unittest.TestCase):
+    def test_recursion(self):
+        self.assertEqual(inner("bash -lc 'cd /a; rm -rf x'"), [("cd", 1, "/w"), ("rm", 1, "/a")])
+        self.assertEqual(inner('eval "rm -rf x"'), [("rm", 1, "/w")])
+        self.assertEqual(inner("sh <<EOF\nrm -rf x\nEOF"), [("rm", 1, "/w")])
+        self.assertEqual(inner("echo 'rm -rf x' | sh"), [("rm", 1, "/w")])
+        self.assertEqual(inner("printf 'rm -rf x\\n' | bash"), [("rm", 1, "/w")])
+        self.assertEqual(inner("echo $(rm -rf x)"), [("rm", 1, "/w")])
+        self.assertEqual(inner("curl -s u | sh"), [])
+        self.assertEqual(inner("python3 -c 'import os'"), [])
+
+    def test_substitution_outside_argv(self):  # 컨트롤러 결정: 할당 값·for 머리의 치환도 재귀
+        self.assertEqual(inner("X=$(rm -rf a)"), [("rm", 1, "/w")])
+        self.assertEqual(inner('export Y="$(rm -rf b)"'), [("rm", 1, "/w")])
+        self.assertEqual(inner("for f in $(rm -rf c); do :; done"), [("rm", 1, "/w")])
+        self.assertEqual(inner("cat > $(rm -rf d)"), [("rm", 1, "/w")])
+
+    def test_eval_changes_current_shell(self):
+        self.assertEqual(rm_cwd("eval cd /a; rm y"), "/a")
+
+    def test_depth_limit(self):
+        self.assertIsNotNone(parse("eval " * 20 + "rm x", "/w", {}).error)
+        self.assertIsNotNone(parse("bash -c 'rm \"x'", "/w", {}).error)
+
+    def test_xargs(self):
+        self.assertEqual([x.name for x in parse("ls | xargs -0 rm -f", "/w", {}).segments if x.via_xargs], ["rm"])
+
+
+def ctx_of(cmd):
+    return [s for s in parse(cmd, "/w", {"HOME": "/h"}).segments if s.context.kind == "container"]
+
+
+class ContainerTest(unittest.TestCase):  # 해석만 — docker 를 실행하지 않는다
+    def test_docker_exec(self):
+        s = ctx_of("docker exec -u root c sh -c 'rm -rf /etc/x'")
+        self.assertEqual([(x.name, x.context.container, x.context.launcher, x.context.mounts) for x in s], [("rm", "c", "exec", None)])
+
+    def test_docker_run_static_mounts(self):
+        s = ctx_of('docker run --rm -v "$(pwd)":/app -v data:/var/lib --mount type=bind,source=/s,target=/t img sh -c "rm -rf /app/x"')
+        self.assertEqual(s[0].context.mounts, (Mount("/w", "/app", "bind"), Mount("data", "/var/lib", "volume"), Mount("/s", "/t", "bind")))
+
+    def test_workdir_and_compose(self):
+        self.assertEqual(ctx_of("docker exec -w /app c rm -rf x")[0].cwd, "/app")
+        s = ctx_of("docker compose -p proj exec web rm -rf /x")[0]
+        self.assertEqual((s.context.launcher, s.context.container, s.context.project_dir, s.context.project), ("compose-exec", "web", "/w", "proj"))
+        self.assertEqual(ctx_of("docker-compose exec web rm -rf /x")[0].context.launcher, "compose-exec")
+        self.assertEqual(ctx_of("podman exec c rm -rf /x")[0].context.launcher, "exec")
 
 
 if __name__ == "__main__":
