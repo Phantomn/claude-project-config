@@ -620,15 +620,15 @@ def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str
     return os.path.normpath(r[0]) if r and len(r) == 1 else None
 
 
-def _strip_wrapper(words: list[Word], env: dict[str, str | None]) -> list[Word] | None:
-    """맨 앞 래퍼 하나를 벗긴 단어 목록. 래퍼가 아니면 None."""
+def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mapping[str, str | None]) -> list[Word] | None:
+    """맨 앞 래퍼 하나를 벗긴 단어 목록. 래퍼가 아니면 None. `env X=값` 은 env 로 확장해 run_env 에 저장."""
     name = os.path.basename(words[0].literal())
     i = 1
     if name == "env":
         while i < len(words):
             lit = words[i].literal()
             if (a := _assign_of(words[i], env)) is not None:
-                env[a[0]] = a[1]
+                run_env[a[0]] = a[1]
             elif lit in ("-u", "-C"):
                 i += 1
             elif not lit.startswith("-") or lit == "--":
@@ -655,13 +655,16 @@ def _strip_wrapper(words: list[Word], env: dict[str, str | None]) -> list[Word] 
     return words[i + _WRAPPER_TAIL.get(name, 0):]
 
 
-def _strip_all(w: list[Word], env: dict[str, str | None]) -> list[Word]:
-    """접두 할당(env 에 반영)과 래퍼를 반복해 벗긴다."""
+def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, str | None]) -> list[Word]:
+    """할당과 래퍼를 반복해 벗긴다. 할당 값은 env(이 줄 단어를 확장하는 env)로 확장해 run_env(명령이 보는 env)에 저장.
+
+    맨 앞 접두 할당(bash 가 왼쪽부터 순차 확장)은 호출자가 먼저 벗긴다 — 여기서는 모두 래퍼 뒤 단어로 본다.
+    """
     while w:
         while w and (a := _assign_of(w[0], env)) is not None:
-            env[a[0]] = a[1]
+            run_env[a[0]] = a[1]
             w = w[1:]
-        if not w or (rest := _strip_wrapper(w, env)) is None:
+        if not w or (rest := _strip_wrapper(w, run_env, env)) is None:
             break
         w = rest
     return w
@@ -852,7 +855,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     # 인자는 호스트 셸이 확장한다(seg.env) — 안쪽 단위의 cwd(-w)는 상대경로 기준으로만 쓰인다.
     # 컨테이너 안에서 실행되는 코드의 env 는 호스트 것을 물려받지 않는다(-w 만 셸 작업 폴더로 안다).
     cenv: dict[str, str | None] = {SHELL_CWD: cwd} if cwd else {}
-    w = _strip_all(a[i + 1:], cenv)
+    w = _strip_all(a[i + 1:], cenv, seg.env)
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
@@ -900,7 +903,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
         if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지, 명령 이름은 GNU xargs 처럼 제외)
             cmd = cmd[:1] + [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd[1:]]
         env = dict(run_env)  # xargs 가 실행하는 명령의 env — 단어는 이미 seg.env 로 확장됐다
-        if (w := _strip_all(cmd, env)):
+        if (w := _strip_all(cmd, env, seg.env)):
             inner = Segment(_cmd_name(w), w, [], seg.cwd, dict(seg.env), seg.context, d, via_xargs=True)
             segments.append(inner)
             _descend(inner, segments, None, env)
@@ -960,7 +963,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         # 같은 줄 단어는 할당 전 env 로 확장되고(seg.env), 접두 할당은 실행되는 안쪽 코드에만 보인다(run_env)
         unit_env = dict(state_env)
         run_env = dict(state_env)
-        w = _strip_all(w, run_env)
+        while w and (a := _assign_of(w[0], run_env)) is not None:  # 맨 앞 할당끼리는 왼쪽부터 순차 확장
+            run_env[a[0]] = a[1]
+            w = w[1:]
+        w = _strip_all(w, run_env, unit_env)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
             return None
         unit_cwd = st["cwd"]

@@ -409,5 +409,19 @@ class ReviewFix4Test(unittest.TestCase):  # 리뷰 라운드 4
         self.assertEqual(ctx_targets('docker exec -w /app c xargs sh -c "rm -rf \\$(pwd)"'), [["/app"]])
 
 
+class ReviewFix5Test(unittest.TestCase):  # 리뷰 라운드 5 — 확장 env 와 저장 env 의 분리
+    def test_assignment_after_wrapper_expands_with_pre_assignment_env(self):
+        self.assertEqual(targets("X=/tmp env Y=$X sh -c 'rm -rf /data/$Y'"), [None])
+        self.assertEqual(targets("X=/tmp sudo Y=$X sh -c 'rm -rf /data/$Y'"), [None])
+        self.assertEqual(targets("HOME=/tmp env Y=~ sh -c 'rm -rf $Y/x'"), [["/h/x"]])
+        self.assertEqual(targets("X=/a Y=$X sh -c 'rm -rf $Y'"), [["/a"]])  # 맨 앞 할당끼리는 순차
+
+    def test_container_env_assignment_expands_on_host(self):
+        self.assertEqual(ctx_targets("docker exec -w /app c env X=$(pwd) sh -c 'rm -rf $X'"), [["/w"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c env X=`pwd` xargs sh -c 'rm -rf $X'"), [["/w"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c env X=$PWD sh -c 'rm -rf $X'"), [["/w"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c env X=~ sh -c 'rm -rf $X'"), [["/h"]])
+
+
 if __name__ == "__main__":
     unittest.main()
