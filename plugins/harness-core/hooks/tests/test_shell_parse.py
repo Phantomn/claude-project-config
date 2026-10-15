@@ -265,5 +265,71 @@ class ContainerTest(unittest.TestCase):  # 해석만 — docker 를 실행하지
         self.assertEqual(ctx_of("podman exec c rm -rf /x")[0].context.launcher, "exec")
 
 
+def seg_of(cmd, name, cwd="/w"):
+    return [s for s in parse(cmd, cwd, {"HOME": "/h"}).segments if s.name == name]
+
+
+def targets(cmd, name="rm"):
+    s = seg_of(cmd, name)[-1]
+    return [expand(w, s) for w in s.argv[1:] if not w.literal().startswith("-")]
+
+
+class ReviewFixTest(unittest.TestCase):  # 리뷰 라운드 1
+    def test_c1_recursion_uses_expanded_text(self):
+        for c in ["bash -c \"rm -rf '$HOME'\"", "eval \"rm -rf '$HOME'\"", "sh <<< \"rm -rf '$HOME'\""]:
+            self.assertEqual(targets(c), [["/h"]], c)
+        for c in ["X='rm -rf /'; bash -c \"$X\"", "X='rm -rf /'; eval \"$X\""]:
+            self.assertEqual([s.name for s in parse(c, "/w", {}).segments if s.depth > 0], ["rm"], c)
+        self.assertIsNotNone(parse('bash -c "$NOPE"', "/w", {}).error)
+
+    def test_c2_brace_before_expansion(self):
+        self.assertEqual(targets("rm -rf {$HOME,}"), [["/h", "/w"]])
+        self.assertEqual(targets('rm -rf {/etc,"/x"}'), [["/etc", "/x"]])
+        self.assertEqual(targets("rm -rf /{e..e}tc"), [["/etc"]])
+        self.assertIsNone(targets("rm -rf {a,{b,c}}")[0])
+        self.assertIsNone(targets("rm -rf " + "{a,b}" * 25)[0])
+
+    def test_c3_xargs_propagates(self):
+        rm = seg_of("find . | xargs -I{} sh -c 'rm {}'", "rm")
+        self.assertEqual([s.via_xargs for s in rm], [True])
+        self.assertIsNone(expand(rm[0].argv[1], rm[0]))
+        rm = seg_of("ls | xargs -I % rm -rf '%'", "rm")[0]
+        self.assertIsNone(expand(rm.argv[2], rm))
+
+    def test_c4_docker_run_value_options(self):
+        s = ctx_of("docker run --restart always -v /a:/b img sh -c 'rm -rf /b'")
+        self.assertEqual([x.name for x in s], ["rm"])
+        self.assertEqual(s[0].context.mounts, (Mount("/a", "/b", "bind"),))
+        self.assertEqual([x.name for x in ctx_of("docker run --cap-add SYS_ADMIN img rm -rf /")], ["rm"])
+        self.assertEqual([x.name for x in ctx_of("docker run -it --rm img rm -rf /")], ["rm"])
+        self.assertIsNotNone(parse("docker run --zzz x img rm -rf /", "/w", {}).error)
+
+    def test_i1_docker_global_options(self):
+        self.assertEqual([(x.name, x.context.launcher) for x in ctx_of("docker --config /x exec c rm -rf /")], [("rm", "exec")])
+        self.assertEqual([x.name for x in ctx_of("docker --tls --tlscacert ca exec c rm -rf /")], ["rm"])
+        self.assertIsNotNone(parse("docker --zzz x exec c rm -rf /", "/w", {}).error)
+
+    def test_i2_attached_short_values(self):
+        self.assertIn(Mount("/", "/host", "bind"), ctx_of("docker run -v/:/host img rm -rf /host/etc")[0].context.mounts)
+        self.assertIn(Mount("/", "/host", "bind"), ctx_of("docker run -v=/:/host img rm -rf /host/etc")[0].context.mounts)
+        self.assertEqual(ctx_of("docker exec -w/app -uroot c rm -rf x")[0].cwd, "/app")
+
+    def test_i3_shell_stdin_and_rcfile(self):
+        self.assertEqual(inner("echo 'rm -rf x' | bash -s foo"), [("rm", 1, "/w")])
+        self.assertEqual(inner("bash --rcfile x -c 'rm y'"), [("rm", 1, "/w")])
+
+    def test_i4_unquoted_value_split_or_glob(self):
+        self.assertEqual(targets("X='/e*'; rm -rf $X"), [None])
+        self.assertEqual(targets("X='/etc /x'; rm -rf $X"), [None])
+        self.assertEqual(targets("X='/etc /x'; rm -rf \"$X\""), [["/etc /x"]])
+
+    def test_heredoc_body_substitution(self):
+        self.assertEqual(inner("cat <<EOF\n$(rm -rf ~)\nEOF"), [("rm", 1, "/w")])
+        self.assertEqual(inner("cat <<'EOF'\n$(rm -rf ~)\nEOF"), [])
+
+    def test_compose_file_sets_project_dir(self):
+        self.assertEqual(ctx_of("docker compose -f /p/q/c.yml exec web rm -rf /x")[0].context.project_dir, "/p/q")
+
+
 if __name__ == "__main__":
     unittest.main()

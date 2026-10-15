@@ -5,6 +5,7 @@ shlex 를 쓰지 않는 이유: 따옴표 종류·리다이렉트 위치·`2>&1`
 from __future__ import annotations
 
 import glob
+import itertools
 import os
 import re
 from collections.abc import Mapping
@@ -332,17 +333,57 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
 _STDIN_CODE = ("<<", "<<-", "<<<")
-_XARGS_VALUE = ("-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
+_XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
+_XARGS_MARK = "\x00xargs-input\x00"  # xargs 가 입력으로 바꿔 넣는 자리 — 이 표시가 든 대상은 확정 불가
+_SEQ = re.compile(r"(-?\d+)\.\.(-?\d+)|([a-zA-Z])\.\.([a-zA-Z])")
+_BRACE_CAP = 64
 _CONTAINER_CLIS = ("docker", "podman", "docker-compose")
-_DOCKER_GLOBAL = ("-H", "--context", "-c", "--log-level")
-_EXEC_VALUE = ("-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys")
-_RUN_VALUE = _EXEC_VALUE + ("-v", "--volume", "--mount", "--name", "-p", "--publish", "--network", "--entrypoint", "-l", "--label",
-                            "--platform", "--hostname", "-h", "--add-host", "--device", "--cpus", "-m", "--memory")
-_COMPOSE_GLOBAL = ("-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile")
-_COMPOSE_EXEC_VALUE = ("-e", "-u", "-w", "--index", "--env", "--user", "--workdir")
-# compose run 은 -v·--name 등도 값을 받는다 — 빠지면 그 값이 서비스 이름으로 잘못 읽힌다
-_COMPOSE_RUN_VALUE = _COMPOSE_EXEC_VALUE + ("-v", "--volume", "--name", "-p", "--publish", "--entrypoint", "-l", "--label", "--env-file")
+# 옵션 표 = (값 옵션, 플래그). 표에 없는 옵션은 값 소비 여부를 몰라 이미지·명령 위치가 틀어지므로 해석 실패로 보낸다.
+_DOCKER_GLOBAL = (
+    {"-H", "--host", "-c", "--context", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey",
+     "--root", "--runroot", "--connection", "--url", "--identity", "--storage-driver", "--storage-opt", "--cgroup-manager",
+     "--conmon", "--events-backend", "--hooks-dir", "--network-cmd-path", "--network-config-dir", "--registries-conf",
+     "--runtime", "--runtime-flag", "--tmpdir", "--volumepath", "--imagestore", "--module", "--ssh", "--out", "--cdi-spec-dir"},
+    {"-D", "--debug", "--tls", "--tlsverify", "-v", "--version", "--help", "-r", "--remote", "--syslog", "--noout"},
+)
+_EXEC = (
+    {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"},
+    {"-d", "--detach", "-i", "--interactive", "-t", "--tty", "--privileged"},
+)
+_RUN = (
+    _EXEC[0] | {
+        "-v", "--volume", "--mount", "--name", "-p", "--publish", "--network", "--net", "--network-alias", "--net-alias",
+        "--entrypoint", "-l", "--label", "--label-file", "--platform", "--hostname", "-h", "--domainname", "--add-host",
+        "--annotation", "-a", "--attach", "--blkio-weight", "--blkio-weight-device", "--cap-add", "--cap-drop",
+        "--cgroup-parent", "--cgroupns", "--cidfile", "--cpu-period", "--cpu-quota", "--cpu-rt-period", "--cpu-rt-runtime",
+        "-c", "--cpu-shares", "--cpus", "--cpuset-cpus", "--cpuset-mems", "--device", "--device-cgroup-rule",
+        "--device-read-bps", "--device-read-iops", "--device-write-bps", "--device-write-iops", "--dns", "--dns-option",
+        "--dns-opt", "--dns-search", "--expose", "--gpus", "--group-add", "--health-cmd", "--health-interval",
+        "--health-retries", "--health-start-period", "--health-start-interval", "--health-timeout", "--ip", "--ip6", "--ipc",
+        "--isolation", "--kernel-memory", "--link", "--link-local-ip", "--log-driver", "--log-opt", "--mac-address",
+        "-m", "--memory", "--memory-reservation", "--memory-swap", "--memory-swappiness", "--oom-score-adj", "--pid",
+        "--pids-limit", "--pull", "--restart", "--runtime", "--security-opt", "--shm-size", "--stop-signal",
+        "--stop-timeout", "--storage-opt", "--sysctl", "--tmpfs", "--ulimit", "--userns", "--uts", "--volume-driver",
+        "--volumes-from"},
+    _EXEC[1] | {"--rm", "--init", "--read-only", "-P", "--publish-all", "-q", "--quiet", "--no-healthcheck",
+                "--oom-kill-disable", "--disable-content-trust", "--sig-proxy", "--use-api-socket", "--help"},
+)
+_COMPOSE_GLOBAL = (
+    {"-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile", "--ansi", "--parallel",
+     "--progress"},
+    {"--compatibility", "--dry-run", "--all-resources", "--verbose", "--help"},
+)
+_COMPOSE_EXEC = (
+    {"-e", "--env", "-u", "--user", "-w", "--workdir", "--index"},
+    {"-d", "--detach", "-T", "--no-TTY", "--no-tty", "--privileged", "-i", "--interactive", "-t", "--tty"},
+)
+_COMPOSE_RUN = (
+    _COMPOSE_EXEC[0] | {"-v", "--volume", "--name", "-p", "--publish", "--entrypoint", "-l", "--label", "--env-from-file",
+                        "--cap-add", "--cap-drop", "--pull"},
+    _COMPOSE_EXEC[1] | {"--rm", "--no-deps", "--service-ports", "--use-aliases", "--build", "--quiet-pull",
+                        "--remove-orphans"},
+)
 
 
 # ---- 단어 확장 (spec §3.3-4·8, §3.4 정규화 1~3) ----
@@ -368,7 +409,8 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None], cwd: str | None) -> t
     return "$", i + 1
 
 
-def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None) -> list[tuple[str, bool]] | None:
+def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None,
+           split: bool = False) -> list[tuple[str, bool]] | None:
     """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None."""
     out: list[tuple[str, bool]] = []
     for k, p in enumerate(parts):
@@ -391,6 +433,8 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | No
                 val, j = _dollar(t, i, env, cwd)
                 if val is None:
                     return None
+                if split and active and any(x.isspace() or x in "*?[" for x in val):
+                    return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다
                 out += [(t[start:i], active), (val, False)]
                 i = start = j
             elif active and c in "<>" and t[i + 1 : i + 2] == "(":
@@ -401,32 +445,96 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | No
     return out
 
 
-def _text(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None) -> str | None:
-    ch = _subst(parts, env, cwd)
+def _text(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None, split: bool = False) -> str | None:
+    ch = _subst(parts, env, cwd, split)
     return None if ch is None else "".join(t for t, _ in ch)
 
 
-def _braces(ch: list[tuple[str, bool]]) -> list[list[tuple[str, bool]]]:
-    for k, (t, a) in enumerate(ch):
-        if a and (m := _BRACE.search(t)):
-            return [x for alt in m.group(1).split(",")
-                    for x in _braces(ch[:k] + [(t[: m.start()] + alt + t[m.end():], True)] + ch[k + 1:])]
-    return [ch]
+def _brace_items(items: list[tuple[str, str]], out: list[list[tuple[str, str]]]) -> bool:
+    """bash 처럼 변수 확장 전에 중괄호를 전개해 out 에 덧붙인다. 중첩·0 채움 수열·상한 초과면 False."""
+    s = "".join(c if q == "" else "\0" for c, q in items)  # 따옴표 안 문자는 전개 기호가 아니다
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "`" or (s[i] == "$" and s[i + 1 : i + 2] in ("(", "{")):
+            i = _skip_sub(s, i)
+            continue
+        if s[i] != "{":
+            i += 1
+            continue
+        commas, j = [], i + 1
+        while j < n and s[j] != "}":
+            if s[j] == "`" or (s[j] == "$" and s[j + 1 : j + 2] in ("(", "{")):
+                j = _skip_sub(s, j)
+                continue
+            if s[j] == "{":
+                return False
+            if s[j] == ",":
+                commas.append(j)
+            j += 1
+        if j >= n:
+            break  # 닫히지 않은 { 는 리터럴
+        if commas:
+            bounds = [i, *commas, j]
+            alts = [items[a + 1 : b] for a, b in itertools.pairwise(bounds)]
+        elif (m := _SEQ.fullmatch(s, i + 1, j)):
+            if m.group(1) is not None:
+                if any(re.match(r"-?0\d", g) for g in m.group(1, 2)):
+                    return False
+                a, b = int(m.group(1)), int(m.group(2))
+                vals = [str(x) for x in range(a, b + (1 if b >= a else -1), 1 if b >= a else -1)] if abs(b - a) < _BRACE_CAP else None
+            else:
+                a, b = ord(m.group(3)), ord(m.group(4))
+                vals = [chr(x) for x in range(a, b + (1 if b >= a else -1), 1 if b >= a else -1)]
+            if vals is None:
+                return False
+            alts = [[(c, "") for c in v] for v in vals]
+        else:
+            i = j + 1  # {}·{x} 는 리터럴
+            continue
+        if len(alts) > _BRACE_CAP:
+            return False
+        for alt in alts:
+            if not _brace_items(items[:i] + alt + items[j + 1:], out) or len(out) > _BRACE_CAP:
+                return False
+        return True
+    out.append(items)
+    return True
+
+
+def _brace_words(parts: tuple[Part, ...]) -> list[tuple[Part, ...]] | None:
+    out: list[list[tuple[str, str]]] = []
+    if not _brace_items([(c, p.quote) for p in parts for c in p.text], out):
+        return None
+    words = []
+    for items in out:
+        merged: list[list[str]] = []
+        for c, q in items:
+            if merged and merged[-1][1] == q:
+                merged[-1][0] += c
+            else:
+                merged.append([c, q])
+        words.append(tuple(Part(t, q) for t, q in merged))
+    return words
 
 
 def _expand(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
-    ch = _subst(w.parts, env, cwd)
-    if ch is None:
+    words = _brace_words(w.parts)
+    if words is None:
         return None
     out: list[str] = []
-    for alt in _braces(ch):
-        lit = "".join(t for t, _ in alt)
+    for parts in words:
+        ch = _subst(parts, env, cwd, split=True)
+        if ch is None:
+            return None
+        lit = "".join(t for t, _ in ch)
+        if _XARGS_MARK in lit:
+            return None
         if not lit.startswith("/"):
             if cwd is None:
                 return None
-            lit = os.path.join(cwd, lit)
-        if any(a and any(x in t for x in "*?[") for t, a in alt):
-            pat = "".join(t if a else glob.escape(t) for t, a in alt)
+            lit = os.path.join(cwd, lit) if lit else cwd
+        if any(a and any(x in t for x in "*?[") for t, a in ch):
+            pat = "".join(t if a else glob.escape(t) for t, a in ch)
             if not pat.startswith("/"):
                 pat = os.path.join(glob.escape(cwd), pat)
             if (hits := sorted(glob.glob(pat))):  # 점 파일은 패턴이 . 로 시작할 때만 — glob 기본이 bash 와 같다
@@ -567,30 +675,51 @@ def _pipe_text(prev: Segment) -> str | None:
 
 
 def _shell_code(seg: Segment, pipe_prev: Segment | None) -> str | None:
+    """셸이 실행할 코드 — 바깥 셸이 확장한 뒤의 텍스트. 확장할 수 없으면 LexError(해석 실패)."""
     a = seg.argv
-    i = 1
+    i, stdin = 1, False
     while i < len(a):
         x = a[i].literal()
-        if x in ("-o", "+o", "-O", "+O"):
+        if x in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
             i += 2
             continue
         if _SHELL_C.fullmatch(x):
-            return a[i + 1].literal() if i + 1 < len(a) else None
+            if i + 1 >= len(a):
+                return None
+            if (code := _text(a[i + 1].parts, seg.env, seg.cwd, split=True)) is None:
+                raise LexError("셸 -c 문자열을 확정할 수 없음")
+            return code
         if not x.startswith(("-", "+")) or x in ("-", "--"):
             break
+        stdin = stdin or bool(re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", x))
         i += 1
-    if i < len(a) and a[i].literal() not in ("-", "--"):
-        return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다
+    if i < len(a) and a[i].literal() not in ("-", "--") and not stdin:
+        return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s 면 stdin 이 코드)
     for r in seg.redirects:
         if r.op in _HEREDOC:
             return r.body
         if r.op == "<<<" and r.target is not None:
-            return r.target.literal()
+            if (code := _text(r.target.parts, seg.env, seg.cwd)) is None:
+                raise LexError("<<< 문자열을 확정할 수 없음")
+            return code
     return _pipe_text(pipe_prev) if pipe_prev is not None else None
 
 
-def _opts(a: list[Word], i: int, values: tuple[str, ...]) -> tuple[int, list[tuple[str, Word]]]:
-    """옵션을 건너뛰며 값 옵션을 (이름, 값 단어) 로 모은다. `--opt=값` 은 값 내장."""
+def _drop(w: Word, n: int) -> Word:
+    """단어 앞 n 글자를 뺀 단어(따옴표 종류 유지)."""
+    parts = []
+    for p in w.parts:
+        if n >= len(p.text):
+            n -= len(p.text)
+            continue
+        parts.append(Part(p.text[n:], p.quote))
+        n = 0
+    return Word(tuple(parts))
+
+
+def _opts(a: list[Word], i: int, table: tuple[set[str], set[str]]) -> tuple[int, list[tuple[str, Word]]]:
+    """옵션을 건너뛰며 값 옵션을 (이름, 값 단어) 로 모은다. `--opt=값`·`-v값`·`-v=값`·`-it` 묶음 처리, 표에 없으면 LexError."""
+    values, flags = table
     got: list[tuple[str, Word]] = []
     while i < len(a):
         x = a[i].literal()
@@ -598,16 +727,31 @@ def _opts(a: list[Word], i: int, values: tuple[str, ...]) -> tuple[int, list[tup
             return i + 1, got
         if not x.startswith("-") or x == "-":
             break
-        k, eq, _ = x.partition("=")
-        if eq and k.startswith("--"):
-            p0 = a[i].parts[0]
-            got.append((k, Word((Part(p0.text[len(k) + 1:], p0.quote),) + a[i].parts[1:])))
+        if x.startswith("--"):
+            k, eq, _ = x.partition("=")
+            if k in values:
+                if eq:
+                    got.append((k, _drop(a[i], len(k) + 1)))
+                elif i + 1 < len(a):
+                    got.append((k, a[i + 1]))
+                    i += 1
+            elif k not in flags:
+                raise LexError(f"알 수 없는 옵션 {k}")
             i += 1
-        elif x in values and i + 1 < len(a):
-            got.append((x, a[i + 1]))
-            i += 2
-        else:
-            i += 1
+            continue
+        for n in range(1, len(x)):
+            o = "-" + x[n]
+            if o in values:
+                rest = x[n + 1:]
+                if rest:
+                    got.append((o, _drop(a[i], n + 1 + rest.startswith("="))))
+                elif i + 1 < len(a):
+                    got.append((o, a[i + 1]))
+                    i += 1
+                break
+            if o not in flags:
+                raise LexError(f"알 수 없는 옵션 {o}")
+        i += 1
     return i, got
 
 
@@ -617,7 +761,7 @@ def _mounts(o: list[tuple[str, Word]], seg: Segment) -> tuple[Mount, ...] | None
     for k, w in o:
         if k not in ("-v", "--volume", "--mount"):
             continue
-        s = _text(w.parts, seg.env, seg.cwd)
+        s = _text(w.parts, seg.env, seg.cwd, split=True)
         if s is None:
             return None
         if k == "--mount":
@@ -656,16 +800,24 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     sub = a[i].literal() if i < len(a) else ""
     if sub not in ("exec", "run"):
         return
-    values = (_COMPOSE_RUN_VALUE if sub == "run" else _COMPOSE_EXEC_VALUE) if compose else (_RUN_VALUE if sub == "run" else _EXEC_VALUE)
-    i, o = _opts(a, i + 1, values)
+    table = (_COMPOSE_RUN if sub == "run" else _COMPOSE_EXEC) if compose else (_RUN if sub == "run" else _EXEC)
+    i, o = _opts(a, i + 1, table)
     if i >= len(a):
         return
     proj = [w.literal() for k, w in g if k in ("-p", "--project-name")]
     pdir = [w for k, w in g if k == "--project-directory"]
+    files = [w for k, w in g if k in ("-f", "--file")]
+    if pdir:
+        project_dir = _resolve_dir(pdir[-1], seg.cwd, seg.env)
+    elif files:  # compose 는 첫 -f 파일의 폴더를 프로젝트 폴더로 쓴다
+        r = _expand(files[0], seg.env, seg.cwd)
+        project_dir = os.path.dirname(os.path.normpath(r[0])) if r and len(r) == 1 else None
+    else:
+        project_dir = seg.cwd
     ctx = Context(
         "container", a[i].literal(), ("compose-" if compose else "") + sub,
         _mounts(o, seg) if sub == "run" and not compose else None,
-        (_resolve_dir(pdir[-1], seg.cwd, seg.env) if pdir else seg.cwd) if compose else None,
+        project_dir if compose else None,
         proj[-1] if proj else None,
     )
     wd = [w.literal() for k, w in o if k in ("-w", "--workdir")]
@@ -675,10 +827,10 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
-    inner = Segment(_cmd_name(w), w, stdin, cwd, env, ctx, seg.depth + 1)
+    inner = Segment(_cmd_name(w), w, stdin, cwd, env, ctx, seg.depth + 1, seg.via_xargs)
     code = _shell_code(inner, pipe_prev) if inner.name in SHELLS else None
     if code is not None:
-        _parse(code, cwd, env, ctx, inner.depth, segments)
+        _parse(code, cwd, env, ctx, inner.depth, segments, seg.via_xargs)
     else:
         segments.append(inner)
         _descend(inner, segments, pipe_prev)
@@ -689,18 +841,33 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -
     d = seg.depth + 1
     if seg.name in SHELLS:
         if (code := _shell_code(seg, pipe_prev)) is not None:
-            _parse(code, seg.cwd, dict(seg.env), seg.context, d, segments)
+            _parse(code, seg.cwd, dict(seg.env), seg.context, d, segments, seg.via_xargs)
     elif seg.name == "eval":
-        return _parse(" ".join(literal_args(seg)), seg.cwd, dict(seg.env), seg.context, d, segments)
+        vals = [_text(w.parts, seg.env, seg.cwd) for w in seg.argv[1:]]
+        if None in vals:
+            raise LexError("eval 인자를 확정할 수 없음")
+        return _parse(" ".join(vals), seg.cwd, dict(seg.env), seg.context, d, segments, seg.via_xargs)  # type: ignore[arg-type]
     elif seg.name == "xargs":
-        a, i = seg.argv, 1
+        a, i, repl = seg.argv, 1, None
         while i < len(a) and a[i].literal().startswith("-"):
-            if a[i].literal() == "--":
+            x = a[i].literal()
+            if x == "--":
                 i += 1
                 break
-            i += 2 if a[i].literal() in _XARGS_VALUE else 1
+            if x in ("-I", "-J") and i + 1 < len(a):
+                repl = a[i + 1].literal()
+            elif x.startswith(("-I", "-J", "-i")) and len(x) > 2:
+                repl = x[2:]
+            elif x in ("-i", "--replace"):
+                repl = "{}"
+            elif x.startswith("--replace="):
+                repl = x[len("--replace="):]
+            i += 2 if x in _XARGS_VALUE else 1
+        cmd = a[i:]
+        if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지)
+            cmd = [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd]
         env = dict(seg.env)
-        if (w := _strip_all(a[i:], env, seg.cwd)):
+        if (w := _strip_all(cmd, env, seg.cwd)):
             inner = Segment(_cmd_name(w), w, [], seg.cwd, env, seg.context, d, via_xargs=True)
             segments.append(inner)
             _descend(inner, segments, None)
@@ -722,7 +889,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
 
 
 def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], context: Context, depth: int,
-           segments: list[Segment]) -> tuple[str | None, dict[str, str | None]]:
+           segments: list[Segment], via_xargs: bool = False) -> tuple[str | None, dict[str, str | None]]:
     """segments 에 단위를 덧붙이고 끝 상태(cwd, env)를 돌려준다. 오류는 LexError."""
     if depth > _MAX_DEPTH:
         raise LexError("재귀 깊이 초과")
@@ -738,10 +905,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         w, r, words, redirects = words, redirects, [], []
         # 치환은 할당 값·for 머리·리다이렉트 대상에서도 실행된다(컨트롤러 결정)
         subs = [x for wd in w + [rd.target for rd in r if rd.op not in _HEREDOC and rd.target is not None] for x in _word_subs(wd)]
+        # 구분자에 따옴표가 없는 heredoc 본문의 치환도 실행된다
+        subs += [x for rd in r if rd.op in _HEREDOC and rd.body and rd.target is not None and not rd.target.is_quoted()
+                 for x in _subs(rd.body, False)]
         sub_cwd, sub_env = st["cwd"], dict(state_env)
         seg = unit(w, r)
         for code in subs:
-            _parse(code, sub_cwd, dict(sub_env), context, depth + 1, segments)
+            _parse(code, sub_cwd, dict(sub_env), context, depth + 1, segments, via_xargs)
         return seg
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
@@ -771,7 +941,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             return None
         if not (w or r):
             return None
-        seg = Segment(name, w, r, unit_cwd, unit_env, context, depth)
+        seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev)) is not None:
             st["cwd"] = after[0]
