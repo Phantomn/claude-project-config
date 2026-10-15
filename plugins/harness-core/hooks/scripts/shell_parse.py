@@ -336,7 +336,7 @@ _STDIN_CODE = ("<<", "<<-", "<<<")
 _XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
 _XARGS_MARK = "\x00xargs-input\x00"  # xargs 가 입력으로 바꿔 넣는 자리 — 이 표시가 든 대상은 확정 불가
-_SEQ = re.compile(r"(-?\d+)\.\.(-?\d+)|([a-zA-Z])\.\.([a-zA-Z])")
+_SEQ = re.compile(r"(-?\d+|[a-zA-Z])\.\.(-?\d+|[a-zA-Z])(?:\.\.(-?\d+))?")
 _BRACE_CAP = 64
 _CONTAINER_CLIS = ("docker", "podman", "docker-compose")
 # 옵션 표 = (값 옵션, 플래그). 표에 없는 옵션은 값 소비 여부를 몰라 이미지·명령 위치가 틀어지므로 해석 실패로 보낸다.
@@ -369,10 +369,11 @@ _RUN = (
     _EXEC[1] | {"--rm", "--init", "--read-only", "-P", "--publish-all", "-q", "--quiet", "--no-healthcheck",
                 "--oom-kill-disable", "--disable-content-trust", "--sig-proxy", "--use-api-socket", "--help"},
 )
-_COMPOSE_GLOBAL = (
+_COMPOSE_GLOBAL = (  # docker compose(v2) 와 docker-compose(v1) 전역 옵션
     {"-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile", "--ansi", "--parallel",
-     "--progress"},
-    {"--compatibility", "--dry-run", "--all-resources", "--verbose", "--help"},
+     "--progress", "--log-level", "-H", "--host", "-c", "--context", "--tlscacert", "--tlscert", "--tlskey"},
+    {"--compatibility", "--dry-run", "--all-resources", "--verbose", "--help", "-h", "--no-ansi", "--skip-hostname-check",
+     "--tls", "--tlsverify", "-v", "--version"},
 )
 _COMPOSE_EXEC = (
     {"-e", "--env", "-u", "--user", "-w", "--workdir", "--index"},
@@ -389,7 +390,21 @@ _COMPOSE_RUN = (
 # ---- 단어 확장 (spec §3.3-4·8, §3.4 정규화 1~3) ----
 
 def _lookup(name: str, env: Mapping[str, str | None], cwd: str | None) -> str | None:
-    return cwd if name == "PWD" else env.get(name)
+    # PWD 가 env 에 없으면(컨테이너 안처럼 셸 상태를 모르면) 미확정
+    return cwd if name == "PWD" and "PWD" in env else env.get(name)
+
+
+def _seq(a: str, b: str, step: str | None) -> list[str] | None:
+    """`{a..b[..step]}` 수열. 0 채움·숫자/문자 혼합·간격 0·상한 초과는 None."""
+    num = a.lstrip("-").isdigit()
+    if num != b.lstrip("-").isdigit() or (num and any(re.match(r"-?0\d", g) for g in (a, b))):
+        return None
+    x, y = (int(a), int(b)) if num else (ord(a), ord(b))
+    k = abs(int(step)) if step else 1
+    if k == 0 or abs(y - x) // k >= _BRACE_CAP:
+        return None
+    d = k if y >= x else -k
+    return [str(v) if num else chr(v) for v in range(x, y + (1 if d > 0 else -1), d)]
 
 
 def _dollar(t: str, i: int, env: Mapping[str, str | None], cwd: str | None) -> tuple[str | None, int]:
@@ -477,17 +492,11 @@ def _brace_items(items: list[tuple[str, str]], out: list[list[tuple[str, str]]])
             bounds = [i, *commas, j]
             alts = [items[a + 1 : b] for a, b in itertools.pairwise(bounds)]
         elif (m := _SEQ.fullmatch(s, i + 1, j)):
-            if m.group(1) is not None:
-                if any(re.match(r"-?0\d", g) for g in m.group(1, 2)):
-                    return False
-                a, b = int(m.group(1)), int(m.group(2))
-                vals = [str(x) for x in range(a, b + (1 if b >= a else -1), 1 if b >= a else -1)] if abs(b - a) < _BRACE_CAP else None
-            else:
-                a, b = ord(m.group(3)), ord(m.group(4))
-                vals = [chr(x) for x in range(a, b + (1 if b >= a else -1), 1 if b >= a else -1)]
-            if vals is None:
+            if (vals := _seq(*m.groups())) is None:
                 return False
             alts = [[(c, "") for c in v] for v in vals]
+        elif ".." in s[i + 1 : j]:
+            return False  # 지원하지 않는 수열 모양은 리터럴로 확정하지 않는다
         else:
             i = j + 1  # {}·{x} 는 리터럴
             continue
@@ -657,10 +666,19 @@ def _cmd_name(w: list[Word]) -> str:
 
 # ---- 재귀 해석 (spec §3.3-7) ----
 
+def _heredoc_text(r: Redirect, env: Mapping[str, str | None], cwd: str | None) -> str | None:
+    """heredoc 본문. 구분자에 따옴표가 없으면 바깥 셸이 $VAR·$(…) 를 먼저 확장한다 — 확정할 수 없으면 LexError."""
+    if r.body is None or r.target is None or r.target.is_quoted():
+        return r.body
+    if (t := _text((Part(r.body, '"'),), env, cwd)) is None:
+        raise LexError("heredoc 본문을 확정할 수 없음")
+    return t
+
+
 def _pipe_text(prev: Segment) -> str | None:
     """파이프 앞 단위가 셸에 넘기는 리터럴 텍스트. 모르면 None(해석하지 않고 통과)."""
     if prev.name == "cat":
-        return next((r.body for r in prev.redirects if r.op in _HEREDOC), None)
+        return next((_heredoc_text(r, prev.env, prev.cwd) for r in prev.redirects if r.op in _HEREDOC), None)
     if prev.name not in ("echo", "printf"):
         return None
     args = prev.argv[1:]
@@ -674,8 +692,9 @@ def _pipe_text(prev: Segment) -> str | None:
     return s.replace("\\n", "\n") if prev.name == "printf" else s
 
 
-def _shell_code(seg: Segment, pipe_prev: Segment | None) -> str | None:
-    """셸이 실행할 코드 — 바깥 셸이 확장한 뒤의 텍스트. 확장할 수 없으면 LexError(해석 실패)."""
+def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None = None) -> str | None:
+    """셸이 실행할 코드 — 바깥 셸(outer, 기본 seg)이 확장한 뒤의 텍스트. 확장할 수 없으면 LexError(해석 실패)."""
+    o = outer or seg
     a = seg.argv
     i, stdin = 1, False
     while i < len(a):
@@ -686,7 +705,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None) -> str | None:
         if _SHELL_C.fullmatch(x):
             if i + 1 >= len(a):
                 return None
-            if (code := _text(a[i + 1].parts, seg.env, seg.cwd, split=True)) is None:
+            if (code := _text(a[i + 1].parts, o.env, o.cwd, split=True)) is None:
                 raise LexError("셸 -c 문자열을 확정할 수 없음")
             return code
         if not x.startswith(("-", "+")) or x in ("-", "--"):
@@ -697,9 +716,9 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None) -> str | None:
         return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s 면 stdin 이 코드)
     for r in seg.redirects:
         if r.op in _HEREDOC:
-            return r.body
+            return _heredoc_text(r, o.env, o.cwd)
         if r.op == "<<<" and r.target is not None:
-            if (code := _text(r.target.parts, seg.env, seg.cwd)) is None:
+            if (code := _text(r.target.parts, o.env, o.cwd)) is None:
                 raise LexError("<<< 문자열을 확정할 수 없음")
             return code
     return _pipe_text(pipe_prev) if pipe_prev is not None else None
@@ -820,15 +839,16 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         project_dir if compose else None,
         proj[-1] if proj else None,
     )
-    wd = [w.literal() for k, w in o if k in ("-w", "--workdir")]
-    cwd = wd[-1] if wd else None
+    wd = [w for k, w in o if k in ("-w", "--workdir")]
+    wd_text = _text(wd[-1].parts, seg.env, seg.cwd, split=True) if wd else None
+    cwd = wd_text if wd_text and wd_text.startswith("/") else None  # 컨테이너 경로라 호스트 cwd 로 잇지 않는다
     env: dict[str, str | None] = {}  # 호스트 변수는 컨테이너로 넘어가지 않는다
     w = _strip_all(a[i + 1:], env, cwd)
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
     inner = Segment(_cmd_name(w), w, stdin, cwd, env, ctx, seg.depth + 1, seg.via_xargs)
-    code = _shell_code(inner, pipe_prev) if inner.name in SHELLS else None
+    code = _shell_code(inner, pipe_prev, seg) if inner.name in SHELLS else None  # -c·<<< 는 호스트 셸이 먼저 확장
     if code is not None:
         _parse(code, cwd, env, ctx, inner.depth, segments, seg.via_xargs)
     else:
@@ -864,8 +884,8 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -
                 repl = x[len("--replace="):]
             i += 2 if x in _XARGS_VALUE else 1
         cmd = a[i:]
-        if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지)
-            cmd = [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd]
+        if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지, 명령 이름은 GNU xargs 처럼 제외)
+            cmd = cmd[:1] + [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd[1:]]
         env = dict(seg.env)
         if (w := _strip_all(cmd, env, seg.cwd)):
             inner = Segment(_cmd_name(w), w, [], seg.cwd, env, seg.context, d, via_xargs=True)

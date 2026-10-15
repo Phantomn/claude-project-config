@@ -331,5 +331,44 @@ class ReviewFixTest(unittest.TestCase):  # 리뷰 라운드 1
         self.assertEqual(ctx_of("docker compose -f /p/q/c.yml exec web rm -rf /x")[0].context.project_dir, "/p/q")
 
 
+def ctx_targets(cmd):
+    s = ctx_of(cmd)[-1]
+    return [expand(w, s) for w in s.argv[1:] if not w.literal().startswith("-")]
+
+
+class ReviewFix2Test(unittest.TestCase):  # 리뷰 라운드 2
+    def test_c2_step_sequence(self):
+        self.assertEqual(targets("rm -rf /{e..e..1}tc"), [["/etc"]])
+        self.assertEqual(targets("rm -rf /{a..e..2}"), [["/a", "/c", "/e"]])
+        self.assertEqual(targets("rm -rf /{1..5..2}"), [["/1", "/3", "/5"]])
+        self.assertIsNone(targets("rm -rf /{a..zz}")[0])
+        self.assertEqual(targets("rm -rf /{x}"), [["/{x}"]])
+
+    def test_n2_xargs_keeps_command_name(self):
+        rm = seg_of("ls | xargs -I r rm -rf r", "rm")
+        self.assertEqual([(s.name, s.via_xargs) for s in rm], [("rm", True)])
+        self.assertIsNone(expand(rm[0].argv[2], rm[0]))
+
+    def test_n1_container_shell_text_expanded_on_host(self):
+        self.assertEqual(ctx_targets('docker exec -w /app c sh -c "rm -rf $PWD/x"'), [["/w/x"]])
+        self.assertEqual(ctx_targets('docker run -w /app img sh -c "rm -rf $(pwd)/x"'), [["/w/x"]])
+        self.assertEqual(ctx_targets('docker exec -i -w /app c sh <<< "rm -rf $PWD"'), [["/w"]])
+        self.assertEqual(ctx_targets('docker exec c sh -c "rm -rf $HOME"'), [["/h"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c sh -c 'rm -rf $PWD'"), [None])
+
+    def test_a_shell_heredoc_expanded_by_outer_shell(self):
+        self.assertEqual(targets("X=/a; bash <<EOF\nX=/b; rm -rf $X\nEOF"), [["/a"]])
+        self.assertEqual(targets("X=/a; cat <<EOF | sh\nX=/b; rm -rf $X\nEOF"), [["/a"]])
+        self.assertEqual(targets("X=/a; bash <<'EOF'\nX=/b; rm -rf $X\nEOF"), [["/b"]])
+
+    def test_b_container_workdir_expanded(self):
+        self.assertEqual(ctx_of('X=/app; docker exec -w "$X" c rm -rf y')[0].cwd, "/app")
+        self.assertIsNone(ctx_of('docker exec -w "$NOPE" c rm -rf y')[0].cwd)
+
+    def test_n3_compose_v1_global_options(self):
+        for c in ["docker-compose --no-ansi up", "docker-compose --verbose --skip-hostname-check --log-level INFO -H h up"]:
+            self.assertIsNone(parse(c, "/w", {}).error, c)
+
+
 if __name__ == "__main__":
     unittest.main()
