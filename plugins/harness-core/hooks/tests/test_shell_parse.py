@@ -121,7 +121,8 @@ class ParseTest(unittest.TestCase):
 
     def test_prefix_assignment(self):
         a, b = segs('X=/a rm "$X"; rm "$X"')
-        self.assertEqual((a.name, a.env["X"]), ("rm", "/a"))
+        self.assertEqual(a.name, "rm")
+        self.assertNotIn("X", a.env)  # 같은 줄 단어는 할당 전 env 로 확장된다(리뷰 라운드 4)
         self.assertNotIn("X", b.env)
 
     def test_git_dash_c(self):
@@ -140,7 +141,7 @@ class ParseTest(unittest.TestCase):
 
     def test_assignment_after_wrapper(self):
         self.assertEqual(names("sudo X=1 rm -rf x"), ["rm"])
-        self.assertEqual(segs("sudo X=1 rm x")[0].env["X"], "1")
+        self.assertNotIn("X", segs("sudo X=1 rm x")[0].env)
         self.assertNotIn("X", segs("sudo X=1 rm x; rm y")[1].env)
 
     def test_wrapper_options_do_not_leak(self):
@@ -332,7 +333,7 @@ class ReviewFixTest(unittest.TestCase):  # 리뷰 라운드 1
 
 
 def ctx_targets(cmd):
-    s = ctx_of(cmd)[-1]
+    s = [x for x in ctx_of(cmd) if x.name == "rm"][-1]
     return [expand(w, s) for w in s.argv[1:] if not w.literal().startswith("-")]
 
 
@@ -384,6 +385,28 @@ class ReviewFix3Test(unittest.TestCase):  # 리뷰 라운드 3
     def test_expand_never_raises(self):
         self.assertEqual(targets("rm -rf /{Z..a}"), [None])
         self.assertEqual(targets("rm -rf /{Z..a..2}"), [None])
+
+
+class ReviewFix4Test(unittest.TestCase):  # 리뷰 라운드 4
+    def test_pwd_command_reads_shell_cwd_not_variable(self):
+        self.assertEqual(targets('PWD=/tmp; rm -rf "$(pwd)" `pwd`/y'), [["/w"], ["/w/y"]])
+        self.assertEqual(targets("export PWD=/tmp; rm -rf $(pwd)"), [["/w"]])
+        self.assertEqual(targets("env PWD=/tmp rm -rf $(pwd)"), [["/w"]])
+        self.assertEqual(targets("PWD=/tmp; rm -rf $PWD"), [["/tmp"]])
+        self.assertEqual(targets("cd /a; rm -rf $(pwd)"), [["/a"]])
+
+    def test_prefix_assignment_not_visible_to_same_line(self):
+        self.assertEqual(targets("PWD=/tmp rm -rf $PWD"), [["/w"]])
+        self.assertEqual(targets("HOME=/tmp rm -rf ~/x"), [["/h/x"]])
+        self.assertEqual(targets("env HOME=/tmp rm -rf ~/x"), [["/h/x"]])
+
+    def test_prefix_assignment_inherited_by_inner_code(self):
+        self.assertEqual(targets("X=/a bash -c 'rm -rf $X'"), [["/a"]])
+        self.assertEqual(targets("env X=/a sh -c 'rm -rf $X'"), [["/a"]])
+
+    def test_container_xargs_shell_starts_empty(self):
+        self.assertEqual(ctx_targets('docker exec c xargs sh -c "rm -rf \\$PWD/x ~/y"'), [None, None])
+        self.assertEqual(ctx_targets('docker exec -w /app c xargs sh -c "rm -rf \\$(pwd)"'), [["/app"]])
 
 
 if __name__ == "__main__":

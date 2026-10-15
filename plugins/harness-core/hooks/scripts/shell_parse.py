@@ -332,6 +332,8 @@ _SHELL_C = re.compile(r"-[a-zA-Z]*c[a-zA-Z]*")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
+# env 안의 셸 작업 폴더 — 변수 이름이 될 수 없는 키라 사용자 할당(PWD=…)으로 덮이지 않는다. `$(pwd)` 가 읽는다.
+SHELL_CWD = "\x00cwd"
 _STDIN_CODE = ("<<", "<<-", "<<<")
 _XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
@@ -405,12 +407,13 @@ def _seq(a: str, b: str, step: str | None) -> list[str] | None:
 def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, int]:
     """t[i] 는 `$` 또는 백틱. (확장값 | None=확정 불가, 다음 인덱스).
 
-    `$PWD`·`$(pwd)` 는 셸 상태인 env 의 PWD 를 쓴다 — 단위 cwd 와 다를 수 있다(컨테이너 -w, git -C).
+    `$PWD` 는 env 의 PWD 변수(사용자가 덮어쓸 수 있음), `$(pwd)` 는 셸 작업 폴더 SHELL_CWD 를 쓴다
+    — 둘 다 단위 cwd 와 다를 수 있다(컨테이너 -w, git -C).
     """
     if t[i] == "`" or t.startswith("$(", i):
         j = _skip_sub(t, i)
         body = t[i + 1 : j - 1] if t[i] == "`" else t[i + 2 : j - 1]
-        return (env.get("PWD") if body.strip() == "pwd" else None), j
+        return (env.get(SHELL_CWD) if body.strip() == "pwd" else None), j
     if t.startswith("${", i):
         j = _skip_sub(t, i)
         m = _NAME.fullmatch(t, i + 2, j - 1)
@@ -422,8 +425,7 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     return "$", i + 1
 
 
-def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None,
-           split: bool = False) -> list[tuple[str, bool]] | None:
+def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False) -> list[tuple[str, bool]] | None:
     """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None."""
     out: list[tuple[str, bool]] = []
     for k, p in enumerate(parts):
@@ -458,8 +460,8 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | No
     return out
 
 
-def _text(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | None, split: bool = False) -> str | None:
-    ch = _subst(parts, env, cwd, split)
+def _text(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False) -> str | None:
+    ch = _subst(parts, env, split)
     return None if ch is None else "".join(t for t, _ in ch)
 
 
@@ -537,7 +539,7 @@ def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> lis
         return None
     out: list[str] = []
     for parts in words:
-        ch = _subst(parts, env, cwd, split=True)
+        ch = _subst(parts, env, split=True)
         if ch is None:
             return None
         lit = "".join(t for t, _ in ch)
@@ -603,12 +605,12 @@ def _is_assign(w: Word) -> bool:
     return bool(w.parts) and w.parts[0].quote == "" and bool(_ASSIGN.match(w.parts[0].text))
 
 
-def _assign_of(w: Word, env: Mapping[str, str | None], cwd: str | None) -> tuple[str, str | None] | None:
+def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None] | None:
     """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가)."""
     if not _is_assign(w):
         return None
     head, _, rest = w.parts[0].text.partition("=")
-    return head, _text(((Part(rest, ""),) if rest else ()) + w.parts[1:], env, cwd)
+    return head, _text(((Part(rest, ""),) if rest else ()) + w.parts[1:], env)
 
 
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
@@ -618,14 +620,14 @@ def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str
     return os.path.normpath(r[0]) if r and len(r) == 1 else None
 
 
-def _strip_wrapper(words: list[Word], env: dict[str, str | None], cwd: str | None) -> list[Word] | None:
+def _strip_wrapper(words: list[Word], env: dict[str, str | None]) -> list[Word] | None:
     """맨 앞 래퍼 하나를 벗긴 단어 목록. 래퍼가 아니면 None."""
     name = os.path.basename(words[0].literal())
     i = 1
     if name == "env":
         while i < len(words):
             lit = words[i].literal()
-            if (a := _assign_of(words[i], env, cwd)) is not None:
+            if (a := _assign_of(words[i], env)) is not None:
                 env[a[0]] = a[1]
             elif lit in ("-u", "-C"):
                 i += 1
@@ -653,13 +655,13 @@ def _strip_wrapper(words: list[Word], env: dict[str, str | None], cwd: str | Non
     return words[i + _WRAPPER_TAIL.get(name, 0):]
 
 
-def _strip_all(w: list[Word], env: dict[str, str | None], cwd: str | None) -> list[Word]:
+def _strip_all(w: list[Word], env: dict[str, str | None]) -> list[Word]:
     """접두 할당(env 에 반영)과 래퍼를 반복해 벗긴다."""
     while w:
-        while w and (a := _assign_of(w[0], env, cwd)) is not None:
+        while w and (a := _assign_of(w[0], env)) is not None:
             env[a[0]] = a[1]
             w = w[1:]
-        if not w or (rest := _strip_wrapper(w, env, cwd)) is None:
+        if not w or (rest := _strip_wrapper(w, env)) is None:
             break
         w = rest
     return w
@@ -671,11 +673,11 @@ def _cmd_name(w: list[Word]) -> str:
 
 # ---- 재귀 해석 (spec §3.3-7) ----
 
-def _heredoc_text(r: Redirect, env: Mapping[str, str | None], cwd: str | None) -> str | None:
+def _heredoc_text(r: Redirect, env: Mapping[str, str | None]) -> str | None:
     """heredoc 본문. 구분자에 따옴표가 없으면 바깥 셸이 $VAR·$(…) 를 먼저 확장한다 — 확정할 수 없으면 LexError."""
     if r.body is None or r.target is None or r.target.is_quoted():
         return r.body
-    if (t := _text((Part(r.body, '"'),), env, cwd)) is None:
+    if (t := _text((Part(r.body, '"'),), env)) is None:
         raise LexError("heredoc 본문을 확정할 수 없음")
     return t
 
@@ -683,14 +685,14 @@ def _heredoc_text(r: Redirect, env: Mapping[str, str | None], cwd: str | None) -
 def _pipe_text(prev: Segment) -> str | None:
     """파이프 앞 단위가 셸에 넘기는 리터럴 텍스트. 모르면 None(해석하지 않고 통과)."""
     if prev.name == "cat":
-        return next((_heredoc_text(r, prev.env, prev.cwd) for r in prev.redirects if r.op in _HEREDOC), None)
+        return next((_heredoc_text(r, prev.env) for r in prev.redirects if r.op in _HEREDOC), None)
     if prev.name not in ("echo", "printf"):
         return None
     args = prev.argv[1:]
     if prev.name == "echo":
         while args and re.fullmatch(r"-[neE]+", args[0].literal()):
             args = args[1:]
-    vals = [_text(w.parts, prev.env, prev.cwd) for w in args]
+    vals = [_text(w.parts, prev.env) for w in args]
     if None in vals:
         return None
     s = " ".join(vals)  # type: ignore[arg-type]
@@ -710,7 +712,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         if _SHELL_C.fullmatch(x):
             if i + 1 >= len(a):
                 return None
-            if (code := _text(a[i + 1].parts, o.env, o.cwd, split=True)) is None:
+            if (code := _text(a[i + 1].parts, o.env, split=True)) is None:
                 raise LexError("셸 -c 문자열을 확정할 수 없음")
             return code
         if not x.startswith(("-", "+")) or x in ("-", "--"):
@@ -721,9 +723,9 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s 면 stdin 이 코드)
     for r in seg.redirects:
         if r.op in _HEREDOC:
-            return _heredoc_text(r, o.env, o.cwd)
+            return _heredoc_text(r, o.env)
         if r.op == "<<<" and r.target is not None:
-            if (code := _text(r.target.parts, o.env, o.cwd)) is None:
+            if (code := _text(r.target.parts, o.env)) is None:
                 raise LexError("<<< 문자열을 확정할 수 없음")
             return code
     return _pipe_text(pipe_prev) if pipe_prev is not None else None
@@ -785,7 +787,7 @@ def _mounts(o: list[tuple[str, Word]], seg: Segment) -> tuple[Mount, ...] | None
     for k, w in o:
         if k not in ("-v", "--volume", "--mount"):
             continue
-        s = _text(w.parts, seg.env, seg.cwd, split=True)
+        s = _text(w.parts, seg.env, split=True)
         if s is None:
             return None
         if k == "--mount":
@@ -847,32 +849,37 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     wd = [w for k, w in o if k in ("-w", "--workdir")]
     r = _expand(wd[-1], seg.env, None) if wd else None  # 컨테이너 경로라 호스트 cwd 로 잇지 않는다
     cwd = r[0] if r and len(r) == 1 else None
-    # 인자는 호스트 셸이 확장한다 — 안쪽 단위의 cwd(-w)는 상대경로 기준으로만 쓰인다
-    env = dict(seg.env)
-    w = _strip_all(a[i + 1:], env, cwd)
+    # 인자는 호스트 셸이 확장한다(seg.env) — 안쪽 단위의 cwd(-w)는 상대경로 기준으로만 쓰인다.
+    # 컨테이너 안에서 실행되는 코드의 env 는 호스트 것을 물려받지 않는다(-w 만 셸 작업 폴더로 안다).
+    cenv: dict[str, str | None] = {SHELL_CWD: cwd} if cwd else {}
+    w = _strip_all(a[i + 1:], cenv)
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
-    inner = Segment(_cmd_name(w), w, stdin, cwd, env, ctx, seg.depth + 1, seg.via_xargs)
+    inner = Segment(_cmd_name(w), w, stdin, cwd, dict(seg.env), ctx, seg.depth + 1, seg.via_xargs)
     code = _shell_code(inner, pipe_prev, seg) if inner.name in SHELLS else None  # -c·<<< 는 호스트 셸이 먼저 확장
     if code is not None:
-        _parse(code, cwd, {}, ctx, inner.depth, segments, seg.via_xargs)  # 안쪽 셸의 변수·PWD 는 컨테이너 것이라 모른다
+        _parse(code, cwd, cenv, ctx, inner.depth, segments, seg.via_xargs)
     else:
         segments.append(inner)
-        _descend(inner, segments, pipe_prev)
+        _descend(inner, segments, pipe_prev, cenv)
 
 
-def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -> tuple[str | None, dict[str, str | None]] | None:
-    """seg 가 실행하는 안쪽 명령을 seg 바로 뒤에 depth+1 로 넣는다. eval 이면 그 뒤 상태(현재 셸에서 돌므로)."""
+def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
+             run_env: dict[str, str | None]) -> tuple[str | None, dict[str, str | None]] | None:
+    """seg 가 실행하는 안쪽 명령을 seg 바로 뒤에 depth+1 로 넣는다. eval 이면 그 뒤 상태(현재 셸에서 돌므로).
+
+    seg.env 는 seg 단어를 확장한 env, run_env 는 seg 가 실행될 때의 env(접두 할당 포함·컨테이너면 컨테이너 쪽).
+    """
     d = seg.depth + 1
     if seg.name in SHELLS:
         if (code := _shell_code(seg, pipe_prev)) is not None:
-            _parse(code, seg.cwd, dict(seg.env), seg.context, d, segments, seg.via_xargs)
+            _parse(code, seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)
     elif seg.name == "eval":
-        vals = [_text(w.parts, seg.env, seg.cwd) for w in seg.argv[1:]]
+        vals = [_text(w.parts, seg.env) for w in seg.argv[1:]]
         if None in vals:
             raise LexError("eval 인자를 확정할 수 없음")
-        return _parse(" ".join(vals), seg.cwd, dict(seg.env), seg.context, d, segments, seg.via_xargs)  # type: ignore[arg-type]
+        return _parse(" ".join(vals), seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)  # type: ignore[arg-type]
     elif seg.name == "xargs":
         a, i, repl = seg.argv, 1, None
         while i < len(a) and a[i].literal().startswith("-"):
@@ -892,11 +899,11 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -
         cmd = a[i:]
         if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지, 명령 이름은 GNU xargs 처럼 제외)
             cmd = cmd[:1] + [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd[1:]]
-        env = dict(seg.env)
-        if (w := _strip_all(cmd, env, seg.cwd)):
-            inner = Segment(_cmd_name(w), w, [], seg.cwd, env, seg.context, d, via_xargs=True)
+        env = dict(run_env)  # xargs 가 실행하는 명령의 env — 단어는 이미 seg.env 로 확장됐다
+        if (w := _strip_all(cmd, env)):
+            inner = Segment(_cmd_name(w), w, [], seg.cwd, dict(seg.env), seg.context, d, via_xargs=True)
             segments.append(inner)
-            _descend(inner, segments, None)
+            _descend(inner, segments, None, env)
     elif seg.name in _CONTAINER_CLIS:
         _container(seg, segments, pipe_prev)
     return None
@@ -905,7 +912,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -
 def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Context = HOST) -> ParseResult:
     state_env: dict[str, str | None] = {k: env[k] for k in ("HOME", "TMPDIR", "USER") if k in env}
     if cwd is not None:
-        state_env["PWD"] = cwd
+        state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []
     try:
         _parse(command, cwd, state_env, context, 0, segments)
@@ -945,13 +952,15 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             w = w[1:]
         if w and all(_is_assign(x) for x in w):  # 할당만 있는 단위는 이후 단위에 반영
             for x in w:
-                k, v = _assign_of(x, state_env, st["cwd"])  # type: ignore[misc]
+                k, v = _assign_of(x, state_env)  # type: ignore[misc]
                 state_env[k] = v
             if not r:
                 return None
             w = []
+        # 같은 줄 단어는 할당 전 env 로 확장되고(seg.env), 접두 할당은 실행되는 안쪽 코드에만 보인다(run_env)
         unit_env = dict(state_env)
-        w = _strip_all(w, unit_env, st["cwd"])
+        run_env = dict(state_env)
+        w = _strip_all(w, run_env)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
             return None
         unit_cwd = st["cwd"]
@@ -962,14 +971,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 w = [w[0]] + w[3:]
         if name in _VAR_DECL:
             for x in w[1:]:
-                if (a := _assign_of(x, state_env, unit_cwd)) is not None:
+                if (a := _assign_of(x, state_env)) is not None:
                     state_env[a[0]] = a[1]
             return None
         if not (w or r):
             return None
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
-        if (after := _descend(seg, segments, pipe_prev)) is not None:
+        if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
             st["cwd"] = after[0]
             state_env.clear()
             state_env.update(after[1])
@@ -978,12 +987,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
                 state_env.get("HOME") if name == "cd" else None)
             if st["cwd"] is not None:
-                state_env["PWD"] = st["cwd"]
+                state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
             else:
                 state_env.pop("PWD", None)
+                state_env.pop(SHELL_CWD, None)
         elif name == "popd":
             st["cwd"] = None
             state_env.pop("PWD", None)
+            state_env.pop(SHELL_CWD, None)
         return seg
 
     snap = (st["cwd"], dict(state_env))
