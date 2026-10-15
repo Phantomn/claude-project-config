@@ -389,11 +389,6 @@ _COMPOSE_RUN = (
 
 # ---- 단어 확장 (spec §3.3-4·8, §3.4 정규화 1~3) ----
 
-def _lookup(name: str, env: Mapping[str, str | None], cwd: str | None) -> str | None:
-    # PWD 가 env 에 없으면(컨테이너 안처럼 셸 상태를 모르면) 미확정
-    return cwd if name == "PWD" and "PWD" in env else env.get(name)
-
-
 def _seq(a: str, b: str, step: str | None) -> list[str] | None:
     """`{a..b[..step]}` 수열. 0 채움·숫자/문자 혼합·간격 0·상한 초과는 None."""
     num = a.lstrip("-").isdigit()
@@ -407,18 +402,21 @@ def _seq(a: str, b: str, step: str | None) -> list[str] | None:
     return [str(v) if num else chr(v) for v in range(x, y + (1 if d > 0 else -1), d)]
 
 
-def _dollar(t: str, i: int, env: Mapping[str, str | None], cwd: str | None) -> tuple[str | None, int]:
-    """t[i] 는 `$` 또는 백틱. (확장값 | None=확정 불가, 다음 인덱스)."""
+def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, int]:
+    """t[i] 는 `$` 또는 백틱. (확장값 | None=확정 불가, 다음 인덱스).
+
+    `$PWD`·`$(pwd)` 는 셸 상태인 env 의 PWD 를 쓴다 — 단위 cwd 와 다를 수 있다(컨테이너 -w, git -C).
+    """
     if t[i] == "`" or t.startswith("$(", i):
         j = _skip_sub(t, i)
         body = t[i + 1 : j - 1] if t[i] == "`" else t[i + 2 : j - 1]
-        return (cwd if body.strip() == "pwd" else None), j
+        return (env.get("PWD") if body.strip() == "pwd" else None), j
     if t.startswith("${", i):
         j = _skip_sub(t, i)
         m = _NAME.fullmatch(t, i + 2, j - 1)
-        return (_lookup(m.group(), env, cwd) if m else None), j
+        return (env.get(m.group()) if m else None), j
     if (m := _NAME.match(t, i + 1)):
-        return _lookup(m.group(), env, cwd), m.end()
+        return env.get(m.group()), m.end()
     if t[i + 1 : i + 2] and t[i + 1] in "0123456789?#@*$!-":
         return None, i + 2
     return "$", i + 1
@@ -445,7 +443,7 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], cwd: str | No
                 out += [(t[start:i], active), (t[i + 1], False)]
                 i = start = i + 2
             elif c in "$`":
-                val, j = _dollar(t, i, env, cwd)
+                val, j = _dollar(t, i, env)
                 if val is None:
                     return None
                 if split and active and any(x.isspace() or x in "*?[" for x in val):
@@ -527,6 +525,13 @@ def _brace_words(parts: tuple[Part, ...]) -> list[tuple[Part, ...]] | None:
 
 
 def _expand(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
+    try:
+        return _expand_word(w, env, cwd)
+    except LexError:  # 전개 결과가 셸 문법을 깨면(문자 수열이 백틱을 만드는 등) 확정 불가
+        return None
+
+
+def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
     words = _brace_words(w.parts)
     if words is None:
         return None
@@ -840,9 +845,10 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         proj[-1] if proj else None,
     )
     wd = [w for k, w in o if k in ("-w", "--workdir")]
-    wd_text = _text(wd[-1].parts, seg.env, seg.cwd, split=True) if wd else None
-    cwd = wd_text if wd_text and wd_text.startswith("/") else None  # 컨테이너 경로라 호스트 cwd 로 잇지 않는다
-    env: dict[str, str | None] = {}  # 호스트 변수는 컨테이너로 넘어가지 않는다
+    r = _expand(wd[-1], seg.env, None) if wd else None  # 컨테이너 경로라 호스트 cwd 로 잇지 않는다
+    cwd = r[0] if r and len(r) == 1 else None
+    # 인자는 호스트 셸이 확장한다 — 안쪽 단위의 cwd(-w)는 상대경로 기준으로만 쓰인다
+    env = dict(seg.env)
     w = _strip_all(a[i + 1:], env, cwd)
     if not w:
         return
@@ -850,7 +856,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     inner = Segment(_cmd_name(w), w, stdin, cwd, env, ctx, seg.depth + 1, seg.via_xargs)
     code = _shell_code(inner, pipe_prev, seg) if inner.name in SHELLS else None  # -c·<<< 는 호스트 셸이 먼저 확장
     if code is not None:
-        _parse(code, cwd, env, ctx, inner.depth, segments, seg.via_xargs)
+        _parse(code, cwd, {}, ctx, inner.depth, segments, seg.via_xargs)  # 안쪽 셸의 변수·PWD 는 컨테이너 것이라 모른다
     else:
         segments.append(inner)
         _descend(inner, segments, pipe_prev)
@@ -973,8 +979,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env.get("HOME") if name == "cd" else None)
             if st["cwd"] is not None:
                 state_env["PWD"] = st["cwd"]
+            else:
+                state_env.pop("PWD", None)
         elif name == "popd":
             st["cwd"] = None
+            state_env.pop("PWD", None)
         return seg
 
     snap = (st["cwd"], dict(state_env))

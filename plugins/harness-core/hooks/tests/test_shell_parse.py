@@ -370,5 +370,21 @@ class ReviewFix2Test(unittest.TestCase):  # 리뷰 라운드 2
             self.assertIsNone(parse(c, "/w", {}).error, c)
 
 
+class ReviewFix3Test(unittest.TestCase):  # 리뷰 라운드 3
+    def test_workdir_full_word_expansion(self):
+        self.assertEqual(ctx_of("docker exec -w /{e..e}tc c rm -rf y")[0].cwd, "/etc")
+        self.assertIsNone(ctx_of("docker exec -w /a/{b,c} c rm -rf y")[0].cwd)
+
+    def test_container_args_expanded_on_host(self):
+        self.assertEqual(ctx_targets("docker exec -w /app c rm -rf $(pwd)"), [["/w"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c rm -rf src"), [["/app/src"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c rm -rf $PWD/x"), [["/w/x"]])
+        self.assertEqual(ctx_targets("docker exec -w /app c rm -rf ~/x"), [["/h/x"]])
+
+    def test_expand_never_raises(self):
+        self.assertEqual(targets("rm -rf /{Z..a}"), [None])
+        self.assertEqual(targets("rm -rf /{Z..a..2}"), [None])
+
+
 if __name__ == "__main__":
     unittest.main()
