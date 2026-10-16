@@ -25,7 +25,9 @@ TRIVIAL = ["ls", "ls -la", "pwd", "git status --short", "ls dir && echo | wc -l"
            "head -5 src/main.py || tail -n 2 x", "cat ~/.ssh/id_rsa", "  echo a=b,c@d%e+f  ", "cd {HOME} && ls {REPO}/src"]
 NOT_TRIVIAL = ["rm x", "ls > x", "echo $HOME", "ls *.py", "git push", "git -C . status", "git branch -D x", "echo 'a'",
                "ls & echo", "ls\necho", "ls; rm x", "lsx", "git statusx", "echo {a,b}", "ls # c",
-               "X=1 ls", "(ls)", "ls `rm x`", "ls\tx", ""]
+               "X=1 ls", "(ls)", "ls `rm x`", "ls\tx", "",
+               "git log --output=F", "git log --output F", "git diff --outp=F", "git show --o F", "git  status", "ls;",
+               "git log --format=%h", "git diff --stat=80"]
 
 
 class ShapeTest(unittest.TestCase):

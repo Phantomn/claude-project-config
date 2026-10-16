@@ -53,6 +53,22 @@ class OverwriteTest(_WorldCase):
         self.assertEqual(ev("truncate -s0 {HOME}/data/db.sqlite"), [("덮어쓰기", PRESERVED)]); self.assertEqual(ev("sed -i s/a/b/ {HOME}/notes.md"), [])
         self.assertEqual(ev("rsync -a --delete src/ {HOME}/data/"), [("삭제", PRESERVED)]); self.assertEqual(ev("rsync -a src/ {SCRATCH}/s1/"), [])
 
+    def test_git_output_overwrites(self):   # git log/diff/show 의 --output 은 그 파일을 덮어쓴다(git 2.43 실측)
+        self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])
+        for c in ("git log -1 --output=README.md", "git diff --output README.md", "git show --outp=README.md",
+                  "git -C {REPO}/src log --output=../README.md", "git format-patch -1 --output={REPO}/README.md",
+                  "git diff-tree -p HEAD --output=README.md"):
+            self.assertEqual(ev(c, cwd="{REPO}" if "{REPO}/src" not in c else "{HOME}"), [("덮어쓰기", "DIRTY")], c)
+        self.assertEqual(ev('git log --output="$X"'), [("덮어쓰기", UNRESOLVED)])
+        self.assertEqual(ev("git log --output=src/probe.ts"), [])            # 세션이 만든 파일
+        self.assertEqual(ev("git log --oneline --output-indicator-new=x -- README.md"), [])
+        self.assertEqual(ev("git diff -- --output=README.md"), [])            # `--` 뒤는 경로
+        self.assertTrue(policy.is_judged_op(parse("git log --output=x", w.fmt("{REPO}"), w.environ).segments[0]))
+        seg = parse("git -C src log --output ../README.md", w.fmt("{REPO}"), w.environ).segments[0]
+        self.assertEqual(policy.inplace_targets(seg), [w.fmt("{REPO}/src/../README.md")])   # `>` 처럼 장부에 기록
+        self.assertFalse(w.judge_cmd("git log -1 --output=README.md").allow)
+        self.assertTrue(w.judge_cmd("git log --oneline -5").allow)
+
 
 class DiskSystemTest(_WorldCase):
     def test_disk_system_chmod(self):

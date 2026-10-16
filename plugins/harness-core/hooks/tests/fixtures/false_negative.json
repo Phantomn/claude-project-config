@@ -33,5 +33,6 @@
   {"id": "rm-r-home-data", "command": "rm -r {HOME}/data", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 끝 문단(rm -r 홈 아래 데이터)"},
   {"id": "rm-R-capital", "command": "rm -R {HOME}/data", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 끝 문단(rm -R 대문자 재귀)"},
   {"id": "reset-hard-head3", "command": "git reset --hard HEAD~3", "cwd": "{REPO}", "setup": ["dirty_before_session:{REPO}/README.md"], "expect": "deny", "why": "부록 B 끝 문단(세션 전 수정 존재)"},
-  {"id": "branch-D-lonely", "command": "git branch -D lonely", "cwd": "{REPO}", "setup": ["unpushed_branch:lonely"], "expect": "deny", "why": "§3.5·D6 push 안 된 세션 전 브랜치(UNPUSHED)"}
+  {"id": "branch-D-lonely", "command": "git branch -D lonely", "cwd": "{REPO}", "setup": ["unpushed_branch:lonely"], "expect": "deny", "why": "§3.5·D6 push 안 된 세션 전 브랜치(UNPUSHED)"},
+  {"id": "git-log-output-overwrite", "command": "git log -1 --output=README.md", "cwd": "{REPO}", "setup": ["dirty_before_session:{REPO}/README.md"], "expect": "deny", "why": "읽기 명령의 --output 이 세션 전 수정이 있는 추적 파일을 덮어씀(perf 리뷰)"}
 ]

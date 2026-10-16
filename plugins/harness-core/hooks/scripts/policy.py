@@ -433,6 +433,25 @@ _GIT_BUILTINS = frozenset((
 ))
 
 
+# diff 출력 옵션을 받는 하위명령 — `--output[=]<파일>` 은 그 파일을 덮어쓴다(git 2.43 실측: 공백 값도 받음)
+_GIT_OUTPUT_SUBS = frozenset(("log", "diff", "show", "format-patch", "whatchanged", "diff-files", "diff-index", "diff-tree",
+                              "range-diff"))
+
+
+def _git_output(seg: Segment, repo: str | None, rest: list[Word], k: int) -> list[Job]:
+    out = []
+    for n, w in enumerate(rest[:k]):
+        x = w.literal()
+        name, eq, _ = x[2:].partition("=")
+        # git 2.43 은 접두 약어(--outp)를 거부하지만 버전마다 다를 수 있어 접두도 덮어쓰기로 본다
+        if not x.startswith("--") or not name or not "output".startswith(name):
+            continue
+        v = _drop(w, len(name) + 3) if eq else (rest[n + 1] if n + 1 < len(rest) else None)
+        if v is not None:
+            out.append(Job(OP_OVERWRITE, OVERWRITE, v.literal(), _expand(v, seg.env, repo) if repo else None))
+    return out
+
+
 def _short(r: list[str]) -> str:
     return "".join(x[1:] for x in r if x.startswith("-") and not x.startswith("--"))
 
@@ -517,6 +536,8 @@ def _git_handler(seg: Segment, ctx: Ctx | None, exists: Callable[[str], bool] = 
     def dirty(ws: list[Word] | None) -> list[Job]:   # ws None = 저장소 전체
         return [Job(f"git {sub}", GIT_DIRTY, repo or label, None if repo is None else specs(ws or []), repo=repo)]
 
+    if sub in _GIT_OUTPUT_SUBS:
+        return _git_output(seg, repo, rest, k)
     force = "--force" in r or "f" in s
     if sub == "reset":
         return dirty(None) if "--hard" in r else []
@@ -1093,8 +1114,8 @@ def inplace_targets(seg: Segment) -> list[str]:
         elif seg.name in ("truncate", "cp", "mv", "install", "rsync", "dd"):
             out += [p for j in HANDLERS[seg.name](seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
         elif seg.name == "git":
-            out += [os.path.join(j.repo, p) for j in _git_handler(seg, None)
-                    if j.op in ("git checkout", "git restore") and j.repo for p in j.paths or ()]
+            out += [p if j.rule == OVERWRITE else os.path.join(j.repo, p) for j in _git_handler(seg, None)
+                    if j.rule == OVERWRITE or (j.op in ("git checkout", "git restore") and j.repo) for p in j.paths or ()]
     except _BadOption:
         pass
     out += [p for w in words for p in expand(w, seg) or ()]
