@@ -19,6 +19,29 @@ _DEFAULT = object()
 
 class World:
     def __init__(self, worktree: bool = False, docker: bool = False) -> None:
+        # 벽시계가 뒤로 가면(WSL2 실측 약 0.5초) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
+        for _ in range(3):
+            self._create(worktree)
+            if self._order_ok():
+                return
+            self.close()
+        raise RuntimeError("시계 불안정 — 세션 전/세션 중 파일의 생성 시각 순서가 3번 연속 어긋났다")
+
+    def _order_ok(self, margin: float = 0.0) -> bool:
+        """세션 전 파일 birth < 세션 시작 < 세션 중 파일 birth 가 각각 margin 초 넘게 벌어져 있는가."""
+        r, h = self.repo, self.home
+        pre = [h, h / "data/a.txt", h / "notes.md", r, r / ".git", r / ".gitignore", r / "src/main.py", r / "README.md",
+               r / "build/out.o", r / "local.sqlite", r / "notes_presession.txt", r / ".env"]
+        if self._built_worktree:   # 생성 뒤 make_worktree 로 만든 것은 세션 중 항목이라 제외
+            pre += [self.wt, self.wt / "local.sqlite"]
+        during = [r / "src/probe.ts", r / "out", self.scratch / "s1/x.txt"]
+        out = subprocess.check_output(["stat", "-c", "%.9W", "--", *map(str, pre + during)], text=True).split()
+        b = [float(x) for x in out]
+        if 0.0 in b:
+            return False
+        return max(b[:len(pre)]) + margin < self.session_start and self.session_start + margin <= min(b[len(pre):])
+
+    def _create(self, worktree: bool) -> None:
         # tmpfs 이면서 임시 루트도 git 저장소도 아닌 곳(생성 시각 지원 실측 2026-10-14)
         base = os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm"
         self.root = tempfile.mkdtemp(prefix="bash-guard-world-", dir=base)
@@ -36,6 +59,7 @@ class World:
         }
         self.session_id = str(uuid.uuid4())
         self.docker = None  # Task 6 이 채움
+        self._built_worktree = worktree
         try:
             self._build(worktree)
         except BaseException:

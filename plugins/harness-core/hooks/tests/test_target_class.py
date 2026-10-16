@@ -227,6 +227,10 @@ class BasicsTest(_WorldCase):
         self.assertGreaterEqual(reflog_time("mine"), w.session_start)
         w.clean_tree(); self.assertNotIn(" M README.md", w.sh("git status --porcelain").splitlines())
 
+    def test_world_clock_order(self):           # 벽시계 역행 시 세계를 다시 만드는 검증(fix 라운드 2)
+        self.assertTrue(w._order_ok())
+        self.assertFalse(w._order_ok(margin=1e9))                                   # 불가능한 간격 → 어긋남으로 판정
+
 
 class SwitchTest(_WorldCase):
     def test_repo_root_relative(self):
