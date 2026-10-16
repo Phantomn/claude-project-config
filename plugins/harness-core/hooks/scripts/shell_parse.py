@@ -1435,7 +1435,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         else:
             s = ok if op == "&&" else fail
             andor = (ok, fail, op, not s)
-            if len(s) > 1 or (s and dead):   # 하나면 방금 끝난 상태 그대로(도달 불가 요소 뒤는 제외)
+            if s and (len(s) > 1 or s[0] is not e):   # 방금 끝난 상태 하나면 그대로(실패한 cd·도달 불가 요소 뒤는 다시 놓는다)
                 set_state(_merge(s))
 
     def end_list() -> None:

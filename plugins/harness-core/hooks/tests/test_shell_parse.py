@@ -235,6 +235,9 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
                       "echo | true && cd {D}/ex; rm y", "cd {D}/ex && cd nope; rm y"):
                 self.assertIsNone(last(c).cwd, c)
             self.assertIsNone(last("cd {D}/missing && f=a; rm $f").env.get("f"))
+            # 실패한 cd 뒤 `||` 우변은 cd 전 폴더에서 돈다
+            for c in ("cd {D}/missing || rm y", "cd {D}/missing 2>/dev/null || rm y", "cd {D}/ex 2>/dev/null || rm y"):
+                self.assertEqual(last(c).cwd, d, c)
             self.assertEqual(names("true || rm x; rm y"), ["true", "rm", "rm"])   # 도달 못 하는 우변도 단위는 판정한다
 
     def test_source_venv_activate(self):   # fix-brief-3 항목 2: activate 는 자기 변수만 바꾼다
