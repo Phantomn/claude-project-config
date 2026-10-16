@@ -513,8 +513,8 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
             d = default
     d = os.path.normpath(d or default)
     roots = [os.path.normpath(r) for r in ("/tmp", "/var/tmp", tmp) if r]
-    if not any(d == r or d.startswith(r + "/") for r in roots) or not os.path.isdir(d):
-        return None   # 폴더가 없으면 mktemp 가 실패해 결과가 빈 값이 된다
+    if not any(d == r or d.startswith(r + "/") for r in roots) or not os.path.isdir(d) or not os.access(d, os.W_OK | os.X_OK):
+        return None   # 폴더가 없거나 쓸 수 없으면 mktemp 가 실패해 결과가 빈 값이 된다
     return os.path.join(d, _MKTEMP_NAME)
 
 
@@ -916,9 +916,16 @@ _VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "PATH", "PS1", "PYTHONHOME", 
 _SURE_CMDS = (":", "true", "echo", "printf")   # 리다이렉트가 없으면 실패 경로가 사실상 없다(정직한 실수 모델 §1.5)
 
 
-def _only_mktemp(w: list[Word]) -> bool:
-    """단어들의 명령 치환이 모두 mktemp — 대입 명령의 종료 상태는 마지막 치환의 상태라 다른 명령은 실패할 수 있다."""
-    return all(b.split()[:1] == ["mktemp"] for x in w for b in _word_subs(x))
+def _sure_assign(w: list[Word], env: Mapping[str, str | None]) -> bool:
+    """대입 단위가 실패할 수 없는가 — 치환이 모두 mktemp 이고(대입의 종료 상태는 마지막 치환의 상태), 그 mktemp 가
+    성공으로 모델링됐다(값 확정). 없는 `-p` 폴더·바뀐 TMPDIR 로 실패하는 mktemp 는 `&&` 우변을 돌리지 않는다(NB4)."""
+    for x in w:
+        subs = _word_subs(x)
+        if any(b.split()[:1] != ["mktemp"] for b in subs):
+            return False
+        if subs and (a := _assign_of(x, env)) is not None and a[1] is None:
+            return False
+    return True
 
 
 def _mktemp_dir(w: Word) -> bool:
@@ -1344,7 +1351,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[k] = v
                 if v is not None and _mktemp_dir(x):
                     state_env[_MADE + v] = "1"
-            elem["sure"] = not r and _only_mktemp(w)
+            elem["sure"] = not r and _sure_assign(w, state_env)
             if not r:
                 return None
             w = []
@@ -1393,12 +1400,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            elem["sure"] = name not in ("typeset", "local") and not r and _only_mktemp(w)   # 함수 밖 local 은 늘 실패
+            elem["sure"] = name not in ("typeset", "local") and not r and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
             return None
         if not r:
-            if name in _SURE_CMDS or (name == "readonly" and _only_mktemp(w)):
+            if name in _SURE_CMDS or (name == "readonly" and _sure_assign(w, state_env)):
                 elem["sure"] = True
             elif name == "exit":   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
                 elem["exit"] = True

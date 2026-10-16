@@ -350,6 +350,17 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         for c in ("f() { cd {D}/ex; }; f; rm y", "f() { :; }; cd {D}/ex; f; rm y"):
             self.assertIsNone(last(c).cwd, c)
         self.assertEqual(names("f() { rm x; }; g"), ["rm", "g"])   # 본문 단위는 판정한다
+
+    def test_mktemp_failure_is_not_sure(self):   # NB4: mktemp 가 실패로 모델링된 대입은 성공 가정에서 뺀다
+        d, last = self._world()
+        Path(d, "ro").mkdir(); Path(d, "ro").chmod(0o555); self.addCleanup(Path(d, "ro").chmod, 0o755)
+        for c in ("T=$(mktemp -d -p {D}/nonexist) && cd {D}/ex; rm y", "TMPDIR={D}/nonexist; T=$(mktemp -d) && cd {D}/ex; rm y",
+                  "T=$(mktemp -d -p {D}/ro) && cd {D}/ex; rm y", "export T=$(mktemp -d -p {D}/nonexist) && cd {D}/ex; rm y",
+                  "readonly T=$(mktemp -p {D}/nonexist) && cd {D}/ex; rm y", "A=$(mktemp -d) B=$(mktemp -p {D}/nonexist) && cd {D}/ex; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c in ("T=$(mktemp -d) && cd {D}/ex; rm y", "X=$UNKNOWN && cd {D}/ex; rm y", "T=$(mktemp -d -p {D}/ex) && cd {D}/ex; rm y",
+                  "export T=$(mktemp) && cd {D}/ex; rm y"):
+            self.assertEqual(last(c).cwd, f"{d}/ex", c)
         self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
 
