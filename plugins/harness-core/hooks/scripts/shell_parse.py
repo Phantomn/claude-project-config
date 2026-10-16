@@ -1456,6 +1456,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             return None
         unit_cwd = st["cwd"]
         name = _cmd_name(w)
+        # 내장(cd·true·exit…)은 맨이름으로만 불린다 — `./true`·`/bin/true` 는 외부 프로그램, 래퍼 밑(command·builtin 제외)도 외부 검색
+        builtin = bool(w) and "/" not in w[0].literal() and all(x in ("command", "builtin") for x in wrappers)
         for k in _clobbered(name, w):
             if _NAME.fullmatch(n := k.partition("[")[0]):
                 state_env[n] = None
@@ -1493,9 +1495,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if not (w or r):
             return None
         if plain:
-            if name in _SURE_CMDS or (name == "readonly" and _sure_assign(w, state_env)):
+            if (name in _SURE_CMDS or (name == "readonly" and _sure_assign(w, state_env))) and builtin:
                 elem["sure"] = True
-            elif name == "exit":   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
+            elif name == "exit" and builtin:   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
                 elem["exit"] = True
             elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env)) is not None:
                 if mk[1]:
@@ -1506,8 +1508,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
             st["cwd"] = after[0]
             state_env.replace(after[1])
-        if name in ("cd", "pushd", "popd") and any(x not in ("command", "builtin") for x in wrappers):
-            pass   # 래퍼(sudo·env·nice …) 뒤의 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
+        if name in ("cd", "pushd", "popd") and not builtin:
+            pass   # 래퍼(sudo·env·nice …) 뒤·경로로 부른 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
         elif name in ("cd", "pushd"):
             elem["pre"] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
             args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
@@ -1838,12 +1840,21 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             w = t.word
             if not w.is_quoted() and ((w.literal() == "{" and at_start()) or (w.literal() == "}" and not words and not redirects)):
                 if w.literal() == "{":
+                    flush()   # 앞의 `!`·`time` 은 빈 단위로 소비한다
                     open_group("{")
                 else:
                     close_group("{")
             else:
+                lit = w.literal()
+                if at_start() and len(w.parts) == 1 and w.parts[0].quote == "" and lit.startswith("!(") and lit.endswith(")") \
+                        and _skip_to(lit, 2, ")") == len(lit):   # extglob 꺼진 bash: `!(cmd)` = `! ( cmd )` — 안쪽은 서브셸
+                    flush()
+                    _parse(lit[2:-1], st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
+                    elem.update(n=2, sure=False, pre=None, exit=False, neg=False)
+                    last_end[0] = last_list = None
+                    continue
                 if at_start() and not _is_assign(w) and _cmd_extglob(w):
-                    raise LexError(f"명령 자리의 확장 글롭 {w.literal()[:20]!r}")
+                    raise LexError(f"명령 자리의 확장 글롭 {lit[:20]!r}")
                 if st["fn"]:
                     raise LexError("함수 본문은 복합 명령이어야 함")
                 words.append(w)

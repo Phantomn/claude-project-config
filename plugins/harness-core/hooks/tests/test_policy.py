@@ -471,6 +471,14 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "if ! cd {SCRATCH}/s1; then rm src/main.py; fi; rm -f x.txt"):
             self.assertEqual(ev(c), [], c)
 
+    def test_f4_bang_paren_is_negated_subshell(self):   # fix-brief-4 NB1: 명령 자리 `!(…)` 안쪽은 판정되고, 뒤 명령도 사라지지 않는다
+        self.assertEqual(ev("!(rm -rf src)"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("!(git push --force origin main)"), ev("git push --force origin main"))
+        self.assertEqual(ev("!(cd {SCRATCH}/s1) && true; echo y | tee {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("!(cd {SCRATCH}/s1 && rm -f x.txt); rm src/main.py"), [("삭제", GIT_TRACKED)])   # 서브셸이라 cd 가 새지 않는다
+        self.assertEqual(ev("if !(git diff --quiet); then echo y > {HOME}/notes.md; fi"), [("덮어쓰기", PRESERVED)])
+        self.assertFalse(w.judge_cmd("@(echo y > {HOME}/notes.md)").allow)   # 구문 오류 모양은 해석 실패(fail-closed)
+
     def test_f4_function_definition(self):   # fix-brief-4 OS2: 정의만으로는 cwd·변수가 바뀌지 않고, 호출은 미확정
         self.assertEqual(ev("f() { cd {SCRATCH}/s1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])
         self.assertEqual(ev("g() { cd {SCRATCH}/missing || return 1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])

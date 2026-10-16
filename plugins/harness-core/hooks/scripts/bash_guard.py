@@ -128,6 +128,8 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
     ctx = make_ctx(payload, environ, budget)
     res = parse(command, cwd, environ, deadline=ctx.deadline)
     if res.error:   # spec §3.8 (가)
+        if ctx.remaining() <= 0:   # 마감이 지나 해석을 멈춘 것 — 위험 단어와 무관하게 fail-closed
+            return Decision(False, [R_TIMEOUT], _strongest(modes))
         bad = FAIL_WORDS.search(command) is not None
         return Decision(not bad, [R_PARSE] if bad else [], _strongest(modes))
     reasons: list[str] = []

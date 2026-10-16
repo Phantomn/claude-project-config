@@ -280,12 +280,23 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
 
 class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 집합을 한 곳(outcome/collect/join)에서 다룬다
     def test_extglob_in_command_position_is_parse_error(self):   # NB1: extglob 꺼진 bash 는 `!(cmd)` 를 부정 서브셸로 실행한다
-        for c in ("!(rm -rf src)", "true && !(rm -rf src)", "if !(rm src); then :; fi", "@(echo y > f)", "+(x)",
-                  "!(cd /a) && t", "?(rm x)", "*(rm x)", "a; !(rm x)"):
+        for c in ("@(echo y > f)", "+(x)", "?(rm x)", "*(rm x)", "!(a)b", "a; @(rm x)"):   # 구문 오류·모르는 모양은 해석 실패
             self.assertIsNotNone(parse(c, "/w", {}).error, c)
         for c in ("rm -rf !(keep)", "x=@(a); rm x", "echo '!(x)'", "[[ a == @(a|b) ]] && rm x", "echo $(( 2*(3) ))",
                   "f() { :; }", "! (rm x)", "a=$((2*(3))) b", "echo @(a)"):
             self.assertIsNone(parse(c, "/w", {}).error, c)
+        # 명령 자리의 `!(…)` 는 `! ( … )` — 안쪽을 서브셸로 판정한다
+        for c in ("!(rm -rf src)", "true && !(rm -rf src)", "if !(rm src); then :; fi", "a; !(rm x)", "!(cd /usr) && rm y",
+                  "!(echo y > f) && rm y"):
+            self.assertIn("rm", names(c), c)
+        self.assertEqual([x.cwd for x in segs("!(cd /usr && rm x) && rm y") if x.name == "rm"], ["/usr", "/w"])
+        self.assertEqual(names("!(cd /usr) && true; echo y | tee n"), ["cd", "true", "echo", "tee"])
+
+    def test_builtin_success_needs_bare_name(self):   # `./true`·`/bin/true` 는 외부 프로그램이라 성공 가정을 받지 않는다
+        d, last = self._world()
+        for c in ("./true && cd {D}/ex; rm y", "/bin/true && cd {D}/ex; rm y", "./echo x && cd {D}/ex; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        self.assertEqual(last("./cd {D}/ex; rm y").cwd, d)   # 경로로 부른 cd 는 내장이 아니다
 
     def test_time_and_bang_before_compound(self):   # NB8: `time`·`!` 뒤 복합 명령은 벗기고 정상 해석한다
         for c in ("time if true; then rm x; fi", "time while t; do rm x; done", "time for i in a; do rm x; done",
