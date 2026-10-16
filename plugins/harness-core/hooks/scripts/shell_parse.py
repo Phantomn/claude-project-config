@@ -944,20 +944,26 @@ def _made(p: str, env: Mapping[str, str | None]) -> bool:
     return any(v and k.startswith(_MADE) and (k[n:] == p or k[n:].startswith(p + "/")) for k, v in env.items())
 
 
-def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -> list[str] | None:
-    """`mkdir` 이 실패할 수 없는 모양이면 만드는 경로들, 아니면 None(대상 미확정·이미 있음·상위가 폴더가 아님)."""
-    parents, out, i, ops = False, [], 1, False
+def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -> tuple[list[str], bool] | None:
+    """`mkdir` 이 실패할 수 없는 모양이면 (만드는 경로들, 들어갈 수 있는가), 아니면 None(대상 미확정·이미 있음·상위가 폴더가 아님).
+    `-m`/`--mode` 의 모드에 소유자 실행 비트가 없거나 모드를 읽을 수 없으면 뒤의 cd 는 실패한다(NB5)."""
+    parents, out, i, ops, mode = False, [], 1, False, None
     while i < len(w):
         lit = w[i].literal()
         if not ops and lit == "--":
             ops = True
         elif not ops and lit.startswith("--"):
             parents |= lit == "--parents"
-            i += lit == "--mode"
+            if lit.startswith("--mode"):
+                _, eq, val = lit.partition("=")
+                mode = val if eq else (w[i + 1].literal() if i + 1 < len(w) else "")
+                i += not eq
         elif not ops and lit.startswith("-") and lit != "-":
             head, m, val = lit[1:].partition("m")
             parents |= "p" in head
-            i += bool(m) and not val
+            if m:
+                mode = val or (w[i + 1].literal() if i + 1 < len(w) else "")
+                i += not val
         else:
             r = _expand(w[i], env, cwd)
             if not r or len(r) != 1:
@@ -974,7 +980,7 @@ def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -
             q = os.path.dirname(q)
         if not (_made(q, env) or (os.path.isdir(q) and os.access(q, os.W_OK | os.X_OK))):   # 권한·읽기 전용 FS 는 실패
             return None
-    return out or None
+    return (out, mode is None or (mode.isdigit() and bool(int(mode, 8) & 0o100))) if out else None
 
 
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
@@ -1410,7 +1416,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             elif name == "exit":   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
                 elem["exit"] = True
             elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env)) is not None:
-                state_env.update(dict.fromkeys([_MADE + x for x in mk], "1"))
+                if mk[1]:
+                    state_env.update(dict.fromkeys([_MADE + x for x in mk[0]], "1"))
                 elem["sure"] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)

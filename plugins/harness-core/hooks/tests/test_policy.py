@@ -485,8 +485,11 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         rm = "; rm -rf ./*"
         for c in ("T=$(mktemp -d -p {SCRATCH}/s1/nonexist) && cd {SCRATCH}/s1" + rm,       # NB4 mktemp 실패 대입
                   "TMPDIR={SCRATCH}/s1/nonexist; T=$(mktemp -d) && cd {SCRATCH}/s1" + rm,
-                  "T=$(mktemp -d -p {SCRATCH}/s1/ro) && cd {SCRATCH}/s1" + rm):
+                  "T=$(mktemp -d -p {SCRATCH}/s1/ro) && cd {SCRATCH}/s1" + rm,
+                  "mkdir -m 644 {SCRATCH}/s1/m && cd {SCRATCH}/s1/m" + rm,                     # NB5 실행 비트 없는 모드
+                  "mkdir --mode=600 {SCRATCH}/s1/m && cd {SCRATCH}/s1/m" + rm, "mkdir -pm 000 {SCRATCH}/s1/m && cd {SCRATCH}/s1/m" + rm):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("mkdir -m 700 {SCRATCH}/s1/m && cd {SCRATCH}/s1/m" + rm), [])
 
     def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
         for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",

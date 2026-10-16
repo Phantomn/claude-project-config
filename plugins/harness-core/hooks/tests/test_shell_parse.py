@@ -361,6 +361,17 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         for c in ("T=$(mktemp -d) && cd {D}/ex; rm y", "X=$UNKNOWN && cd {D}/ex; rm y", "T=$(mktemp -d -p {D}/ex) && cd {D}/ex; rm y",
                   "export T=$(mktemp) && cd {D}/ex; rm y"):
             self.assertEqual(last(c).cwd, f"{d}/ex", c)
+
+    def test_mkdir_mode_without_x_is_not_enterable(self):   # NB5: 실행 비트 없는 모드로 만든 폴더는 cd 할 수 없다
+        d, last = self._world()
+        for c in ("mkdir -m 644 {D}/m && cd {D}/m; rm y", "mkdir -m 000 {D}/m && cd {D}/m; rm y", "mkdir --mode=600 {D}/m && cd {D}/m; rm y",
+                  "mkdir -pm 644 {D}/m && cd {D}/m; rm y", "mkdir -m644 {D}/m && cd {D}/m; rm y", "mkdir --mode 644 {D}/m && cd {D}/m; rm y",
+                  "mkdir -m u+rw {D}/m && cd {D}/m; rm y", "mkdir -m $M {D}/m && cd {D}/m; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c in ("mkdir -m 755 {D}/m && cd {D}/m; rm y", "mkdir -m 0700 {D}/m && cd {D}/m; rm y", "mkdir --mode=2775 {D}/m && cd {D}/m; rm y",
+                  "mkdir -pm 700 {D}/m && cd {D}/m; rm y"):
+            self.assertEqual(last(c).cwd, f"{d}/m", c)
+        self.assertEqual(last("mkdir -m 644 {D}/m && rm y").cwd, d)   # mkdir 자체는 성공한다
         self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
 
