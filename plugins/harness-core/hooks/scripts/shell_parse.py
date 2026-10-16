@@ -556,7 +556,7 @@ def _hole_ok(x: str, quoted: bool) -> bool:
     """미확정 확장 x 를 표식 하나로 채워도 되는가 — 한 단어로만 확장되는 형태. 배열·`$@`·연산자 확장은 여러 단어나 `..` 를 낸다.
     따옴표 없는 `$NAME` 은 값에 공백이 없다고 가정한다(정직한 실수 모델 §1.5 의 잔여 위험)."""
     if _HOLE_VAR.fullmatch(x):
-        return True
+        return x not in ("$_", "${_}")   # `$_` = 직전 명령의 마지막 인자 — 공백·`/` 가 들어갈 수 있다
     if not x.startswith(("$(", "`")):
         return False
     if quoted:
@@ -565,8 +565,8 @@ def _hole_ok(x: str, quoted: bool) -> bool:
         a = [t.word.literal() if t.word is not None else None for t in lex(x[2:-1] if x[0] == "$" else x[1:-1])]
     except LexError:
         return False
-    if a[:1] == ["uuidgen"]:
-        return all(y is not None and y.startswith("-") for y in a[1:])
+    if a[:1] == ["uuidgen"]:   # --help·-V 는 공백 든 여러 줄을 낸다
+        return all(y in ("-r", "-t", "-x") for y in a[1:])
     return len(a) >= 2 and a[0] == "date" and all(y in ("-u", "--utc") for y in a[1:-1]) and \
         a[-1] is not None and _HOLE_DATE.fullmatch(a[-1]) is not None
 

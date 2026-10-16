@@ -435,8 +435,12 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "rm -rf {SCRATCH}/s1/${X:-..}", 'rm -rf "{SCRATCH}/s1/${X:-../..}"', 'rm -rf "{SCRATCH}/s1/a-${X%/*}"',
                   "rm -rf {SCRATCH}/s1/a-${X:+y}", "rm -f {SCRATCH}/s1/out-$(date).txt", "rm -f {SCRATCH}/s1/a-`ls`",
                   "rm -rf {SCRATCH}/s1/.$X", "rm -rf {SCRATCH}/s1/..$X", "rm -rf {SCRATCH}/s1/.$X.", "rm -rf {SCRATCH}/s1/$ID",
-                  'rm -rf "{SCRATCH}/s1/${ID}"', "cd {SCRATCH}/s1 && rm -rf ./$ID", "rm -rf {SCRATCH}/s1/$X$Y"):
+                  'rm -rf "{SCRATCH}/s1/${ID}"', "cd {SCRATCH}/s1 && rm -rf ./$ID", "rm -rf {SCRATCH}/s1/$X$Y",
+                  "rm -rf {SCRATCH}/s1/id-$(uuidgen --help)", "rm -rf {SCRATCH}/s1/id-$(uuidgen -V)",   # 재검토 New Breakage 1
+                  "rm -rf {SCRATCH}/s1/x-$_", 'rm -rf "{SCRATCH}/s1/x-${_}"'):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        for c in ("rm -f {SCRATCH}/s1/id-$(uuidgen -r)", "rm -f {SCRATCH}/s1/id-$(uuidgen -t)"):
+            self.assertEqual(ev(c), [], c)
 
 
 if __name__ == "__main__":
