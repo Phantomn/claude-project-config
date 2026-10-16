@@ -553,6 +553,9 @@ def git_stash_created(repo: str, ref: str, ctx: Ctx) -> float | None:
     return _epoch(_git(repo, ["log", "-1", "--format=%ct", "--end-of-options", ref, "--"], ctx))
 
 
+_CLEAN_LONG = ("dry-run", "force", "interactive", "quiet", "exclude")
+
+
 def git_clean_preview(repo: str, clean_args: list[str], ctx: Ctx) -> list[str] | None:
     args: list[str] = []
     opts, value_next = True, False
@@ -561,13 +564,16 @@ def git_clean_preview(repo: str, clean_args: list[str], ctx: Ctx) -> list[str] |
             value_next = False
         elif a == "--":
             opts = False
-        elif a == "--quiet":
-            continue
-        elif a == "--interactive":
-            return None
-        elif a == "--exclude":
-            value_next = True
-        elif not a.startswith("--"):
+        elif a.startswith("--"):
+            # git 은 긴 옵션의 모호하지 않은 접두를 받는다(`--q` = quiet, 실측) — 목록 밖·모호하면 확정 불가
+            name, eq, _ = a[2:].partition("=")
+            hit = [o for o in _CLEAN_LONG if o.startswith(name)] if name else []
+            if len(hit) != 1 or hit[0] == "interactive" or (eq and hit[0] != "exclude"):
+                return None
+            if hit[0] == "quiet":
+                continue
+            value_next = hit[0] == "exclude" and not eq
+        else:
             flags, e, val = a[1:].partition("e")   # -e 뒤는 패턴 값이라 q 를 빼면 안 된다
             if "i" in flags:
                 return None

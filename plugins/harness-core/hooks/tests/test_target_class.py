@@ -477,6 +477,20 @@ class QueryRegressionTest(_WorldCase):
         for args in (["-fdq"], ["-fd", "--quiet"], ["-q", "-f", "-d"]):
             self.assertEqual(sorted(git_clean_preview(r, args, ctx)), base, args)
 
+    def test_clean_preview_long_option_prefixes(self):
+        # git 은 긴 옵션의 모호하지 않은 접두를 받는다 — `clean -n -fd --q` 는 quiet 라 출력이 비고(실측), --inter 는 대화 메뉴
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        self.assertEqual(w.sh("git clean -n -fd --q"), "")
+        base = sorted(git_clean_preview(r, ["-fd"], ctx))
+        for q in ("--q", "--qui", "--quie"):
+            self.assertEqual(sorted(git_clean_preview(r, ["-fd", q], ctx)), base, q)
+        for bad in (["-fd", "--inter"], ["-fd", "--interactive"], ["-i", "-fd"], ["-fdi"], ["-fd", "--zzz"], ["-fd", "--no-quiet"]):
+            self.assertIsNone(git_clean_preview(r, bad, ctx), bad)
+        # 집합 {dry-run, force, interactive, quiet, exclude} 안에는 모호한 접두가 없다 — 목록 밖 '--no-*' 로 확정 불가를 덮는다
+        self.assertEqual(sorted(git_clean_preview(r, ["--for", "--d", "-d"], ctx)), base)
+        self.assertNotIn(w.fmt("{REPO}/build"), git_clean_preview(r, ["-fdx", "--excl=build"], ctx))
+        self.assertNotIn(w.fmt("{REPO}/build"), git_clean_preview(r, ["-fdx", "--ex", "build"], ctx))
+
     def test_clean_preview_ff_keeps_nested_repo(self):
         ctx = w.ctx(); r = w.fmt("{REPO}")
         w.sh("git init -q nested")
