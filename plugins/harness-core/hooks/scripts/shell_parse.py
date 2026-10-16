@@ -1554,6 +1554,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             return None
         if not (w or r):
             return None
+        if not w and not _harmless(r):   # 복합 명령 뒤의 리다이렉트 — 실패하면 복합 명령 전체가 돌지 않는다(복합 전 상태가 실패 끝, 재검토 3 OOS6)
+            elem.update(n=1, sure=False, pre=snap)
         if plain:
             if (name in _SURE_CMDS or (name == "readonly" and _sure_assign(w, state_env))) and builtin:
                 elem["sure"] = True
@@ -1585,7 +1587,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             pass   # 래퍼(sudo·env·nice …) 뒤·경로로 부른 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
         elif name in ("cd", "pushd"):
             elem["pre"] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
-            args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
+            opts = w[1:]
+            while opts and opts[0].literal().startswith("-") and opts[0].literal() not in ("-", "--"):
+                opts = opts[1:]
+            args = opts[1:] if opts and opts[0].literal() == "--" else opts   # `--` 뒤는 폴더 이름(재검토 3 OOS8)
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
                 state_env.get("HOME") if name == "cd" else None)
             if st["cwd"] is not None:

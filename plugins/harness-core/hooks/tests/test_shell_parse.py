@@ -403,6 +403,21 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertIsNone(last(c).cwd, c)
         self.assertEqual(last("cd {D}/ex; source v/bin/activate; rm y").cwd, f"{d}/ex")
 
+    def test_compound_redirect_may_fail(self):   # 5-9 OOS6: `{ cd X; } >&3` 는 리다이렉트 실패로 복합 명령 전체가 돌지 않는다
+        d, last = self._world()
+        for c in ("{ cd {D}/ex; } >&3; rm y", "if cd {D}/ex; then :; fi >&3; rm y", "while cd {D}/ex; do break; done >&3; rm y",
+                  "{ cd {D}/ex; } > {D}/log; rm y", "( cd {D}/ex; ) >&3 && rm y; cd {D}/ex 2>{D}/l; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c in ("{ cd {D}/ex; } >/dev/null; rm y", "{ cd {D}/ex; } 2>&1; rm y", "if cd {D}/ex; then :; fi 2>/dev/null; rm y"):
+            self.assertEqual(last(c).cwd, f"{d}/ex", c)
+
+    def test_cd_double_dash(self):   # 5-9 OOS8: `--` 뒤 `-x` 는 옵션이 아니라 폴더 이름
+        d, last = self._world()
+        Path(d, "-x").mkdir()
+        self.assertEqual(last("cd -- -x; rm y").cwd, f"{d}/-x")
+        self.assertEqual(last("cd -P -- -x; rm y").cwd, f"{d}/-x")
+        self.assertEqual(last("cd -P {D}/ex; rm y").cwd, f"{d}/ex")
+
     def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
         d, last = self._world()
         for c in ("cd {D}/missing || return; rm y", "cd {D}/missing || return 1; rm y", "cd {D}/missing 2>/dev/null || return 0; rm y"):
