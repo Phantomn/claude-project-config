@@ -61,7 +61,8 @@ from target_class import (
 
 SYSTEM_ROOTS = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot")
 BENIGN_DEVICES = ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/")
-DEVICE_EXEMPT = BENIGN_DEVICES + ("/dev/shm/",)
+# /dev/tcp·/dev/udp 는 bash 가 소켓으로 여는 가상 경로라 디스크가 아니다
+DEVICE_EXEMPT = BENIGN_DEVICES + ("/dev/shm/", "/dev/tcp/", "/dev/udp/")
 
 KIND_TEXT: dict[str, str] = {
     UNRESOLVED: "대상을 확정할 수 없다",

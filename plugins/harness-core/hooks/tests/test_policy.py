@@ -317,5 +317,13 @@ class DockerPolicyTest(_WorldCase):
         self.assertEqual(ev("docker exec c sh -c 'rm -rf /var/lib/x'", ctx=ctx), [])
 
 
+class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구조를 재구성한 합성 명령
+    def test_a_dev_tcp_is_not_disk(self):
+        for c in ("exec 3<>/dev/tcp/h/80", "echo x > /dev/tcp/h/80", "printf q > /dev/udp/h/53", "timeout 1 bash -c 'echo > /dev/tcp/h/22'"):
+            self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev("cat x > /dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+        self.assertEqual(ev("echo x > /dev/tcpx"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+
+
 if __name__ == "__main__":
     unittest.main()
