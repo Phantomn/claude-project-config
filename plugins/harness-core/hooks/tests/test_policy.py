@@ -400,6 +400,15 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "f=x; g[0]=1; : ${h:=1}; rm -f {SCRATCH}/s1/$f.txt"):   # 다른 변수·변수 안 쓰는 대상은 그대로
             self.assertEqual(ev(c), [], c)
 
+    def test_f_source_venv_activate(self):   # fix-brief-3 항목 2: 가상환경 activate 만 변수를 미확정으로 두지 않는다
+        for c in ("f=main.py; source .venv/bin/activate; rm src/$f", "f=main.py; . venv/bin/activate.sh; rm src/$f",
+                  "f=main.py; source {REPO}/.venv/bin/activate && rm src/$f"):
+            self.assertEqual(ev(c), [("삭제", GIT_TRACKED)], c)
+        self.assertEqual(ev("f=x; source .venv/bin/activate; rm -f {SCRATCH}/s1/$f.txt"), [])
+        for c in ("f=nothing; source ./env; rm -rf src/$f", "f=nothing; source activate; rm -rf src/$f",
+                  "f=nothing; source .venv/bin/activate.fish; rm -rf src/$f", "f=nothing; . ./activate-x; rm -rf src/$f"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+
     def test_f_conditional_changes_are_merged(self):   # 재검토 Out-of-Scope 1: if·&&/||·while/until·0회 for 본문의 변화를 믿지 않는다
         for c in ("f=..; if false; then f=nothing; fi; rm -rf src/$f",
                   "f=..; while false; do f=nothing; done; rm -rf src/$f", "D=src; if [ -d tmp ]; then D=tmp/out; fi; rm -rf $D",

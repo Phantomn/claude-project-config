@@ -891,6 +891,8 @@ def _clobbered(name: str, w: list[Word]) -> list[str]:
     return out
 
 
+_VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "PATH", "PS1", "PYTHONHOME", "_OLD_VIRTUAL_PATH",
+              "_OLD_VIRTUAL_PS1", "_OLD_VIRTUAL_PYTHONHOME")   # venv activate 가 대입·해제하는 변수
 _SURE_CMDS = (":", "true", "echo", "printf")   # 리다이렉트가 없으면 실패 경로가 사실상 없다(정직한 실수 모델 §1.5)
 
 
@@ -1335,7 +1337,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             else:
                 _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
         if name in ("source", "."):
-            _forget(state_env)
+            a = w[1].literal() if len(w) > 1 else ""
+            if "/" in a and a.rpartition("/")[2] in ("activate", "activate.sh"):   # 가상환경 activate 는 자기 변수만 바꾼다
+                state_env.update(dict.fromkeys(_VENV_VARS))
+            else:
+                _forget(state_env)
         if name == "git":
             while len(w) > 2 and w[1].literal() == "-C":
                 unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)

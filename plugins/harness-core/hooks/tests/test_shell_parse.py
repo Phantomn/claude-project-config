@@ -237,6 +237,13 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertIsNone(last("cd {D}/missing && f=a; rm $f").env.get("f"))
             self.assertEqual(names("true || rm x; rm y"), ["true", "rm", "rm"])   # 도달 못 하는 우변도 단위는 판정한다
 
+    def test_source_venv_activate(self):   # fix-brief-3 항목 2: activate 는 자기 변수만 바꾼다
+        rm = self.last_rm("f=a; VIRTUAL_ENV=/v; PATH=/p; source .venv/bin/activate; rm $f")
+        self.assertEqual(rm.env["f"], "a")
+        self.assertIsNone(rm.env["VIRTUAL_ENV"])
+        self.assertIsNone(rm.env["PATH"])
+        self.assertIsNone(self.last_rm("f=a; source ./env; rm $f").env["f"])
+
     def test_unbalanced_is_parse_error(self):
         for c in ("fi", "if true; fi", "if true; then x", "then x", "done", "while t; done", "do x; done", "if t; then x; done",
                   "{ if t; then x; }; fi", "if t; then x; else y; elif z; then w; fi", "while t; do x; fi",
