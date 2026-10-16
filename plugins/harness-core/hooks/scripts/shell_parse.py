@@ -360,6 +360,9 @@ _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
 _RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
 _LOOP_HEAD = ("for", "select")
 _LOOPS = ("for", "select", "while", "until")
+_CTL_OPEN = ("if", "while", "until")
+_CTL = {"then": ("if", ("cond",)), "elif": ("if", ("body",)), "else": ("if", ("body",)), "fi": ("if", ("body", "else")),
+        "do": ("loop", ("cond",)), "done": ("loop", ("body", "done"))}   # 예약어 -> (짝 종류, 그 앞에 올 수 있는 mode)
 _FOR_CAP = 50   # for 목록 항목 상한 — 넘으면 루프 변수 미확정(본문을 항목마다 해석하는 비용)
 _FOR_TOTAL = 500   # 해석 한 번의 반복 총량 — 치환 안 루프 중첩이 곱으로 커지지 않게
 _FOR_CHARS = 200_000   # 해석 한 번에 본문을 다시 해석하는 글자 수 총량 — 반복 수만으로는 본문 길이 비용이 안 묶인다
@@ -1285,27 +1288,54 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     snap = (st["cwd"], dict(state_env))
     in_pipe = False
+    # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자) — 우변은 조건부라 '안 함' 경로와 합친다
+    andor: tuple[list, list, str] | None = None
 
     def restore() -> None:
         st["cwd"] = snap[0]
         state_env.clear()
         state_env.update(snap[1])
 
+    def now() -> tuple[str | None, dict[str, str | None]]:
+        return st["cwd"], dict(state_env)
+
+    def andor_step(op: str | None) -> None:
+        # 방금 끝난 요소의 끝 상태를 목록에 넣고, op 가 있으면 다음 요소의 시작(&& 는 성공, || 는 실패 경로의 합), 없으면 목록 끝(합)
+        nonlocal andor
+        e = now()
+        if andor is None:
+            ok, fail = [e], [e]
+        else:
+            ok, fail, last = andor
+            ok, fail = ([e], fail + [e]) if last == "&&" else (ok + [e], [e])
+        if op is None:
+            andor = None
+            set_state(_merge(ok + fail))
+        else:
+            andor = (ok, fail, op)
+            if len(s := ok if op == "&&" else fail) > 1:   # 하나면 방금 끝난 상태 그대로
+                set_state(_merge(s))
+
+    def end_list() -> None:
+        if andor is not None:
+            andor_step(None)
+
     def open_group(kind: str) -> None:
-        # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe 를 새로 시작한다
-        nonlocal snap, in_pipe
-        stack.append((kind, st["cwd"], dict(state_env), in_pipe))
-        in_pipe = False
+        # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
+        nonlocal snap, in_pipe, andor
+        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor))
+        in_pipe, andor = False, None
         snap = (st["cwd"], dict(state_env))
 
     def close_group(kind: str) -> None:
-        nonlocal snap, in_pipe
+        nonlocal snap, in_pipe, andor
         flush()
         if in_pipe:  # 그룹 안 마지막 파이프 구성원
             restore()
+        end_list()
         if not stack or stack[-1][0] != kind:
             raise LexError(f"짝 없는 {'}' if kind == '{' else ')'!r}")
-        _, cwd0, env0, outer_pipe = stack.pop()
+        _, cwd0, env0, outer_pipe, andor = stack.pop()
         if kind == "(" or outer_pipe:  # 서브셸, 또는 파이프 구성원인 { } 는 안쪽 변화가 밖으로 안 나간다
             st["cwd"] = cwd0
             state_env.clear()
@@ -1325,16 +1355,51 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         state_env.clear()
         state_env.update(s[1])
 
-    def close_case() -> None:
-        # 어느 분기가 돌았는지(또는 아무것도 안 돌았는지) 모르므로 상태는 시작과 모든 분기 끝이 같을 때만 유지
-        nonlocal snap, in_pipe
-        c = cases.pop()
-        _, cwd0, env0, outer_pipe = stack.pop()
-        if c["mode"] == "body":
-            c["ends"].append((st["cwd"], dict(state_env)))
-        set_state((cwd0, env0) if outer_pipe else _merge([(cwd0, env0), *c["ends"]]))
+    def close_ctl(s: tuple[str | None, dict[str, str | None]]) -> None:
+        # s = 합친 끝 상태. 파이프 구성원인 복합 명령은 안쪽 변화가 밖으로 안 나간다
+        nonlocal snap, in_pipe, andor
+        _, cwd0, env0, outer_pipe, andor = stack.pop()
+        set_state((cwd0, env0) if outer_pipe else s)
         in_pipe = outer_pipe
         snap = (cwd0, dict(env0))
+
+    def close_case() -> None:
+        # 어느 분기가 돌았는지(또는 아무것도 안 돌았는지) 모르므로 상태는 시작과 모든 분기 끝이 같을 때만 유지
+        c = cases.pop()
+        end_list()
+        if c["mode"] == "body":
+            c["ends"].append(now())
+        close_ctl(_merge([stack[-1][1:3], *c["ends"]]))
+
+    # 열린 if·루프(while/until/for/select): mode cond(조건)·body(본문)·else·done(목록 확정 for — for_loop 가 이미 합쳤다),
+    # cond = 마지막 조건 뒤 상태, ends = 갈래 끝 상태들. stack 의 "if"·"loop" 항목과 짝을 이룬다
+    ctl: list[dict] = []
+
+    def control(word: str) -> None:
+        """if·while·until 을 열고 then·elif·else·fi·do·done 으로 갈래를 넘긴다. 조건부 본문은 '안 함' 경로와 합친다."""
+        nonlocal snap
+        flush()
+        if word in _CTL_OPEN or word in _LOOP_HEAD:   # 앞 `&&` 목록은 그룹처럼 stack 에 맡긴다(복합 명령이 그 요소)
+            open_group("if" if word == "if" else "loop")
+            ctl.append({"mode": "cond", "ends": []})
+            return
+        end_list()
+        kind, modes = _CTL[word]
+        c = ctl[-1] if stack and stack[-1][0] == kind else None
+        if c is None or c["mode"] not in modes:
+            raise LexError(f"짝 없는 {word}")
+        e = now()
+        if word in ("fi", "done"):   # 조건이 거짓이거나 0회 돈 경로(else 없음)도 합친다
+            ctl.pop()
+            close_ctl(e if c["mode"] == "done" else _merge([*c["ends"], e] + ([] if c["mode"] == "else" else [c["cond"]])))
+            return
+        if word in ("then", "do"):
+            c.update(mode="body", cond=e)
+        else:   # elif·else — 다음 조건·else 본문은 앞 조건이 거짓인 상태에서
+            c["ends"].append(e)
+            set_state(c["cond"])
+            c["mode"] = "cond" if word == "elif" else "else"
+        snap = now()
 
     def bare(i: int) -> str | None:
         t = toks[i] if i < len(toks) else None
@@ -1434,10 +1499,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             else:
                 raise LexError("case 패턴을 해석할 수 없음")
             continue
-        if word == "for" and at_start():
-            flush()
-            if (end := for_loop(idx)) is not None:
+        if (word in _CTL or word in _CTL_OPEN or word in _LOOP_HEAD) and at_start():
+            control(word)   # type: ignore[arg-type]
+            if word == "for" and (end := for_loop(idx)) is not None:
+                ctl[-1]["mode"] = "done"
                 skip = end   # done 은 일반 처리 — 예약어로 벗겨지고 뒤 리다이렉트는 루프 전체에 붙는다
+                continue
+            if word not in ("fi", "done", "for", "select"):   # for·select 머리는 unit 이, fi·done 뒤 리다이렉트는 단위가 받는다
                 continue
         if t.kind == "word" and word in ("case", "esac") and at_start():
             if word == "case":
@@ -1452,6 +1520,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             flush()
             if in_pipe:
                 restore()
+            end_list()
             in_pipe, pipe_prev = False, None
             end = (st["cwd"], dict(state_env))
             cur["ends"].append(end)
@@ -1477,6 +1546,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             seg = flush()
             if in_pipe or t.op in _SUBSHELL_OPS:
                 restore()
+            if t.op in ("&&", "||"):
+                andor_step(t.op)
+            elif t.op not in ("|", "|&"):
+                end_list()
             in_pipe = t.op in ("|", "|&")
             pipe_prev = seg if in_pipe else None
             snap = (st["cwd"], dict(state_env))
@@ -1486,6 +1559,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         elif t.op == ")":
             close_group("(")
     flush()
+    end_list()
     if stack:
         raise LexError("닫히지 않은 그룹")
     return st["cwd"], state_env

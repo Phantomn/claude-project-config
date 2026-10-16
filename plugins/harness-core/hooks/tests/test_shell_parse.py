@@ -180,6 +180,48 @@ class ParseTest(unittest.TestCase):
         self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; } | cat; rm y") if x.name == "rm"], ["/a", "/w"])
 
 
+class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조건부·0회 실행 본문의 변화는 '안 함' 경로와 합친다
+    def last_rm(self, cmd):
+        return [x for x in segs(cmd) if x.name == "rm"][-1]
+
+    def test_conditional_changes_are_merged(self):
+        for c in ("f=..; if false; then f=nothing; fi; rm $f", "f=..; true || f=nothing; rm $f", "f=..; t && f=nothing; rm $f",
+                  "f=..; while false; do f=nothing; done; rm $f", "f=..; until t; do f=nothing; done; rm $f",
+                  "f=..; for x in $(ls); do f=nothing; done; rm $f", "f=..; select x in a; do f=nothing; done; rm $f",
+                  "f=..; if a; then if b; then f=x; fi; fi; rm $f", "f=..; if a; then f=x; elif b; then f=y; fi; rm $f",
+                  "f=..; a && { f=x; } || b; rm $f", "f=..; a || b && f=x; rm $f"):
+            self.assertIsNone(self.last_rm(c).env.get("f", "unset"), c)
+        for c in ("if t; then cd /a; fi; rm y", "t && cd /a; rm y", "cd /a && cd b; rm y", "while t; do cd /a; done; rm y",
+                  "if a; then while b; do cd /c; done; fi; rm y"):
+            self.assertIsNone(self.last_rm(c).cwd, c)
+
+    def test_known_paths_stay_precise(self):
+        self.assertEqual(self.last_rm("f=a; if t; then f=a; fi; rm $f").env["f"], "a")
+        self.assertEqual(self.last_rm("if t; then f=1; else f=1; fi; rm $f").env["f"], "1")
+        self.assertEqual(self.last_rm("f=a; if t; then f=b; else rm $f; fi").env["f"], "a")   # else 는 조건 뒤 상태에서
+        self.assertEqual(self.last_rm("f=a; if t; then f=b; elif u; then rm $f; fi").env["f"], "a")
+        self.assertEqual(self.last_rm("f=a; if g=1; then rm $g; fi").env["g"], "1")   # 조건은 늘 실행된다
+        self.assertEqual(self.last_rm("f=..; echo | if a; then f=x; fi; rm $f").env["f"], "..")   # 파이프 구성원은 서브셸
+        for c, cwd in (("if cd /a; then rm x; fi", "/a"), ("cd /a && cd b && rm x", "/a/b"), ("cd /a || exit; rm y", "/a"),
+                       ("while cd /a; do x; done; rm y", "/a"), ("(cd /a && cd b); rm y", "/w"), ("cd /a && t || u; rm y", "/a"),
+                       ("cd /a; if t; then rm x; fi", "/a"), ("for i in a b; do cd /c; done; rm y", "/c")):
+            self.assertEqual(self.last_rm(c).cwd, cwd, c)
+        self.assertEqual(names("if a; then rm x; elif b; then rm y; else rm z; fi"), ["a", "rm", "b", "rm", "rm"])
+
+    def test_unbalanced_is_parse_error(self):
+        for c in ("fi", "if true; fi", "if true; then x", "then x", "done", "while t; done", "do x; done", "if t; then x; done",
+                  "{ if t; then x; }; fi", "if t; then x; else y; elif z; then w; fi", "while t; do x; fi",
+                  "case a in a) if t; then x;; esac; fi", "for i in a b; do x; fi"):
+            self.assertIsNotNone(parse(c, "/w", {}).error, c)
+
+    def test_large_input_is_linear(self):
+        for c in ("if a; then f=$i; fi\n" * 4000, "a && " * 4000 + "b", "a || b && " * 2000 + "c",
+                  "if a; then " * 400 + "b" + "; fi" * 400, "while a; do " * 400 + "b" + "; done" * 400):
+            t0 = time.perf_counter()
+            self.assertIsNone(parse(c, "/w", {}).error)
+            self.assertLess(time.perf_counter() - t0, 1.0, c[:30])
+
+
 def ex(word_src, cwd="/w", env=None):
     s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]
     return expand(s.argv[1], s)
