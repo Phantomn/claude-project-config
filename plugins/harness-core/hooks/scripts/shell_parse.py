@@ -505,6 +505,29 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     return "$", i + 1
 
 
+_HOLE_VAR = re.compile(r"\$(?:\$|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
+_HOLE_DATE = re.compile(r"\+(?:[A-Za-z0-9_.:-]|%[YmdHMSsNFTjyuwGVz%])+")   # 공백을 낼 수 없는 형식만(%c·%e 등 제외)
+
+
+def _hole_ok(x: str, quoted: bool) -> bool:
+    """미확정 확장 x 를 표식 하나로 채워도 되는가 — 한 단어로만 확장되는 형태. 배열·`$@`·연산자 확장은 여러 단어나 `..` 를 낸다.
+    따옴표 없는 `$NAME` 은 값에 공백이 없다고 가정한다(정직한 실수 모델 §1.5 의 잔여 위험)."""
+    if _HOLE_VAR.fullmatch(x):
+        return True
+    if not x.startswith(("$(", "`")):
+        return False
+    if quoted:
+        return True
+    try:
+        a = [t.word.literal() if t.word is not None else None for t in lex(x[2:-1] if x[0] == "$" else x[1:-1])]
+    except LexError:
+        return False
+    if a[:1] == ["uuidgen"]:
+        return all(y is not None and y.startswith("-") for y in a[1:])
+    return len(a) >= 2 and a[0] == "date" and all(y in ("-u", "--utc") for y in a[1:-1]) and \
+        a[-1] is not None and _HOLE_DATE.fullmatch(a[-1]) is not None
+
+
 def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False,
            hole: str | None = None) -> list[tuple[str, bool]] | None:
     """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None.
@@ -529,7 +552,7 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
             elif c in "$`":
                 val, j = _dollar(t, i, env)
                 if val is None:
-                    if hole is None:
+                    if hole is None or not _hole_ok(t[i:j], p.quote == '"'):
                         return None
                     val = hole
                 if split and active and any(x.isspace() or x in "*?[" for x in val):

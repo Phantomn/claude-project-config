@@ -364,14 +364,26 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("T=$(date +%s); rm -rf {SCRATCH}/s1 /x/$T"), [("삭제", UNRESOLVED)])
 
     def test_h_scratch_prefix_with_unresolved_last_component(self):
-        for c in ("rm -rf {SCRATCH}/s1/$ID", 'rm -rf "{SCRATCH}/s1/run-$$"', "echo x > {SCRATCH}/s1/$N.log",
-                  "cp src/main.py {SCRATCH}/s1/${ID}", "rm -f {SCRATCH}/s1/out-$(date +%s).txt", "cd {SCRATCH}/s1 && rm -rf ./$ID"):
+        for c in ('rm -rf "{SCRATCH}/s1/run-$$"', "echo x > {SCRATCH}/s1/$N.log", "cp src/main.py {SCRATCH}/s1/r-${ID}",
+                  "rm -f {SCRATCH}/s1/out-$(date +%s).txt", "cd {SCRATCH}/s1 && rm -rf ./run-$ID", 'rm -f "{SCRATCH}/s1/a-$(ls | head -1)"',
+                  "rm -f {SCRATCH}/s1/id-$(uuidgen)", 'rm -f "{SCRATCH}/s1/r$RANDOM.txt"', "rm -f {SCRATCH}/s1/d-$(date -u '+%Y%m%dT%H%M%S')"):
             self.assertEqual(ev(c), [], c)
         (w.scratch / "s2").mkdir()
         (w.scratch / "s2/key.pem").write_text("k\n", encoding="utf-8")
         for c in ("rm -rf {SCRATCH}/s1/$ID/sub", "rm -rf {SCRATCH}/s1/$ID/", "rm -rf {SCRATCH}/$ID", "rm -rf {HOME}/data/$ID", "rm -rf $DIR/x",
                   "rm -f {SCRATCH}/s1/$K.pem", "rm -f {SCRATCH}/s1/.env.$X", "rm -rf {SCRATCH}/s2/$ID", "rm -rf {SCRATCH}/s1/../$ID",
                   "rm -rf {SCRATCH}/s1/*$ID", "rm -rf {SCRATCH}/s1/{a,$ID}", "rm -rf {SCRATCH}/nope/$ID", "rm -rf {SCRATCH}/s1/.git/$X"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+
+    def test_h_hole_only_for_single_word_expansions(self):   # 적대 리뷰 H: 여러 단어·연산자·점 이름은 표식으로 채우지 않는다
+        (w.scratch / "s1/src").mkdir()
+        for c in ("rm -rf {SCRATCH}/s1/a-$(ls {SCRATCH}/s1)", "rm -rf {SCRATCH}/s1/$(ls {SCRATCH}/s1)",
+                  "rm -rf {SCRATCH}/s1/a-$(ls -t {SCRATCH}/s1 | tail -n +2)", 'rm -rf "{SCRATCH}/s1/a-${F[@]}"',
+                  "rm -rf {SCRATCH}/s1/a-${FILES[*]}", 'rm -rf "{SCRATCH}/s1/a-$@"', "rm -rf {SCRATCH}/s1/a-$*", 'rm -rf "{SCRATCH}/s1/a-$1"',
+                  "rm -rf {SCRATCH}/s1/${X:-..}", 'rm -rf "{SCRATCH}/s1/${X:-../..}"', 'rm -rf "{SCRATCH}/s1/a-${X%/*}"',
+                  "rm -rf {SCRATCH}/s1/a-${X:+y}", "rm -f {SCRATCH}/s1/out-$(date).txt", "rm -f {SCRATCH}/s1/a-`ls`",
+                  "rm -rf {SCRATCH}/s1/.$X", "rm -rf {SCRATCH}/s1/..$X", "rm -rf {SCRATCH}/s1/.$X.", "rm -rf {SCRATCH}/s1/$ID",
+                  'rm -rf "{SCRATCH}/s1/${ID}"', "cd {SCRATCH}/s1 && rm -rf ./$ID", "rm -rf {SCRATCH}/s1/$X$Y"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
 
 

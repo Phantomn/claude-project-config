@@ -238,7 +238,8 @@ def _scratch_hole(word: Word, seg: Segment, ctx: Ctx) -> list[str] | None:
     if p is None or HOLE not in p:
         return None
     d, _, name = p.rpartition("/")
-    if not d or HOLE in d:
+    # 값이 비거나 점이면 접두 폴더 자신·부모가 대상이 된다
+    if not d or HOLE in d or not name.replace(HOLE, "").strip("."):
         return None
     nd = normalize(d, True)
     target = os.path.join(nd, name.replace(HOLE, _HOLE_NAME))
