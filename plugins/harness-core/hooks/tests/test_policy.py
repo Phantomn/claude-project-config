@@ -376,6 +376,12 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [("삭제", GIT_TRACKED)], c)
         self.assertEqual(ev("f=nothing; read -r g; rm -rf src/$f"), [])   # 바뀌지 않은 변수는 그대로
 
+    def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
+        for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",
+                  'for f in [^.]*; do rm -rf "$f"; done', 'for f in [[:alpha:]]*; do rm -rf "$f"; done'):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("rm -f *.tmp {SCRATCH}/s1/[ab]*"), [])
+
     def test_g_mktemp_result_is_scratch(self):
         for c in ("T=$(mktemp -d); echo x > $T/a; cp src/main.py $T/; rm -rf $T", "F=$(mktemp); git diff > $F; rm -f $F",
                   'D="$(mktemp -d -p {SCRATCH})"; cd "$D" && echo x > out.txt && cd - >/dev/null; rm -rf "$D"'):

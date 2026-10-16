@@ -499,6 +499,14 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
     return os.path.join(d, _MKTEMP_NAME)
 
 
+# 파이썬 fnmatch 가 bash 와 다르게 읽는 괄호 식 — `[^…]` 부정·`[[:class:]]`·`[=…=]`·`[.….]`(파이썬은 0건 → 리터럴 → 허용이 된다)
+_BASH_ONLY_GLOB = re.compile(r"\[[\^!]|\[[:=.]")
+
+
+def _bad_glob(ch: list[tuple[str, bool]]) -> bool:
+    return any(a and _BASH_ONLY_GLOB.search(t) for t, a in ch)
+
+
 def _mktemp_tail_unsafe(lit: str, globbing: bool) -> bool:
     """mktemp 결과 자리 뒤의 `..`·글롭 — 결과가 빈 값(실패)이면 `/..`·`/*` 가 된다."""
     return _MKTEMP_NAME in lit and (globbing or ".." in lit.partition(_MKTEMP_NAME)[2].split("/"))
@@ -671,7 +679,7 @@ def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> lis
             return None
         lit = "".join(t for t, _ in ch)
         globbing = any(a and any(x in t for x in "*?[") for t, a in ch)
-        if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing):
+        if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing) or _bad_glob(ch):
             return None
         if not lit.startswith("/"):
             if cwd is None:
@@ -728,7 +736,7 @@ def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str
                 return None
             lit = "".join(t for t, _ in ch)
             globbing = any(a and any(x in t for x in "*?[") for t, a in ch)
-            if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing):
+            if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing) or _bad_glob(ch):
                 return None
             if globbing:
                 pat = "".join(t if a else glob.escape(t) for t, a in ch)
