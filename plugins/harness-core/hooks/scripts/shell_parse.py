@@ -85,14 +85,43 @@ def _skip_sub(s: str, i: int) -> int:
     return i + 1
 
 
+def _heredoc_end(s: str, i: int, delim: str, strip: bool) -> tuple[int, int]:
+    """i = 본문 첫 줄 시작. (본문 끝 인덱스, 구분자 줄 다음 인덱스). 구분자 줄이 없으면 LexError."""
+    n, start = len(s), i
+    while i < n:
+        j = s.find("\n", i)
+        end = n if j < 0 else j
+        line = s[i:end]
+        if (line.lstrip("\t") if strip else line) == delim:
+            return (i - 1 if i > start else start), (end + 1 if j >= 0 else n)
+        i = end + 1
+    raise LexError(f"끝나지 않은 heredoc {delim!r}")
+
+
 def _skip_to(s: str, i: int, closer: str) -> int:
-    """중첩·따옴표를 세며 closer 다음 인덱스. i 는 여는 기호 다음."""
+    """중첩·따옴표를 세며 closer 다음 인덱스. i 는 여는 기호 다음. `( )` 안 heredoc 본문은 건너뛴다."""
     n = len(s)
+    pending: list[tuple[str, bool]] = []
     while i < n:
         c = s[i]
         if c == closer:
+            # 줄바꿈 전에 닫힌 `<<` 는 산술 시프트이거나 본문 없는 heredoc — 후자는 안쪽 코드를 lex 할 때 오류가 된다
             return i + 1
-        if c == "'":
+        if c == "\n" and pending:
+            i += 1
+            for delim, strip in pending:
+                i = _heredoc_end(s, i, delim, strip)[1]
+            pending.clear()
+        elif c == "<" and closer == ")" and s.startswith("<<", i) and not s.startswith("<<<", i):
+            strip = s.startswith("<<-", i)
+            j = i + 2 + strip
+            if (m := _BLANK.match(s, j)):
+                j = m.end()
+            w, i = _read_word(s, j)
+            if not w.parts:
+                raise LexError("heredoc 구분자 없음")
+            pending.append((w.literal(), strip))
+        elif c == "'":
             j = s.find("'", i + 1)
             if j < 0:
                 raise LexError("닫히지 않은 작은따옴표")
@@ -204,18 +233,8 @@ def lex(src: str) -> list[Token]:
             i += 1
             for idx, delim, strip in pending:
                 start = i
-                while True:
-                    if i >= n:
-                        raise LexError(f"끝나지 않은 heredoc {delim!r}")
-                    j = s.find("\n", i)
-                    end = n if j < 0 else j
-                    line = s[i:end]
-                    if (line.lstrip("\t") if strip else line) == delim:
-                        body = s[start : i - 1] if i > start else ""
-                        toks[idx] = replace(toks[idx], body=body)
-                        i = end + 1 if j >= 0 else n
-                        break
-                    i = end + 1
+                body_end, i = _heredoc_end(s, i, delim, strip)
+                toks[idx] = replace(toks[idx], body=s[start:body_end])
             pending.clear()
         elif c == "#":
             j = s.find("\n", i)

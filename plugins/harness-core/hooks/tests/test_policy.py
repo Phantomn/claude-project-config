@@ -336,6 +336,11 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("git push origin :main"), [("git push", "DEFAULT_BRANCH")])
         self.assertEqual(ev("git push origin +main"), [("git push", "DEFAULT_BRANCH")])
 
+    def test_d_commit_message_heredoc(self):
+        msg = "git commit -m \"$(cat <<'EOF'\nfix: it's (x) > y\nEOF\n)\""
+        self.assertTrue(w.judge_cmd(msg + " && git push origin feat").allow)
+        self.assertEqual(ev(msg + " && rm src/main.py"), [("삭제", GIT_TRACKED)])
+
 
 if __name__ == "__main__":
     unittest.main()

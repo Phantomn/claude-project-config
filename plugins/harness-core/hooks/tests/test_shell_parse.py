@@ -423,5 +423,34 @@ class ReviewFix5Test(unittest.TestCase):  # 리뷰 라운드 5 — 확장 env �
         self.assertEqual(ctx_targets("docker exec -w /app c env X=~ sh -c 'rm -rf $X'"), [["/h"]])
 
 
+class SubstHeredocTest(unittest.TestCase):   # 재생 군집 P2: `$( )` 안 heredoc
+    def test_commit_message_heredoc(self):
+        c = "git commit -m \"$(cat <<'EOF'\nfix: it's (done) \"q\" `x`\n\nbody )\nEOF\n)\" && git push"
+        self.assertEqual(names(c), ["git", "cat", "git"])
+        self.assertEqual(names("x=$(cat <<EOF\na ) b ' c\nEOF\n); rm $x"), ["cat", "rm"])
+
+    def test_dash_and_multiple(self):
+        self.assertEqual(names("echo \"$(cat <<-E1\n\t)\n\tE1\n)\"; rm y"), ["echo", "cat", "rm"])
+        self.assertEqual(names("echo $(cat <<A; cat <<B\n(\nA\n'\nB\n)"), ["echo", "cat", "cat"])
+
+    def test_body_runs_rm_only_as_text(self):
+        hd = next(s for s in segs("echo \"$(cat <<'EOF'\nrm -rf ~\nEOF\n)\"") if s.name == "cat").redirects[0]
+        self.assertEqual(hd.body, "rm -rf ~")
+
+    def test_adversarial(self):
+        # 구분자 비슷한 줄은 끝이 아니다 — 본문 안 ')' 가 치환을 닫지 않는다
+        self.assertEqual(names("echo \"$(cat <<EOF\nEOFX\n EOF\nEOF )\nEOF\n)\"; rm y"), ["echo", "cat", "rm"])
+        for s in ["echo \"$(cat <<EOF\nbody)\"", "echo $(cat <<EOF)", "echo \"$(cat <<EOF\nEOF\"", "echo $(cat <<)"]:
+            self.assertIsNotNone(parse(s, "/w", {}).error, s)
+        self.assertEqual(names("echo $((1<<2)); rm y"), ["echo", "rm"])   # 산술 시프트는 heredoc 이 아니다
+        self.assertEqual(names("cat <<<$(echo x); rm y"), ["cat", "echo", "rm"])
+
+    def test_linear(self):
+        body = "it's (x) \"q\"\n" * 15000
+        t0 = time.perf_counter()
+        lex("git commit -m \"$(cat <<'EOF'\n" + body + "EOF\n)\"")
+        self.assertLess(time.perf_counter() - t0, 0.05)
+
+
 if __name__ == "__main__":
     unittest.main()
