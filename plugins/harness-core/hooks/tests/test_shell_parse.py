@@ -437,6 +437,13 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "cd {D}/ex 2>&0 && t; rm y"):
             self.assertEqual(last(c).cwd, f"{d}/ex", c)
 
+    def test_double_negation(self):   # 5-2 NB5: `! !` 은 원래 값
+        d, last = self._world()
+        self.assertEqual(last("! ! cd {D}/missing || rm y").cwd, d)
+        self.assertEqual(last("! ! cd {D}/ex && rm y").cwd, f"{d}/ex")
+        self.assertEqual(last("! ! ! cd {D}/missing && rm y").cwd, d)
+        self.assertEqual(last("! ! true && cd {D}/ex; rm y").cwd, f"{d}/ex")
+
     def test_harmless_redirects_keep_sure(self):   # NB7: /dev/null·fd 복제만 있는 리다이렉트는 실패할 수 없다
         d, last = self._world()
         for c, cwd in (("cd {D}/ex 2>/dev/null && t; rm y", f"{d}/ex"), ("pushd {D}/ex >/dev/null && t; rm y", f"{d}/ex"),

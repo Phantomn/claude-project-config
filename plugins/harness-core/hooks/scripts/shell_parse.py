@@ -1430,7 +1430,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         nonlocal last_list
         neg = False
         while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
-            neg |= w[0].literal() == "!"
+            neg ^= w[0].literal() == "!"   # `! !` 은 원래 값
             w = w[2 if w[0].literal() == "time" and len(w) > 1 and w[1].literal() == "-p" else 1:]
         if w or r:   # 요소의 단위 수와 '실패 경로 없음' 여부(outcome 이 읽는다)
             elem.update(n=elem["n"] + 1, sure=False, pre=None, exit=False, neg=neg)
