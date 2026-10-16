@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -16,12 +17,13 @@ from datetime import datetime, timezone
 
 import policy
 from ledger import KIND_MOVED_IN, state_dir
-from shell_parse import Segment, Word, expand, parse
+from shell_parse import Segment, parse
 from target_class import (
     GIT_TRACKED,
     MODE_RANK,
     PRESERVED,
     PROTECTED_NAME,
+    UNRESOLVED,
     Ctx,
     classify,
     git_dirty,
@@ -61,100 +63,23 @@ def _strongest(modes: list[str]) -> str:
 
 # ---- 장부 기록 (spec §3.7 기록 주체 2) ----
 
-def _sed_perl_files(seg: Segment) -> list[Word]:
-    """`sed -i|--in-place`·`perl -i|-pi` 의 파일 인자. 제자리 수정이 아니면 []."""
-    perl = seg.name == "perl"
-    a, i, inplace, script, ops = seg.argv[1:], 0, False, False, []
-    while i < len(a):
-        s = a[i].literal()
-        i += 1
-        if s == "--":
-            ops += a[i:]
-            break
-        if not s.startswith("-") or s == "-":
-            if perl:   # perl 은 첫 비옵션에서 옵션이 끝난다
-                ops += a[i - 1:]
-                break
-            ops.append(a[i - 1])
-        elif s.startswith("--"):
-            k, eq, _ = s.partition("=")
-            inplace |= k == "--in-place"
-            if k in ("--expression", "--file"):
-                script = True
-            if k in ("--expression", "--file", "--line-length") and not eq:
-                i += 1
-        else:
-            for n, c in enumerate(s[1:], 1):
-                if c == "i":   # 뒤 글자는 백업 접미사
-                    inplace = True
-                    break
-                if c in ("eE" if perl else "efl"):
-                    script = script or c != "l"
-                    i += n == len(s) - 1
-                    break
-                if perl and c in "IMmlx0CdDV":   # 값이 붙어 오는 옵션
-                    break
-    if not inplace:
-        return []
-    return ops if script else ops[1:]
-
-
-def _inplace_targets(seg: Segment) -> list[str]:
-    """제자리 수정의 닫힌 목록(리다이렉트·tee·sed -i·perl -i·truncate·cp/mv/install/rsync/dd 목적지·git checkout/restore)."""
-    words = [r.target for r in seg.redirects if r.target is not None and r.op in (">", ">|", "&>", ">>", "&>>")]
-    out: list[str] = []
-    try:
-        if seg.name == "tee":
-            words += policy._args(seg)[2]
-        elif seg.name in ("sed", "perl"):
-            words += _sed_perl_files(seg)
-        elif seg.name in ("truncate", "cp", "mv", "install", "rsync", "dd"):
-            out += [p for j in policy.HANDLERS[seg.name](seg, None) if j.rule == policy.OVERWRITE for p in j.paths or ()]
-        elif seg.name == "git":
-            out += [os.path.join(j.repo, p) for j in policy._git_handler(seg, None)
-                    if j.op in ("git checkout", "git restore") and j.repo for p in j.paths or ()]
-    except policy._BadOption:
-        pass
-    out += [p for w in words for p in expand(w, seg) or ()]
-    return [p for p in out if os.path.lexists(p) and not os.path.isdir(p)]
-
-
-def _mv_moves(seg: Segment) -> list[tuple[str, str]]:
-    """mv 의 (원본, 목적지) 쌍. 확정할 수 없으면 생략."""
-    try:
-        flags, vals, ops = policy._args(seg, policy._COPY_VALUES - {"-m", "-o", "-g"})
-    except policy._BadOption:
-        return []
-    tdir = vals.get("-t") or vals.get("--target-directory")
-    force = tdir is not None
-    if tdir is None:
-        if len(ops) < 2:
-            return []
-        tdir, ops = ops[-1], ops[:-1]
-    dest = expand(tdir, seg)
-    if dest is None or len(dest) != 1:
-        return []
-    srcs = [p for w in ops for p in expand(w, seg) or ()]
-    if flags & {"-T", "--no-target-directory"} or not (force or os.path.isdir(dest[0])):
-        return [(srcs[0], dest[0])] if len(srcs) == 1 else []
-    return [(s, os.path.join(dest[0], os.path.basename(s.rstrip("/")))) for s in srcs]
-
-
 def _note_moves(seg: Segment, ctx: Ctx) -> None:
-    for src, dst in _mv_moves(seg):
+    for src, dst in policy.mv_moves(seg):
         c = classify(src, ctx)
-        keep = c.kind in (PRESERVED, PROTECTED_NAME)
+        # 분류·조회 실패는 '조건 거짓'이 아니라 '모름' — 보호 쪽으로 기록(pre-dirty 과보호와 같은 원칙)
+        keep = c.kind in (PRESERVED, PROTECTED_NAME, UNRESOLVED)
         if c.kind == GIT_TRACKED and c.path:
             dirty = git_dirty(c.path if os.path.isdir(c.path) else os.path.dirname(c.path), [c.path], ctx)
-            keep = bool(dirty) and not all(is_session_change(d, ctx) for d in dirty)
+            keep = dirty is None or (bool(dirty) and not all(is_session_change(d, ctx) for d in dirty))
         if keep:
             ctx.ledger.record(normalize(dst, False), KIND_MOVED_IN, ctx.session_id)
 
 
 def _record(seg: Segment, ctx: Ctx) -> None:
+    # 거부될 명령도 기록한다 — 기록은 '처음 손대기 직전 상태'라 실행 여부와 무관하게 참이다
     if seg.context.kind != "host" or seg.via_xargs:
         return   # shortcut: 컨테이너 안 제자리 수정·mv 는 기록하지 않는다 — 바인드 마운트 대상 오분류가 나오면 호스트 경로로 사상해 기록
-    for p in _inplace_targets(seg):
+    for p in policy.inplace_targets(seg):
         note_touch(p, ctx, None)
     if seg.name == "mv":
         _note_moves(seg, ctx)
@@ -189,6 +114,7 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
         bad = FAIL_WORDS.search(command) is not None
         return Decision(not bad, [R_PARSE] if bad else [], _strongest(modes))
     reasons: list[str] = []
+    errors: list[str] = []
     seen_judged = False
     for seg in res.segments:
         judged = policy.is_judged_op(seg) or seg.context.kind != "host"
@@ -196,21 +122,26 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
             if seen_judged or judged:
                 reasons.append(R_TIMEOUT)
             break
-        seen_judged |= judged
         findings, targets = policy.assess(seg, ctx)
+        # 저장소 config 의 git alias 처럼 명령 모양만으로는 못 알아보는 판정 대상도 조회 결과로 잡는다
+        judged = judged or bool(findings) or bool(targets)
+        seen_judged |= judged
         reasons += [f.reason() for f in findings]
         if judged:
             if seg.context.kind == "host":
                 modes.append(switch_mode(seg.cwd, environ))
             modes += [switch_mode(t, environ) for t in targets]
-        _record(seg, ctx)
-    return Decision(not reasons, _cap(reasons), _strongest(modes))
+        try:
+            _record(seg, ctx)
+        except Exception as e:  # noqa: BLE001 — 장부 기록은 부가 작업, 실패해도 판정은 유지
+            errors.append(f"장부 기록 실패: {type(e).__name__}: {e}")
+    return Decision(not reasons, _cap(reasons), _strongest(modes), "; ".join(errors) or None)
 
 
 def render(d: Decision) -> str:
     out: dict = {"hookEventName": "PreToolUse", "permissionDecision": "allow" if d.allow else "deny"}
     if not d.allow:
-        out["permissionDecisionReason"] = "\n".join([*(f"[bash-guard] {r}" for r in d.reasons), FOOTER])
+        out["permissionDecisionReason"] = "[bash-guard] " + "\n".join([*d.reasons, FOOTER])
     return json.dumps({"hookSpecificOutput": out}, ensure_ascii=False)
 
 
@@ -226,13 +157,23 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
         return
     d.mkdir(parents=True, exist_ok=True)
     p = d / "bash-guard.jsonl"
+    line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8", "surrogateescape")
+    # 순환(.1 교체)과 추가를 같은 잠금 안에서 — 다른 세션의 줄이 교체 사이에 사라지지 않게
+    lock = os.open(d / "bash-guard.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        if p.stat().st_size > max_bytes:
-            os.replace(p, p.with_name(p.name + ".1"))
-    except FileNotFoundError:
-        pass
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if p.stat().st_size > max_bytes:
+                os.replace(p, p.with_name(p.name + ".1"))
+        except FileNotFoundError:
+            pass
+        fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(lock)
 
 
 def _old_decision(old: str) -> str | None:
@@ -271,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
             d = _fallback(payload, environ)
             d.error = f"{type(e).__name__}: {e}"
         out = final_output(d, old)
+        if not _emit(out):
+            d.error = "; ".join(filter(None, [d.error, "출력 실패"]))
+        out = ""
         old_dec = _old_decision(old)
         old_allow = old_dec not in ("ask", "deny")
         if d.error or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
@@ -286,10 +230,20 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001, S110 — 기록 실패가 판정 출력을 막으면 안 된다
                 pass
     except Exception:  # noqa: BLE001 — 폴백 자체가 실패하면 입구가 OLD 를 내는 것과 같게
-        out = old
-    if out:
-        print(out)
+        _emit(out)
     return 0
+
+
+def _emit(out: str) -> bool:
+    """바이트로 쓴다 — stdout 인코딩(ascii 등)과 무관하게, OLD 의 surrogateescape 바이트도 그대로."""
+    if not out:
+        return True
+    try:
+        sys.stdout.buffer.write(os.fsencode(out) + b"\n")
+        sys.stdout.buffer.flush()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 if __name__ == "__main__":

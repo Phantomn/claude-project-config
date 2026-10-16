@@ -10,7 +10,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _world import World
-from bash_guard import FOOTER, judge, log_event, render
+from bash_guard import FOOTER, Decision, judge, log_event, render
 from ledger import KIND_PRE_DIRTY, KIND_PRE_SESSION, Ledger, state_dir
 
 ON = {"HARNESS_BASH_GUARD": "on"}
@@ -87,6 +87,29 @@ class JudgeTest(_WorldCase):
         for _ in range(5):
             log_event({"x": "y" * 80}, w.environ, max_bytes=200)
         self.assertTrue((state_dir(w.environ) / "bash-guard.jsonl.1").exists())
+        self.assertEqual((state_dir(w.environ) / "bash-guard.jsonl").stat().st_mode & 0o777, 0o600)
+
+    def test_render_prefix_first_line_only(self):
+        d = Decision(False, ["거부: a", "거부: b"], "on")
+        self.assertEqual(json.loads(render(d))["hookSpecificOutput"]["permissionDecisionReason"],
+                         f"[bash-guard] 거부: a\n거부: b\n{FOOTER}")
+
+    def test_ledger_write_failure_keeps_decision(self):   # 리뷰 1: 장부 쓰기 실패가 거부를 허용으로 뒤집지 않는다
+        led = state_dir(w.environ) / "ledger.tsv"
+        led.parent.mkdir(parents=True, exist_ok=True); led.write_text(""); led.chmod(0o400)
+        d = judge(w.payload("cp {HOME}/notes.md README.md"), {**w.environ, **ON})
+        self.assertFalse(d.allow); self.assertTrue(d.error)
+        d = judge(w.payload("sed -i s/a/b/ {HOME}/notes.md"), {**w.environ, **ON}); self.assertTrue(d.allow)
+
+    def test_git_alias_mode(self):   # 리뷰 2: 저장소 config alias 단위도 모드 계산에 든다
+        w.sh("git config alias.nuke 'reset --hard'"); w.set_repo_switch("on")
+        d = judge(w.payload("cd {REPO} && git nuke", cwd="{HOME}"), w.environ)
+        self.assertEqual(d.mode, "on"); self.assertFalse(d.allow)
+
+    def test_mv_unresolved_source_records(self):   # 리뷰 4: 원본 분류를 확정할 수 없으면(손상된 .git) 보호 쪽으로 기록
+        (w.repo / ".git/HEAD").write_text("garbage\n")
+        judge(w.payload("mv src/main.py {SCRATCH}/s1/", session_id=w.session_id), w.environ)
+        self.assertIsNotNone(Ledger(w.environ).moved_in_near(w.fmt("{SCRATCH}/s1/main.py")))
 
 
 class MainTest(_WorldCase):
@@ -113,6 +136,12 @@ class MainTest(_WorldCase):
         self.assertEqual(r.returncode, 0); self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
         r = self.run_main(w.payload("rmdir d"), old="")
         self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_ascii_stdout(self):   # 리뷰 3: stdout 인코딩이 ascii 여도 deny JSON 이 나오고 rc 0
+        r = subprocess.run([sys.executable, str(SCRIPTS / "bash_guard.py"), "--old", OLD_ASK], input=json.dumps(w.payload("rm src/main.py")).encode(),
+                           env={**w.environ, **ON, "PYTHONIOENCODING": "ascii"}, capture_output=True, timeout=30, check=False)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_internal_error_fallback(self):   # spec §3.8 (다), 재감사 rootcause-r1-s2-003·selfcontained-r1-s2-006
         r = self.run_main({"tool_name": "Bash", "tool_input": "rm -rf x", "cwd": str(w.repo)})

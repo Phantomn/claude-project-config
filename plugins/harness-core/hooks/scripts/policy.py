@@ -1038,3 +1038,84 @@ def judged_targets(seg: Segment, ctx: Ctx) -> list[str]:
 def is_judged_op(seg: Segment) -> bool:
     # 판정 대상 여부(spec §3.8 시간 예산)도 판정과 같은 처리기 표를 본다 — 조회 없이 명령 모양만
     return bool(_host_jobs(seg, None))
+
+
+# ---- 장부 기록용 해석 (spec §3.7 기록 주체 2) ----
+
+def _sed_perl_files(seg: Segment) -> list[Word]:
+    """`sed -i|--in-place`·`perl -i|-pi` 의 파일 인자. 제자리 수정이 아니면 []."""
+    perl = seg.name == "perl"
+    a, i, inplace, script, ops = seg.argv[1:], 0, False, False, []
+    while i < len(a):
+        s = a[i].literal()
+        i += 1
+        if s == "--":
+            ops += a[i:]
+            break
+        if not s.startswith("-") or s == "-":
+            if perl:   # perl 은 첫 비옵션에서 옵션이 끝난다
+                ops += a[i - 1:]
+                break
+            ops.append(a[i - 1])
+        elif s.startswith("--"):
+            k, eq, _ = s.partition("=")
+            inplace |= k == "--in-place"
+            if k in ("--expression", "--file"):
+                script = True
+            if k in ("--expression", "--file", "--line-length") and not eq:
+                i += 1
+        else:
+            for n, c in enumerate(s[1:], 1):
+                if c == "i":   # 뒤 글자는 백업 접미사
+                    inplace = True
+                    break
+                if c in ("eE" if perl else "efl"):
+                    script = script or c != "l"
+                    i += n == len(s) - 1
+                    break
+                if perl and c in "IMmlx0CdDV":   # 값이 붙어 오는 옵션
+                    break
+    if not inplace:
+        return []
+    return ops if script else ops[1:]
+
+
+def inplace_targets(seg: Segment) -> list[str]:
+    """제자리 수정의 닫힌 목록(리다이렉트·tee·sed -i·perl -i·truncate·cp/mv/install/rsync/dd 목적지·git checkout/restore)."""
+    words = [r.target for r in seg.redirects if r.target is not None and r.op in (">", ">|", "&>", ">>", "&>>")]
+    out: list[str] = []
+    try:
+        if seg.name == "tee":
+            words += _args(seg)[2]
+        elif seg.name in ("sed", "perl"):
+            words += _sed_perl_files(seg)
+        elif seg.name in ("truncate", "cp", "mv", "install", "rsync", "dd"):
+            out += [p for j in HANDLERS[seg.name](seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
+        elif seg.name == "git":
+            out += [os.path.join(j.repo, p) for j in _git_handler(seg, None)
+                    if j.op in ("git checkout", "git restore") and j.repo for p in j.paths or ()]
+    except _BadOption:
+        pass
+    out += [p for w in words for p in expand(w, seg) or ()]
+    return [p for p in out if os.path.lexists(p) and not os.path.isdir(p)]
+
+
+def mv_moves(seg: Segment) -> list[tuple[str, str]]:
+    """mv 의 (원본, 목적지) 쌍. 확정할 수 없으면 생략."""
+    try:
+        flags, vals, ops = _args(seg, _COPY_VALUES - {"-m", "-o", "-g"})
+    except _BadOption:
+        return []
+    tdir = vals.get("-t") or vals.get("--target-directory")
+    force = tdir is not None
+    if tdir is None:
+        if len(ops) < 2:
+            return []
+        tdir, ops = ops[-1], ops[:-1]
+    dest = expand(tdir, seg)
+    if dest is None or len(dest) != 1:
+        return []
+    srcs = [p for w in ops for p in expand(w, seg) or ()]
+    if flags & {"-T", "--no-target-directory"} or not (force or os.path.isdir(dest[0])):
+        return [(srcs[0], dest[0])] if len(srcs) == 1 else []
+    return [(s, os.path.join(dest[0], os.path.basename(s.rstrip("/")))) for s in srcs]
