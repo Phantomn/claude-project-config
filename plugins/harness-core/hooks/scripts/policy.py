@@ -978,6 +978,10 @@ def _recursive(seg: Segment, j: Job) -> bool:
         return True
 
 
+_FIND_PATH_TESTS = frozenset(("-mindepth", "-maxdepth", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
+                              "-newer"))
+
+
 def _container_find(cseg: Segment, ctx: Ctx, place: Callable[..., list[tuple[str, str, str]]]
                     ) -> tuple[list[Job], list[Job], list[Finding]]:
     """컨테이너 안 find 삭제: 시작 경로(와 그 아래 마운트)를 사상해 바인드 원본은 호스트에서 미리보기(spec §3.6).
@@ -1003,6 +1007,9 @@ def _container_find(cseg: Segment, ctx: Ctx, place: Callable[..., list[tuple[str
             found.append(Finding(j.op, t, UNRESOLVED, j.advice))
     if not hosts:
         return [], [], found
+    if _FIND_PATH_TESTS.intersection(a[n:]):
+        # 깊이·컨테이너 절대경로를 보는 조건은 호스트 경로에서 다른 항목을 고른다 — 재생하지 않고 원본 폴더 전체를 재귀 삭제로 본다
+        return [], [Job(j.op, DELETE, h, [h], trailing=True) for h in hosts], found
     hseg = replace(cseg, argv=[cseg.argv[0], *[Word((Part(h, "'"),)) for h in hosts], *cseg.argv[1 + n:]], cwd="/")
     return [], _find(hseg, ctx), found
 

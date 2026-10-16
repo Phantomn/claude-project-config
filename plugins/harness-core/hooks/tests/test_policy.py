@@ -252,6 +252,21 @@ class DockerPolicyTest(_WorldCase):
         self.assertIn("OLD_VOLUME", k(f"docker exec {c} rm -rf /"))                                # /data 볼륨도 포함
         self.assertIn(PROTECTED_NAME, k(f"docker exec {c} rm -rf /"))
 
+    def test_container_find_path_tests(self):          # 리뷰 8-1(라운드 3): 깊이·경로 조건은 호스트에서 재생하지 않는다
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        k = lambda cmd: sorted({f.kind for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")})
+        whole = lambda kinds: bool({PROTECTED_NAME, PRESERVED} & set(kinds))   # 호스트 원본 폴더 전체 분류
+        c, run = d.container, f"docker run --rm -v {{REPO}}:/srv/w {d.image}"
+        for cmd in [f"{run} find /srv -mindepth 2 -name '*.txt' -delete", f"{run} find /srv/w -path '/srv/w/*' -name x -delete",
+                    f"docker exec {c} find / -mindepth 3 -name '*.py' -delete",
+                    f"docker exec {c} find / -path '/app/*' -name '*.py' -delete",
+                    f"docker exec {c} find /app -maxdepth 1 -name '*.py' -delete"]:
+            self.assertTrue(whole(k(cmd)), (cmd, k(cmd)))
+        self.assertEqual(k(f"docker exec {c} find /app -name '*.o' -delete"), [])               # 조건이 이름뿐이면 미리보기
+        self.assertEqual(k(f"{run} find /srv -name '*.py' -delete"), [GIT_TRACKED])
+        self.assertEqual(k(f"{run} find /tmp -maxdepth 1 -delete"), [])                          # 마운트와 무관
+
     def test_compose_project_env(self):                # 리뷰 8-7
         w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
         if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")

@@ -194,8 +194,12 @@ class World:
         os.utime(p, (t, t))
 
     def touch_modify(self, path: str) -> None:
-        with open(self.fmt(path), "a", encoding="utf-8") as f:
+        p = self.fmt(path)
+        with open(p, "a", encoding="utf-8") as f:
             f.write("touched in session\n")
+        # 벽시계가 뒤로 가면 수정 시각이 세션 시작 앞으로 찍혀 '세션 변경'이 아니게 된다 — 세션 시작 뒤로 고정
+        t = max(time.time(), self.session_start + 1)
+        os.utime(p, (t, t))
 
     def rewrite_atomic(self, path: str) -> None:
         # Edit 도구처럼 바꿔치기해 생성 시각이 새로 찍히게 한다
