@@ -359,7 +359,8 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
 _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
-_RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
+# `time` 은 예약어라 뒤에 복합 명령(`time if …`)이 올 수 있다 — 래퍼로 벗기면 `if` 가 명령 자리로 보이지 않는다(NB8)
+_RESERVED = ("{", "}", "!", "time", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
 _LOOP_HEAD = ("for", "select")
 _LOOPS = ("for", "select", "while", "until")
 _CTL_OPEN = ("if", "while", "until")
@@ -1323,7 +1324,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         neg = False
         while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
             neg |= w[0].literal() == "!"
-            w = w[1:]
+            w = w[2 if w[0].literal() == "time" and len(w) > 1 and w[1].literal() == "-p" else 1:]
         if w or r:   # `&&`·`||` 목록 요소의 단위 수와 '실패 경로 없음' 여부(andor_step 이 읽는다)
             elem[:] = [elem[0] + 1, False, None]
         if _NAMEREF in state_env:
@@ -1492,7 +1493,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     cases: list[dict] = []
 
     def at_start() -> bool:
-        return not redirects and all(not x.is_quoted() and x.literal() in _RESERVED for x in words)
+        lits = [None if x.is_quoted() else x.literal() for x in words]
+        return not redirects and all(x in _RESERVED or (x == "-p" and lits[i - 1:i] == ["time"]) for i, x in enumerate(lits))
 
     def set_state(s: tuple[str | None, dict[str, str | None]]) -> None:
         st["cwd"] = s[0]
@@ -1678,7 +1680,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             raise LexError(f"case 밖의 {t.op}")
         if t.kind == "word":
             w = t.word
-            if not words and not redirects and not w.is_quoted() and w.literal() in ("{", "}"):
+            if not w.is_quoted() and ((w.literal() == "{" and at_start()) or (w.literal() == "}" and not words and not redirects)):
                 if w.literal() == "{":
                     open_group("{")
                 else:

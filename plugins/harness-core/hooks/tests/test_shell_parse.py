@@ -270,6 +270,15 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "f() { :; }", "! (rm x)", "a=$((2*(3))) b", "echo @(a)"):
             self.assertIsNone(parse(c, "/w", {}).error, c)
 
+    def test_time_and_bang_before_compound(self):   # NB8: `time`·`!` 뒤 복합 명령은 벗기고 정상 해석한다
+        for c in ("time if true; then rm x; fi", "time while t; do rm x; done", "time for i in a; do rm x; done",
+                  "time { rm x; }", "time ( rm x )", "time case a in a) rm x;; esac", "time until t; do rm x; done",
+                  "! { rm x; }", "! if t; then rm x; fi", "time -p rm x", "time -p { rm x; }", "t && time if a; then rm x; fi",
+                  "time rm x | cat"):
+            self.assertIn("rm", names(c), c)
+            self.assertNotIn("time", names(c), c)
+        self.assertEqual(names("echo time if"), ["echo"])
+
 
 def ex(word_src, cwd="/w", env=None):
     s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]
