@@ -914,6 +914,13 @@ def _clobbered(name: str, w: list[Word]) -> list[str]:
 _VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "PATH", "PS1", "PYTHONHOME", "_OLD_VIRTUAL_PATH",
               "_OLD_VIRTUAL_PS1", "_OLD_VIRTUAL_PYTHONHOME")   # venv activate 가 대입·해제하는 변수
 _SURE_CMDS = (":", "true", "echo", "printf")   # 리다이렉트가 없으면 실패 경로가 사실상 없다(정직한 실수 모델 §1.5)
+_NULL_OPS = (">", ">>", ">|", "<", "&>", "&>>", "<>")
+
+
+def _harmless(r: list[Redirect]) -> bool:
+    """실패할 수 없는 리다이렉트뿐인가 — `/dev/null` 로의 입출력과 fd 복제(`2>&1`·`>&2`). fd 닫기(`>&-`)·다른 파일은 실패할 수 있다(NB7)."""
+    return all(x.target is not None and ((x.op in _NULL_OPS and x.target.literal() == "/dev/null")
+                                         or (x.op in (">&", "<&") and x.target.literal().isdigit())) for x in r)
 
 
 def _sure_assign(w: list[Word], env: Mapping[str, str | None]) -> bool:
@@ -1361,7 +1368,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[k] = v
                 if v is not None and _mktemp_dir(x):
                     state_env[_MADE + v] = "1"
-            elem["sure"] = not r and _sure_assign(w, state_env)
+            elem["sure"] = _harmless(r) and _sure_assign(w, state_env)
             if not r:
                 return None
             w = []
@@ -1374,7 +1381,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         wrappers: list[str] = []
         w = _strip_all(w, run_env, unit_env, wrappers)
         # 래퍼 밑의 명령은 성공 가정을 못 받는다(sudo 는 비밀번호·권한, env·nice 는 PATH 검색) — command·builtin 은 결과를 바꾸지 않는다(NB6)
-        plain = not r and all(x in ("command", "builtin") for x in wrappers)
+        plain = _harmless(r) and all(x in ("command", "builtin") for x in wrappers)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
             if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
                 state_env[w[1].literal()] = None

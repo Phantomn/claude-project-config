@@ -493,8 +493,11 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
         self.assertEqual(ev("sudo cd {SCRATCH}/s1; rm src/main.py"), [("삭제", GIT_TRACKED)])   # 래퍼 뒤 cd 는 돌지 않는다
         for c in ("mkdir -m 700 {SCRATCH}/s1/m && cd {SCRATCH}/s1/m" + rm, "command true && cd {SCRATCH}/s1" + rm,
-                  "builtin cd {SCRATCH}/s1 && true" + rm, "time true && cd {SCRATCH}/s1" + rm):
+                  "builtin cd {SCRATCH}/s1 && true" + rm, "time true && cd {SCRATCH}/s1" + rm,
+                  "cd {SCRATCH}/s1 2>/dev/null && ls" + rm, "pushd {SCRATCH}/s1 >/dev/null && ls" + rm,          # NB7 무해한 리다이렉트
+                  "cd {SCRATCH}/s1 >/dev/null 2>&1 && ls" + rm, "cd {SCRATCH}/s1 2>/dev/null || mkdir -p {SCRATCH}/s1" + rm):
             self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev("cd {SCRATCH}/s1 2>{SCRATCH}/s1/log && ls" + rm), [("삭제", UNRESOLVED)])
 
     def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
         for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",

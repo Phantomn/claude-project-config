@@ -237,7 +237,7 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertIsNone(last("cd {D}/missing && f=a; rm $f").env.get("f"))
             self.assertEqual(last("! true && cd {D}/ex; rm y").cwd, d)   # bash: `! true` 는 실패 — cd 는 돌지 않는다
             # 실패한 cd 뒤 `||` 우변은 cd 전 폴더에서 돈다
-            for c in ("cd {D}/missing || rm y", "cd {D}/missing 2>/dev/null || rm y", "cd {D}/ex 2>/dev/null || rm y"):
+            for c in ("cd {D}/missing || rm y", "cd {D}/missing 2>/dev/null || rm y", "cd {D}/ex 2>{D}/log || rm y"):
                 self.assertEqual(last(c).cwd, d, c)
             self.assertEqual(names("true || rm x; rm y"), ["true", "rm", "rm"])   # 도달 못 하는 우변도 단위는 판정한다
 
@@ -384,6 +384,18 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertEqual(last(c).cwd, f"{d}/ex", c)
         for c in ("sudo cd {D}/ex; rm y", "env cd {D}/ex; rm y", "nice cd {D}/ex; rm y", "sudo cd {D}/ex && true; rm y"):   # 래퍼 뒤 cd 는 이 셸에서 돌지 않는다
             self.assertEqual(last(c).cwd, d, c)
+
+    def test_harmless_redirects_keep_sure(self):   # NB7: /dev/null·fd 복제만 있는 리다이렉트는 실패할 수 없다
+        d, last = self._world()
+        for c, cwd in (("cd {D}/ex 2>/dev/null && t; rm y", f"{d}/ex"), ("pushd {D}/ex >/dev/null && t; rm y", f"{d}/ex"),
+                       ("cd {D}/ex 2>&1 && t; rm y", f"{d}/ex"), ("cd {D}/ex >/dev/null 2>&1 && t; rm y", f"{d}/ex"),
+                       ("cd {D}/ex &>/dev/null && t; rm y", f"{d}/ex"), ("mkdir -p {D}/n 2>/dev/null && cd {D}/n; rm y", f"{d}/n"),
+                       ("echo x >/dev/null && cd {D}/ex; rm y", f"{d}/ex"), ("export F=1 2>/dev/null && cd {D}/ex; rm y", f"{d}/ex"),
+                       ("F=1 2>/dev/null && cd {D}/ex; rm y", f"{d}/ex"), ("cd {D}/ex 2>/dev/null || mkdir -p {D}/ex; rm y", f"{d}/ex")):
+            self.assertEqual(last(c).cwd, cwd, c)
+        for c in ("cd {D}/ex 2>{D}/log && t; rm y", "cd {D}/ex >&- && t; rm y", "cd {D}/ex <{D}/f && t; rm y",
+                  "cd {D}/missing 2>/dev/null && t; rm y", "echo x >{D}/o 2>/dev/null && cd {D}/ex; rm y", "cd {D}/ex 2>/dev/nul && t; rm y"):
+            self.assertIsNone(last(c).cwd, c)
         self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
 
