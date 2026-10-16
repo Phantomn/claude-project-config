@@ -326,7 +326,8 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                        ("if cd {D}/ex; then rm y; fi", f"{d}/ex"), ("if cd {D}/ex; then :; fi; rm y", f"{d}/ex"),
                        ("if true; then cd {D}/ex; fi; rm y", f"{d}/ex"), ("while cd {D}/ex; do break; done; rm y", f"{d}/ex"),
                        ("until cd {D}/ex; do :; done; rm y", f"{d}/ex"), ("if cd {D}/missing; then rm y; fi", f"{d}/missing"),
-                       ("if ! cd {D}/ex; then :; fi; rm y", f"{d}/ex"), ("while ! cd {D}/ex; do :; done; rm y", f"{d}/ex")):
+                       ("if ! cd {D}/ex; then :; fi; rm y", f"{d}/ex"), ("while ! cd {D}/ex; do :; done; rm y", f"{d}/ex"),
+                       ("until cd {D}/missing; do rm y; done", d), ("while cd {D}/missing; do rm y; done", f"{d}/missing")):
             self.assertEqual(last(c).cwd, cwd, c)
 
     def test_sequential_failed_cd(self):   # OS1: `;`·줄바꿈 뒤에서도 실패한 cd 의 두 경로(cd 전·cd 뒤)를 합친다
