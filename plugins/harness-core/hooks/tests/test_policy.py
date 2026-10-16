@@ -69,6 +69,12 @@ class OverwriteTest(_WorldCase):
         self.assertFalse(w.judge_cmd("git log -1 --output=README.md").allow)
         self.assertTrue(w.judge_cmd("git log --oneline -5").allow)
 
+    def test_declaration_redirect(self):   # 항목 8(Task 2 deferred): export·declare 단위의 리다이렉트도 파일을 비운다
+        for c in ("export X=1 > {HOME}/notes.md", "declare -x A=1 B=2 >| {HOME}/notes.md", "export > {HOME}/notes.md"):
+            self.assertEqual(ev(c), [("덮어쓰기", PRESERVED)], c)
+        self.assertEqual(ev("export X=1 >> {HOME}/notes.md"), [])
+        self.assertEqual(ev("export X={HOME}/notes.md; echo > $X"), [("덮어쓰기", PRESERVED)])   # 할당은 그대로 반영
+
     def test_git_file_writers(self):   # 이름 붙은 파일을 쓰는 git 옵션·인자 표(policy._GIT_FILE_OPTS, git 2.43 실측)
         for c in ("git stash show -p --output=README.md", "git reflog show --output=README.md", "git reflog --output README.md",
                   "git shortlog HEAD --output=README.md", "git blame --output=README.md src/main.py",

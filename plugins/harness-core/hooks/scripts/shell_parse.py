@@ -1666,6 +1666,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                     and not any(x.literal().startswith("-") and "g" in x.literal()[1:] for x in w[1:]):   # 함수 범위(-g 는 전역) — 호출 끝에 복원
                 fn_locals[-1].update(x.literal().partition("=")[0] for x in w[1:] if not x.literal().startswith("-"))
             elem["sure"] = (name not in ("typeset", "local") or bool(state_env.get(_INFN))) and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
+            if r:   # `export X=1 > f` 도 f 를 비운다 — 리다이렉트 판정용 단위
+                segments.append(Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs))
             return None
         if not (w or r):
             return None
