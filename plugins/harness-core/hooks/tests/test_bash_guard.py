@@ -175,6 +175,12 @@ class MainTest(_WorldCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout.decode("ascii"))["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_lone_surrogate_logged(self):   # 기록도 surrogate 로 통째 빠지지 않고, 파일은 유효한 UTF-8·JSON 줄로 원문을 되돌린다
+        cmds = ['rm -rf "$X\ud800"', 'rm -rf "$X\udcff"']
+        for c in cmds:
+            self.assertEqual(self.run_bytes(json.dumps(w.payload(c)).encode(), ON).returncode, 0)
+        self.assertEqual([x["command"] for x in self.log_lines()], cmds)
+
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
         p = state_dir(w.environ) / "bash-guard.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True); p.write_text(""); p.chmod(0o644)

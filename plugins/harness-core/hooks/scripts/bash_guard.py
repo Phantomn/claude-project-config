@@ -186,7 +186,8 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
         return
     d.mkdir(parents=True, exist_ok=True)
     p = d / "bash-guard.jsonl"
-    line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8", "surrogateescape")
+    # 짝 없는 surrogate(명령 JSON 의 \udXXX)는 `\udXXX` 글자로 — JSON 문자열 안이라 읽으면 원문 그대로, 파일은 유효한 UTF-8
+    line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8", "backslashreplace")
     # 순환(.1 교체)과 추가를 같은 잠금 안에서 — 다른 세션의 줄이 교체 사이에 사라지지 않게
     lock = os.open(d / "bash-guard.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
