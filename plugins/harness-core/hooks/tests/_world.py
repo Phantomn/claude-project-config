@@ -144,6 +144,13 @@ class World:
         with open(self.fmt(path), "a", encoding="utf-8") as f:
             f.write("touched in session\n")
 
+    def rewrite_atomic(self, path: str) -> None:
+        # Edit 도구처럼 바꿔치기해 생성 시각이 새로 찍히게 한다
+        p = self.fmt(path)
+        tmp = f"{p}.{uuid.uuid4().hex}.tmp"
+        shutil.copyfile(p, tmp)
+        os.replace(tmp, p)
+
     def checkout(self, branch: str, upstream: str | None = None) -> None:
         exists = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"], cwd=self.repo,
                                 env=self.environ, capture_output=True, check=False).returncode == 0

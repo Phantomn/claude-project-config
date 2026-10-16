@@ -16,16 +16,33 @@ from _world import World
 from ledger import (
     KIND_CREATED,
     KIND_MOVED_IN,
+    KIND_PRE_DIRTY,
     KIND_PRE_SESSION,
     KIND_TOUCHED,
     Ledger,
     state_dir,
 )
 from target_class import (
+    DIR_ENTRY_CAP,
+    GIT_TRACKED,
+    IGNORED_ARTIFACT,
+    MISSING,
+    PRESERVED,
+    PROTECTED_NAME,
+    SCRATCH,
+    SESSION_NEW,
+    UNRESOLVED,
     births,
+    classify,
+    git_ignored,
+    git_toplevel,
+    git_tracked,
+    in_workspace,
+    is_linked_worktree_root,
     is_scratch,
     is_scratch_root,
     normalize,
+    note_touch,
     protected_name,
     repo_root,
     run,
@@ -219,6 +236,115 @@ class SwitchTest(_WorldCase):
         self.assertEqual(switch_mode(None, w.environ), "off")
         self.assertEqual(switch_mode(w.fmt("{REPO}/.git/config"), w.environ), "on")                              # .git 내부
         w.set_repo_switch("bogus", local=True); self.assertEqual(switch_mode(w.fmt("{REPO}/x"), w.environ), "off")
+
+
+def k(p, ctx=None):
+    return classify(w.fmt(p), ctx or w.ctx()).kind
+
+
+class ClassifyTest(_WorldCase):
+    def test_seven_classes(self):
+        self.assertEqual(k("{REPO}/nope"), MISSING); self.assertEqual(k("{REPO}/.env"), PROTECTED_NAME)
+        self.assertEqual(k("{REPO}/src/main.py"), GIT_TRACKED); self.assertEqual(k("{SCRATCH}/s1/x.txt"), SCRATCH)
+        self.assertEqual(k("{REPO}/src/probe.ts"), SESSION_NEW); self.assertEqual(k("{REPO}/build/out.o"), IGNORED_ARTIFACT)
+        self.assertEqual(k("{REPO}/local.sqlite"), PRESERVED)                  # ignore 대상이지만 재생성 이름 아님
+        self.assertEqual(k("{REPO}/notes_presession.txt"), PRESERVED); self.assertEqual(k("{HOME}/data/a.txt"), PRESERVED)
+        self.assertEqual(classify(None, w.ctx()).kind, UNRESOLVED)
+        self.assertEqual(k("{SCRATCH}"), UNRESOLVED)                          # 임시 루트 자체(안이 전부 세션 것이어도)
+
+    def test_dir_rule(self):
+        self.assertEqual(k("{REPO}/out"), SESSION_NEW); self.assertEqual(k("{REPO}/build"), IGNORED_ARTIFACT)
+        self.assertEqual(k("{REPO}/src"), GIT_TRACKED); self.assertEqual(k("{HOME}/data"), PRESERVED)
+
+    def test_session_repo_is_scratch_data(self):      # spec §3.4 분류 1b, 재감사 rootcause-r1-s1-001
+        w.sh("git clone -q {REPO} {SCRATCH}/s1/clone"); self.assertEqual(k("{SCRATCH}/s1/clone"), SCRATCH)
+        w.sh("git clone -q {REPO} {OUT}/c2"); self.assertEqual(k("{OUT}/c2"), SCRATCH); self.assertEqual(k("{OUT}/c2/.git/config"), SCRATCH)
+        w.sh("mkdir -p {SCRATCH}/s1/many && cd {SCRATCH}/s1/many && seq 2001 | xargs touch"); self.assertEqual(k("{SCRATCH}/s1/many"), SCRATCH)
+        w.sh("mkdir -p {SCRATCH}/old && echo k > {SCRATCH}/old/k.pem"); self.assertEqual(k("{SCRATCH}/old"), PROTECTED_NAME)   # 임시 폴더라도 보호 이름(재감사 rootcause-r2-s1-001)
+        self.assertEqual(k("{SCRATCH}/s1"), SCRATCH)                                       # 안의 세션 clone(.git)으로는 내려가지 않음
+        ctx = w.ctx(); ctx.ledger.record(w.fmt("{SCRATCH}/s1/clone/kept.txt"), KIND_MOVED_IN, ctx.session_id)
+        self.assertEqual(k("{SCRATCH}/s1/clone", ctx), PRESERVED)                     # 분류 1a 가 먼저
+
+    def test_mv_into_session_dir_is_preserved(self):           # 감사 rootcause-s1-003
+        w.sh("mv {HOME}/notes.md {REPO}/out/"); self.assertEqual(k("{REPO}/out"), PRESERVED)
+
+    def test_moved_in_record_protects(self):                    # D14
+        ctx = w.ctx(); ctx.ledger.record(w.fmt("{REPO}/build/a.txt"), KIND_MOVED_IN, ctx.session_id); w.sh("mv {HOME}/data/a.txt {REPO}/build/")
+        self.assertEqual(k("{REPO}/build/a.txt", ctx), PRESERVED); self.assertEqual(k("{REPO}/build", ctx), PRESERVED)
+
+    def test_dir_cap(self):  # 임시 루트·저장소 밖 폴더는 상한 적용(임시 루트 폴더는 상한 없음 — test_session_repo_is_scratch_data)
+        big = w.fmt("{HOME}/big"); os.mkdir(big)
+        for i in range(DIR_ENTRY_CAP + 1):
+            open(f"{big}/{i}", "w").close()
+        c = classify(big, w.ctx()); self.assertEqual(c.kind, UNRESOLVED); self.assertIn("2000", c.detail)
+        os.unlink(f"{big}/0"); self.assertEqual(k("{HOME}/big"), SESSION_NEW)          # 정확히 상한이면 순회
+
+    def test_unreadable_subdir_is_unresolved(self):    # Review Focus 5
+        if os.geteuid() == 0:
+            self.skipTest("root 는 권한 000 폴더도 읽는다")
+        locked = w.fmt("{REPO}/out/locked"); os.makedirs(f"{locked}/inner")
+        os.chmod(locked, 0); self.addCleanup(os.chmod, locked, 0o755)
+        self.assertEqual(k("{REPO}/out"), UNRESOLVED)
+
+    def test_symlink_loop_terminates(self):           # Review Focus 5
+        a = w.fmt("{REPO}/out/a"); os.mkdir(a); os.symlink(a, f"{a}/loop")
+        t = time.monotonic(); self.assertEqual(k("{REPO}/out"), SESSION_NEW); self.assertLess(time.monotonic() - t, 1.0)
+
+    def test_unicode_space_path(self):                 # Review Focus 2
+        Path(w.fmt("{HOME}/보고 서.md")).write_text("x")
+        time.sleep(0.02)
+        tr = w.fmt("{OUT}/later-transcript.jsonl"); Path(tr).write_text("")       # 그 뒤에 시작한 세션 → 위 파일은 세션 전
+        time.sleep(0.02)
+        Path(w.fmt("{REPO}/보고서 초안.md")).write_text("x")
+        ctx = w.ctx(transcript=tr)
+        self.assertEqual(k("{REPO}/보고서 초안.md", ctx), SESSION_NEW); self.assertEqual(k("{HOME}/보고 서.md", ctx), PRESERVED)
+
+    def test_worktree_root(self):
+        w.make_worktree(); self.assertEqual(classify(w.fmt("{WT}"), w.ctx()).worktree_root, w.fmt("{WT}"))
+        self.assertTrue(is_linked_worktree_root(w.fmt("{WT}"))); self.assertFalse(is_linked_worktree_root(w.fmt("{REPO}")))
+        self.assertIsNone(classify(w.fmt("{REPO}/src"), w.ctx()).worktree_root)
+
+    def test_in_workspace(self):
+        ctx = w.ctx()
+        self.assertTrue(in_workspace(w.fmt("{REPO}/build/img"), ctx)); self.assertTrue(in_workspace(w.fmt("{SCRATCH}/s1/a"), ctx))
+        self.assertFalse(in_workspace(w.fmt("{HOME}/data"), ctx)); self.assertFalse(in_workspace("/dev/sdb", ctx))
+        self.assertFalse(in_workspace(w.fmt("{REPO}/.git/x"), ctx))
+        w.sh("git init -q {HOME}", cwd="{HOME}"); self.assertFalse(in_workspace(w.fmt("{HOME}/data"), w.ctx()))
+
+    def test_session_start_missing_disables_session_new(self):
+        self.assertEqual(k("{REPO}/src/probe.ts", w.ctx(transcript=None)), PRESERVED)
+
+    def test_git_helpers(self):
+        ctx = w.ctx(); repo = w.fmt("{REPO}")
+        self.assertEqual(git_toplevel(w.fmt("{REPO}/src/main.py"), ctx), repo); self.assertIsNone(git_toplevel(w.fmt("{HOME}/data"), ctx))
+        ps = [w.fmt("{REPO}/src"), w.fmt("{REPO}/src/main.py"), w.fmt("{REPO}/src/probe.ts"), w.fmt("{REPO}/build")]
+        self.assertEqual(git_tracked(repo, ps, ctx), set(ps[:2]))
+        self.assertEqual(git_ignored(repo, ps, ctx), {ps[3]})
+        self.assertIsNone(git_tracked(repo, ps, w.ctx(budget=0)))                         # 조회 실패 = None(확정 불가 쪽)
+
+
+class SharedLedgerTest(_WorldCase):
+    def test_ledger_pre_session_overrides_new_birth(self):
+        ctx = w.ctx(); note_touch(w.fmt("{HOME}/data/a.txt"), ctx, "Edit"); w.rewrite_atomic("{HOME}/data/a.txt")
+        self.assertEqual(k("{HOME}/data/a.txt", ctx), PRESERVED)
+
+    def test_note_touch_rules(self):
+        ctx = w.ctx(); L = ctx.ledger
+        note_touch(w.fmt("{REPO}/new.txt"), ctx, "Write"); self.assertIn(KIND_CREATED, [e.kind for e in L.entries(w.fmt("{REPO}/new.txt"))])
+        note_touch(w.fmt("{REPO}/src/probe.ts"), ctx, "Edit"); self.assertEqual([e.kind for e in L.entries(w.fmt("{REPO}/src/probe.ts"))], [KIND_TOUCHED])
+        note_touch(w.fmt("{REPO}/README.md"), ctx, "Edit")
+        self.assertTrue({KIND_PRE_SESSION, KIND_PRE_DIRTY, KIND_TOUCHED} <= {e.kind for e in L.entries(w.fmt("{REPO}/README.md"))})
+
+    def test_note_touch_judge_no_created_no_touched(self):       # 판정기(tool None)는 created·touched 를 쓰지 않는다
+        ctx = w.ctx(); L = ctx.ledger
+        note_touch(w.fmt("{REPO}/none.txt"), ctx, None); self.assertEqual(L.entries(w.fmt("{REPO}/none.txt")), [])
+        note_touch(w.fmt("{REPO}/README.md"), ctx, None)
+        self.assertEqual({e.kind for e in L.entries(w.fmt("{REPO}/README.md"))}, {KIND_PRE_SESSION, KIND_PRE_DIRTY})
+
+    def test_other_session_created_is_not_mine(self):          # D12
+        a, b = w.ctx(session_id="A"), w.ctx(session_id="B")
+        note_touch(w.fmt("{REPO}/made_by_b.txt"), b, "Write"); w.sh("echo x > made_by_b.txt")   # 실제 훅처럼 Write 직전(파일 없음)에 기록 → created
+        self.assertEqual(k("{REPO}/made_by_b.txt", a), PRESERVED); self.assertEqual(k("{REPO}/made_by_b.txt", b), SESSION_NEW)
 
 
 if __name__ == "__main__":
