@@ -22,6 +22,7 @@ from ledger import (
     Ledger,
     state_dir,
 )
+from shell_parse import Mount
 from target_class import (
     DIR_ENTRY_CAP,
     GIT_TRACKED,
@@ -34,13 +35,25 @@ from target_class import (
     UNRESOLVED,
     births,
     classify,
+    compose_container_id,
+    docker_container_info,
+    docker_volume_created,
+    docker_volumes,
+    find_preview,
+    git_branch_info,
+    git_clean_preview,
+    git_default_branch,
+    git_dirty,
+    git_extra_items,
     git_ignored,
+    git_stash_created,
     git_toplevel,
     git_tracked,
     in_workspace,
     is_linked_worktree_root,
     is_scratch,
     is_scratch_root,
+    is_session_change,
     normalize,
     note_touch,
     protected_name,
@@ -383,6 +396,73 @@ class SharedLedgerTest(_WorldCase):
         a, b = w.ctx(session_id="A"), w.ctx(session_id="B")
         note_touch(w.fmt("{REPO}/made_by_b.txt"), b, "Write"); w.sh("echo x > made_by_b.txt")   # 실제 훅처럼 Write 직전(파일 없음)에 기록 → created
         self.assertEqual(k("{REPO}/made_by_b.txt", a), PRESERVED); self.assertEqual(k("{REPO}/made_by_b.txt", b), SESSION_NEW)
+
+
+class GitStateTest(_WorldCase):
+    def test_git_dirty_and_session_change(self):
+        ctx = w.ctx(); self.assertEqual(git_dirty(w.fmt("{REPO}"), ["."], ctx), [w.fmt("{REPO}/README.md")])
+        w.touch_modify("{REPO}/src/main.py"); self.assertTrue(is_session_change(w.fmt("{REPO}/src/main.py"), ctx))
+        self.assertFalse(is_session_change(w.fmt("{REPO}/README.md"), ctx))
+        ctx.ledger.record(w.fmt("{REPO}/src/main.py"), KIND_PRE_DIRTY, ctx.session_id)
+        self.assertFalse(is_session_change(w.fmt("{REPO}/src/main.py"), ctx))
+
+    def test_other_session_touched_is_not_mine(self):          # D12
+        a = w.ctx(session_id="A"); w.touch_modify("{REPO}/src/main.py")
+        a.ledger.record(w.fmt("{REPO}/src/main.py"), KIND_TOUCHED, "B"); self.assertFalse(is_session_change(w.fmt("{REPO}/src/main.py"), a))
+
+    def test_default_branch(self):
+        ctx = w.ctx(); self.assertEqual(git_default_branch(w.fmt("{REPO}"), "origin", ctx), "main")
+        w.drop_origin_head(); self.assertEqual(git_default_branch(w.fmt("{REPO}"), "origin", ctx), "main")
+
+    def test_stash_created(self):
+        ctx = w.ctx(); self.assertLess(git_stash_created(w.fmt("{REPO}"), "stash@{1}", ctx), ctx.session_start)
+        self.assertGreaterEqual(git_stash_created(w.fmt("{REPO}"), "stash@{0}", ctx), ctx.session_start)
+
+    def test_clean_preview(self):
+        ctx = w.ctx(); self.assertIn(w.fmt("{REPO}/notes_presession.txt"), git_clean_preview(w.fmt("{REPO}"), ["-fd"], ctx))
+        # git clean -n 은 통째로 지울 미추적 폴더를 폴더 하나로 낸다(실측) — brief 의 '{REPO}/build/out.o' 대신 폴더 항목
+        self.assertIn(w.fmt("{REPO}/build"), git_clean_preview(w.fmt("{REPO}"), ["-xffd"], ctx))
+
+    def test_branch_info(self):
+        ctx = w.ctx(); w.local_branch("pushed", pushed=True, before_session=True); w.local_branch("lonely", pushed=False, before_session=True)
+        w.local_branch("mine", pushed=False, before_session=False); w.local_branch("ahead", pushed=True, before_session=True, extra_unpushed=1)
+        pi = git_branch_info(w.fmt("{REPO}"), "pushed", ctx); self.assertEqual((pi.has_upstream, pi.ahead), (True, 0))
+        self.assertEqual(git_branch_info(w.fmt("{REPO}"), "ahead", ctx).ahead, 1)
+        li = git_branch_info(w.fmt("{REPO}"), "lonely", ctx); self.assertFalse(li.has_upstream or li.reachable_elsewhere)
+        self.assertGreaterEqual(git_branch_info(w.fmt("{REPO}"), "mine", ctx).created_at, ctx.session_start)   # 세션 전 커밋에서 분기 — %ct 면 실패
+        self.assertLess(li.created_at, ctx.session_start)
+        w.local_branch("squashed", pushed=True, before_session=True, squash_merged=True, delete_remote=True)
+        w.local_branch("gone", pushed=True, before_session=True, delete_remote=True)
+        si = git_branch_info(w.fmt("{REPO}"), "squashed", ctx); self.assertEqual((si.upstream_ref_exists, si.merged_into_default), (False, True))
+        self.assertFalse(git_branch_info(w.fmt("{REPO}"), "gone", ctx).merged_into_default)
+
+    def test_worktree_extra_items(self):
+        w2 = World(worktree=True); self.addCleanup(w2.close)
+        self.assertEqual(sorted(git_extra_items(w2.fmt("{WT}"), w2.ctx())), [w2.fmt("{WT}/build"), w2.fmt("{WT}/local.sqlite")])
+
+
+class FindTest(_WorldCase):
+    def test_find_preview(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        self.assertEqual(sorted(find_preview([r, "-name", "*.o", "-delete"], r, ctx)), [w.fmt("{REPO}/build/out.o")])
+        self.assertIsNotNone(find_preview([".", "-name", "*.o", "-exec", "rm", "-f", "{}", "+"], r, ctx))
+        self.assertIsNone(find_preview([".", "-name", "x", "-exec", "mv", "{}", "/t", ";"], r, ctx))
+        self.assertIsNone(find_preview([".", "-fprint", "/t/x", "-delete"], r, ctx))
+
+
+class DockerTest(_WorldCase):
+    def test_docker(self):
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        ctx = w2.ctx(); mounts, wd = docker_container_info(d.container, ctx)
+        self.assertIn(Mount(w2.fmt("{REPO}"), "/app", "bind"), mounts); self.assertIn(Mount(d.volume, "/data", "volume"), mounts)
+        self.assertEqual(wd, "/app"); self.assertLess(docker_volume_created(d.volume, ctx), ctx.session_start)
+        self.assertEqual(docker_volumes("compose-project", d.project, ctx), [d.volume])
+        if d.compose: self.assertIsNotNone(compose_container_id("web", w2.fmt("{OUT}"), d.project, ctx))
+
+    def test_docker_unavailable(self):
+        ctx = w.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})
+        self.assertIsNone(docker_container_info("c", ctx)); self.assertIsNone(docker_volume_created("v", ctx))
 
 
 if __name__ == "__main__":

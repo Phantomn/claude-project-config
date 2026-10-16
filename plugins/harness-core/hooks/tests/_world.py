@@ -17,11 +17,28 @@ from target_class import Ctx, make_ctx
 _DEFAULT = object()
 
 
+class DockerRes:
+    """World 의 실제 docker 자원(이름 볼륨·컨테이너·compose 프로젝트). 이름은 실행마다 고유한 bg<id>."""
+
+    def __init__(self, world: World, name: str) -> None:
+        self._w = world
+        self.project, self.volume, self.container = name, f"{name}-db", f"{name}-c"
+        self.image = ""
+        self.compose = False
+        self.fresh_volume: str | None = None
+
+    def make_fresh_volume(self) -> None:
+        # CreatedAt 은 초 단위라 세션 시작과 같은 초에 만들면 세션 전으로 읽힌다 — 다음 초 이후에 만든다
+        time.sleep(max(0.0, int(self._w.session_start) + 1 - time.time()))
+        self._w._docker("volume", "create", f"{self.project}-fresh", check=True)
+        self.fresh_volume = f"{self.project}-fresh"
+
+
 class World:
     def __init__(self, worktree: bool = False, docker: bool = False) -> None:
         # 벽시계가 뒤로 가면(WSL2 실측 약 0.5초) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
         for _ in range(3):
-            self._create(worktree)
+            self._create(worktree, docker)
             if self._order_ok():
                 return
             self.close()
@@ -41,7 +58,7 @@ class World:
             return False
         return max(b[:len(pre)]) + margin < self.session_start and self.session_start + margin <= min(b[len(pre):])
 
-    def _create(self, worktree: bool) -> None:
+    def _create(self, worktree: bool, docker: bool) -> None:
         # tmpfs 이면서 임시 루트도 git 저장소도 아닌 곳(생성 시각 지원 실측 2026-10-14)
         base = os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm"
         self.root = tempfile.mkdtemp(prefix="bash-guard-world-", dir=base)
@@ -58,15 +75,16 @@ class World:
             "GIT_COMMITTER_NAME": "World", "GIT_COMMITTER_EMAIL": "world@example.invalid",
         }
         self.session_id = str(uuid.uuid4())
-        self.docker = None  # Task 6 이 채움
+        self.docker: DockerRes | None = None
+        self._docker_name: str | None = None
         self._built_worktree = worktree
         try:
-            self._build(worktree)
+            self._build(worktree, docker)
         except BaseException:
             self.close()
             raise
 
-    def _build(self, worktree: bool) -> None:
+    def _build(self, worktree: bool, docker: bool) -> None:
         h, repo = self.home, self.repo
         for rel, text in [("data/a.txt", "a\n"), ("data/db.sqlite", "db\n"), ("data/important.csv", "k,v\n"),
                           ("notes.md", "n\n"), (".ssh/id_ed25519", "key\n")]:
@@ -92,6 +110,8 @@ class World:
             self.make_worktree()
             self._write(self.wt / "local.sqlite", "wt local\n")
             self._write(self.wt / "build/out.o", "obj\n")
+        if docker:   # 세션 시작(transcript) 전에 — 볼륨·컨테이너는 세션 전 자원
+            self.docker = self._make_docker()
         time.sleep(0.02)
         self.transcript = str(Path(self.root) / "transcript.jsonl")
         self._write(Path(self.transcript), "")
@@ -237,5 +257,47 @@ class World:
         data.setdefault("env", {})["HARNESS_BASH_GUARD"] = value
         self._write(p, json.dumps(data))
 
+    def _docker(self, *args: str, cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(["docker", *args], cwd=cwd, env=self.environ, capture_output=True, text=True,
+                                  timeout=120, check=check)
+        except (OSError, subprocess.TimeoutExpired):
+            if check:
+                raise
+            return None
+
+    def _make_docker(self) -> DockerRes | None:
+        d = DockerRes(self, f"bg{uuid.uuid4().hex[:12]}")
+        self._docker_name = d.project   # 만들다 실패해도 close() 가 이름으로 치운다
+
+        def ok(r: subprocess.CompletedProcess | None) -> bool:
+            return r is not None and r.returncode == 0
+
+        if not ok(self._docker("volume", "create", "--label", f"com.docker.compose.project={d.project}", d.volume)):
+            return None
+        imgs = self._docker("images", "--format", "{{.Repository}}:{{.Tag}}")
+        cands = [i for i in (imgs.stdout.split() if ok(imgs) else []) if "<none>" not in i]
+        # entrypoint 를 sh 로 바꿔 이미지 고유 시작 스크립트를 건너뛴다. 이미지마다 컨테이너 시작을 시도하므로 앞 5개까지만
+        for img in cands[:5]:
+            if ok(self._docker("run", "-d", "--pull", "never", "--name", d.container, "-v", f"{self.repo}:/app",
+                               "-v", f"{d.volume}:/data", "-w", "/app", "--entrypoint", "sh", img, "-c", "sleep 300")):
+                d.image = img
+                break
+            self._docker("rm", "-f", d.container)
+        else:
+            return None
+        spec = {"services": {"web": {"image": img, "pull_policy": "never", "entrypoint": ["sh", "-c", "sleep 300"],
+                                     "working_dir": "/app", "volumes": [f"{self.repo}:/app", "db:/data"]}},
+                "volumes": {"db": {"external": True, "name": d.volume}}}
+        self._write(self.out / "compose.yaml", json.dumps(spec))   # JSON 은 YAML 이다 — 경로 따옴표 걱정 없음
+        d.compose = ok(self._docker("compose", "-p", d.project, "up", "-d", cwd=self.out))
+        return d
+
     def close(self) -> None:
+        name = getattr(self, "_docker_name", None)
+        if name:
+            self._docker("compose", "-p", name, "down", "--remove-orphans", cwd=self.out)
+            self._docker("rm", "-f", f"{name}-c")
+            self._docker("volume", "rm", "-f", f"{name}-db", f"{name}-fresh")
+            self._docker_name = None
         shutil.rmtree(self.root, ignore_errors=True)
