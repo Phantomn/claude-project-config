@@ -50,7 +50,8 @@ class Token:
     pos: int = -1  # 단어 시작 위치(원문 인덱스) — for 본문 원문을 잘라낼 때 쓴다
 
 
-_PLAIN = re.compile(r"[^\s;&|()<>'\"\\$`]+")
+# 단어를 끊는 공백은 공백·탭·개행뿐(bash 실측) — \r·\v·\f·NBSP 등 다른 유니코드 공백은 단어 글자다
+_PLAIN = re.compile(r"[^ \t\n;&|()<>'\"\\$`]+")
 _DQ_STOP = re.compile(r"[\"\\$`]")
 _BLANK = re.compile(r"[ \t]+")
 _REDIR_OPS = ("<<<", "<<-", "&>>", ">>", ">|", ">&", "&>", "<<", "<>", "<&", ">", "<")

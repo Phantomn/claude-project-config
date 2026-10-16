@@ -77,6 +77,13 @@ class LexTest(unittest.TestCase):
     def test_heredoc_dash_strips_tabs(self):
         self.assertEqual([x.body for x in lex("cat <<-EOF\n\tx\n\tEOF\n") if x.kind == "redir"], ["\tx"])
 
+    def test_only_space_tab_newline_separate(self):   # bash 실측: \r·\v·\f·NBSP·U+2003 은 단어 글자(CRLF 줄의 \r 은 마지막 단어 끝에 붙는다)
+        self.assertEqual(words(lex("printf a\rb c\vd e\ff g\xa0h i\u2003j\r")),
+                         ["printf", "a\rb", "c\vd", "e\ff", "g\xa0h", "i\u2003j\r"])
+        self.assertEqual([literal_args(s) for s in segs("ls -la\r\nrm -rf build\r\n")], [["-la\r"], ["-rf", "build\r"]])
+        self.assertEqual([x.body for x in lex("cat <<EOF\r\nx\r\nEOF\r\n") if x.kind == "redir"], ["x\r"])   # 구분자도 `EOF\r`
+        self.assertEqual(names("rm\xa0-rf\xa0x"), ["rm\xa0-rf\xa0x"])   # 한 단어 = 없는 명령 이름
+
     def test_unterminated(self):
         for s in ['echo "a', "echo 'a", "echo $(a", "cat <<EOF\nx\n"]:
             with self.assertRaises(LexError):
