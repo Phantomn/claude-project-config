@@ -447,11 +447,11 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         for c in ("f() { shift; cd \"$1\"; }; f {D}/ex {D}/missing; rm y", "f() { set -- x; cd \"$1\"; }; f {D}/ex; rm y",
                   "f() { set a b; cd \"$1\"; }; f {D}/ex; rm y", "f() { shift 2; cd \"$1\"; }; f {D}/ex {D}/ex {D}/missing; rm y",
                   "f() { cd {D}/ex; }; f >&3; rm y", "f() { cd {D}/ex; }; f > {D}/nonexist/log; rm y",
-                  "f() { :; }; f 1 2 3 4 5 6 7 8 9 {D}/ex; cd \"${10}\"; rm y"):   # NB2 재바인딩, NB4 호출 리다이렉트, NB8 ${10} 복원
+                  "f() { :; }; f 1 2 3 4 5 6 7 8 9 {D}/ex; cd \"${10}\"; rm y",
+                  "f() { for i in 1; do cd {D}/ex; return; done; cd {D}; }; f; rm y",   # NB5 확정 for 안 return — 일반 처리(0회 경로 합류, 보수)
+                  "f() { for i in 1 2; do cd {D}/ex; return; done; cd {D}; }; f; rm y"):   # NB2 재바인딩, NB4 호출 리다이렉트, NB8 ${10} 복원
             self.assertIsNone(last(c).cwd, c)
         for c, cwd in (("f() { set -e; cd \"$1\"; }; f {D}/ex; rm y", f"{d}/ex"), ("f() { cd {D}/ex; }; f 2>/dev/null; rm y", f"{d}/ex"),
-                       ("f() { for i in 1; do cd {D}/ex; return; done; cd {D}; }; f; rm y", f"{d}/ex"),   # NB5 확정 for 안 return
-                       ("f() { for i in 1 2; do cd {D}/ex; return; done; cd {D}; }; f; rm y", f"{d}/ex"),
                        ("v={D}/missing; f() { cd \"$v\"; }; v={D}/ex f; rm y", f"{d}/ex")):   # NB3 접두 할당이 본문에 보인다
             self.assertEqual(last(c).cwd, cwd, c)
         self.assertEqual(last("v={D}/missing; f() { cd \"$v\"; }; v={D}/ex f; rm y").env.get("v"), f"{d}/missing")   # 접두 할당은 호출 동안만
