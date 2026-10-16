@@ -341,7 +341,6 @@ _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 _OP_ASSIGN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")   # `${f:=값}`·`${f=값}` 는 확장하며 f 에 대입한다
 _NAMEREF = "\x00nameref"   # declare -n 이 있었다 — 어느 이름에 대입해도 다른 변수가 바뀔 수 있다
 _BOUNDARY = ("\n", ";", ";;", "&&", "||", "|", "|&", "&")
-_SUBSHELL_OPS = ("|", "|&", "&")  # 파이프 구성원·배경 명령은 서브셸이라 cd·변수가 밖으로 안 나간다
 _VAR_DECL = ("export", "declare", "typeset", "local")
 # 래퍼 -> 값을 받는 옵션. 값 없는 옵션은 '-' 로 시작하는 단어 하나로 소비한다.
 _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
@@ -1299,7 +1298,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         raise LexError("재귀 깊이 초과")
     toks = lex(command)
     st: dict = {"cwd": cwd, "dead": False}   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
-    stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead) — 열 때의 바깥 상태
+    stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead, list_snap) — 열 때의 바깥 상태
     words: list[Word] = []
     redirects: list[Redirect] = []
     pipe_prev: Segment | None = None
@@ -1426,6 +1425,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         return seg
 
     snap = (st["cwd"], dict(state_env))   # 파이프라인 시작 상태 — 구성원은 서브셸이라 끝나면 여기로 돌아온다
+    list_snap = snap   # 목록 시작 상태 — `A && cd X &` 는 목록 전체가 배경 서브셸이라 끝나면 여기로 돌아온다(OS3)
     in_pipe = False
     # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자, 지금 요소가 시작부터 도달 불가)
     andor: tuple[list, list, str, bool] | None = None
@@ -1502,16 +1502,16 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
-        nonlocal snap, in_pipe, andor
-        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor, st["dead"]))
+        nonlocal snap, list_snap, in_pipe, andor
+        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor, st["dead"], list_snap))
         in_pipe, andor = False, None
-        snap = (st["cwd"], dict(state_env))
+        snap = list_snap = (st["cwd"], dict(state_env))
 
     def close_compound(kind: str, ends: list | None) -> None:
         """복합 명령(그룹·서브셸·if·루프·case)을 닫는다. ends = 갈래 끝들(None 이면 지금 상태 그대로).
         서브셸·파이프 구성원은 안쪽 변화가 밖으로 안 나간다."""
-        nonlocal snap, in_pipe, andor
-        _, cwd0, env0, outer_pipe, andor, dead0 = stack.pop()
+        nonlocal snap, list_snap, in_pipe, andor
+        _, cwd0, env0, outer_pipe, andor, dead0, list_snap = stack.pop()
         if kind == "(" or outer_pipe:
             set_state((cwd0, env0))
             st["dead"] = dead0
@@ -1553,7 +1553,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def control(word: str) -> None:
         """if·while·until 을 열고 then·elif·else·fi·do·done 으로 갈래를 넘긴다. 본문은 조건의 성공 끝에서 시작하고,
         거짓 갈래·else 없는 경로·루프 종료는 조건의 실패 끝(cd 실패 = 조건 전 상태)에서 시작·합류한다."""
-        nonlocal snap
+        nonlocal snap, list_snap
         flush()
         if word in _CTL_OPEN or word in _LOOP_HEAD:   # 앞 `&&` 목록은 그룹처럼 stack 에 맡긴다(복합 명령이 그 요소)
             open_group("if" if word == "if" else "loop")
@@ -1579,7 +1579,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 return
             join(c["cond"])   # elif·else — 다음 조건·else 본문은 앞 조건이 거짓인 상태에서
             c["mode"] = "cond" if word == "elif" else "else"
-        snap = now()
+        snap = list_snap = now()
 
     def bare(i: int) -> str | None:
         t = toks[i] if i < len(toks) else None
@@ -1708,6 +1708,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             set_state(_merge([stack[-1][1:3], *([] if t.op == ";;" else ends)]))
             snap = (st["cwd"], dict(state_env))
             cur["mode"] = "pat"
+            list_snap = snap
             continue
         if t.kind == "op" and t.op in (";&", ";;&"):
             raise LexError(f"case 밖의 {t.op}")
@@ -1726,10 +1727,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
         elif t.op in _BOUNDARY:
             seg = flush()
-            if in_pipe or t.op in _SUBSHELL_OPS:
-                restore()
+            if in_pipe or t.op in ("|", "|&"):
+                restore()   # 파이프 구성원은 서브셸
             if t.op in ("&&", "||"):
                 andor_step(t.op)
+            elif t.op == "&":   # 목록 전체가 배경 서브셸 — 단위는 판정했고 상태는 목록 시작으로
+                andor = None
+                reset_elem()
+                set_state(list_snap)
             elif t.op not in ("|", "|&"):
                 end_list()
             else:
@@ -1737,6 +1742,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             in_pipe = t.op in ("|", "|&")
             pipe_prev = seg if in_pipe else None
             snap = (st["cwd"], dict(state_env))
+            if not in_pipe and t.op not in ("&&", "||"):
+                list_snap = snap
         elif t.op == "(":
             flush()
             open_group("(")
