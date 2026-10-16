@@ -428,6 +428,62 @@ def _seq(a: str, b: str, step: str | None) -> list[str] | None:
     return [str(v) if num else chr(v) for v in range(x, y + (1 if d > 0 else -1), d)]
 
 
+# mktemp 결과 대신 쓰는 이름 — 없는 경로라 분류가 MISSING(허용)이 된다. 프로세스마다 고유
+_MKTEMP_NAME = "bash-guard-mktemp-" + os.urandom(6).hex()
+_MKTEMP_OPT = re.compile(r"-([duqt]*)(?:p(.*))?")
+
+
+def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
+    """`$(mktemp …)` 의 결과: 임시 루트(/tmp·/var/tmp·$TMPDIR) 아래 새 경로. 그 밖·모르는 옵션은 None(확정 불가)."""
+    try:
+        toks = lex(body)
+    except LexError:
+        return None
+    if not toks or any(x.kind == "op" for x in toks) or toks[0].kind != "word" or toks[0].word.literal() != "mktemp":
+        return None
+    a = [x.word for x in toks if x.kind == "word"]
+    default = env.get("TMPDIR") or "/tmp"
+    d: str | None = None
+    tmpl, t_flag, i = None, False, 1
+    while i < len(a):
+        x = a[i].literal()
+        if x in ("--directory", "--dry-run", "--quiet"):
+            pass
+        elif x.startswith(("--tmpdir", "--suffix")):
+            k, eq, _ = x.partition("=")
+            if k == "--tmpdir":
+                d = _text(_drop(a[i], len(k) + 1).parts, env) if eq else default
+            elif not eq:
+                i += 1
+        elif (m := _MKTEMP_OPT.fullmatch(x)) and x != "-":
+            t_flag = t_flag or "t" in m.group(1)
+            if m.group(2) is not None:
+                w = _drop(a[i], len(x) - len(m.group(2))) if m.group(2) else (a[i + 1] if i + 1 < len(a) else None)
+                i += 0 if m.group(2) else 1
+                d = _text(w.parts, env) if w is not None else None
+                if d is None:
+                    return None
+        elif x.startswith("-") or tmpl is not None:
+            return None
+        else:
+            tmpl = _text(a[i].parts, env)
+            if tmpl is None:
+                return None
+        i += 1
+    if d is None:
+        if tmpl is not None and "/" in tmpl:
+            if t_flag or not tmpl.startswith("/"):
+                return None
+            d = os.path.dirname(tmpl)
+        elif tmpl is not None and not t_flag:
+            return None   # 템플릿만 주면 현재 폴더에 만든다
+        else:
+            d = default
+    d = os.path.normpath(d or default)
+    roots = [os.path.normpath(r) for r in ("/tmp", "/var/tmp", env.get("TMPDIR")) if r]
+    return os.path.join(d, _MKTEMP_NAME) if any(d == r or d.startswith(r + "/") for r in roots) else None
+
+
 def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, int]:
     """t[i] 는 `$` 또는 백틱. (확장값 | None=확정 불가, 다음 인덱스).
 
@@ -437,7 +493,7 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     if t[i] == "`" or t.startswith("$(", i):
         j = _skip_sub(t, i)
         body = t[i + 1 : j - 1] if t[i] == "`" else t[i + 2 : j - 1]
-        return (env.get(SHELL_CWD) if body.strip() == "pwd" else None), j
+        return (env.get(SHELL_CWD) if body.strip() == "pwd" else _mktemp(body, env)), j
     if t.startswith("${", i):
         j = _skip_sub(t, i)
         m = _NAME.fullmatch(t, i + 2, j - 1)

@@ -354,6 +354,15 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("for f in $(ls); do rm $f; done"), [("삭제", UNRESOLVED)])
         self.assertEqual(ev("for f in a; do echo $f; done > {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
 
+    def test_g_mktemp_result_is_scratch(self):
+        for c in ("T=$(mktemp -d); echo x > $T/a; cp src/main.py $T/; rm -rf $T", "F=$(mktemp); git diff > $F; rm -f $F",
+                  'D="$(mktemp -d -p {SCRATCH})"; cd "$D" && echo x > out.txt && cd - >/dev/null; rm -rf "$D"'):
+            self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev("T=$(mktemp -d); rm -rf $T/.."), [("삭제", UNRESOLVED)])   # 임시 루트 자체
+        self.assertEqual(ev("T=$(mktemp); mv $T {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("T=$(mktemp -p {HOME}); rm -f $T"), [("삭제", UNRESOLVED)])   # 임시 루트 밖 -p
+        self.assertEqual(ev("T=$(date +%s); rm -rf {SCRATCH}/s1 /x/$T"), [("삭제", UNRESOLVED)])
+
 
 if __name__ == "__main__":
     unittest.main()

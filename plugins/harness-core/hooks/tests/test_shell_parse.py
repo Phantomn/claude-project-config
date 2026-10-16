@@ -550,5 +550,33 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
         self.assertLess(time.perf_counter() - t0, 2.0)
 
 
+MK_ENV = {"HOME": "/h", "TMPDIR": "/t"}
+
+
+class MktempTest(unittest.TestCase):   # 재생 군집 U4: mktemp 결과는 임시 루트 아래의 새 경로
+    def one(self, c):
+        r = rm_targets(c, env=MK_ENV)
+        self.assertEqual(len(r), 1, c)
+        return r[0]
+
+    def test_scratch_marker(self):
+        for c, root in (("X=$(mktemp); rm $X", "/t"), ("X=$(mktemp -d); rm -rf $X", "/t"), ('X="$(mktemp -p /tmp)"; rm "$X"', "/tmp"),
+                        ("X=$(mktemp -t f.XXXX); rm $X", "/t"), ("X=$(mktemp --tmpdir=/var/tmp x.XXX); rm $X", "/var/tmp"),
+                        ("X=$(mktemp /tmp/f.XXXXXX); rm $X", "/tmp"), ("X=`mktemp -dq`; rm -r $X", "/t"),
+                        ("X=$(mktemp -d -p /t/work); rm -rf $X/sub", "/t/work"), ("X=$(mktemp --suffix .py); rm $X", "/t"),
+                        ("rm $(mktemp -u)", "/t")):
+            p = self.one(c)
+            self.assertTrue(p and len(p) == 1 and p[0].startswith(root + "/") and "mktemp" in p[0] and "\x00" not in p[0], (c, p))
+        self.assertEqual(self.one("X=$(mktemp); rm $X")[0].count("/"), 2)
+        self.assertNotIn("TMPDIR", rm_targets("X=$(mktemp); rm $X", env={"HOME": "/h"})[0][0])
+        self.assertTrue(rm_targets("X=$(mktemp); rm $X", env={"HOME": "/h"})[0][0].startswith("/tmp/"))
+
+    def test_outside_or_unknown_stays_unresolved(self):
+        for c in ("X=$(mktemp -p /etc); rm $X", "X=$(mktemp f.XXX); rm $X", "X=$(mktemp -p $U); rm $X", "X=$(mktemp -p /tmp/../etc); rm $X",
+                  "X=$(date +%s); rm $X", "X=$(uuidgen); rm $X", "X=$(mktemp | cat); rm $X", "X=$(mktemp -t a/b.XX); rm $X",
+                  "X=$(mktemp --bogus); rm $X", "X=$(mktemp ./f.XX); rm $X"):
+            self.assertEqual(self.one(c), None, c)
+
+
 if __name__ == "__main__":
     unittest.main()
