@@ -169,6 +169,7 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
             pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
+            os.fchmod(fd, 0o600)   # 이전 버전이 0644 로 만든 파일도 맞춘다
             os.write(fd, line)
         finally:
             os.close(fd)
@@ -184,8 +185,10 @@ def _old_decision(old: str) -> str | None:
     return v if isinstance(v, str) else None
 
 
-def _fallback(payload: object, environ: Mapping[str, str]) -> Decision:
-    """spec §3.8 (다): 내부 예외 — on 이면 (가) 규칙을 원문에 적용(ask 금지), 그 외 모드는 OLD."""
+def _fallback(payload: object, environ: Mapping[str, str], raw: str = "") -> Decision:
+    """spec §3.8 (다): 내부 예외 — on 이면 (가) 규칙을 원문에 적용(ask 금지), 그 외 모드는 OLD.
+
+    raw: stdin 원문(깨진 바이트는 대체 문자). 명령을 못 꺼냈어도 원문이 있으면 그 원문에 (가) 규칙을 적용한다."""
     try:
         cwd = payload.get("cwd") if isinstance(payload, dict) else None
         mode = _strongest([_env_mode(environ), switch_mode(cwd if isinstance(cwd, str) else None, environ)])
@@ -193,7 +196,8 @@ def _fallback(payload: object, environ: Mapping[str, str]) -> Decision:
         mode = "off"
     ti = payload.get("tool_input") if isinstance(payload, dict) else None
     command = ti.get("command") if isinstance(ti, dict) else None
-    bad = isinstance(command, str) and FAIL_WORDS.search(command) is not None
+    text = command if isinstance(command, str) else raw
+    bad = FAIL_WORDS.search(text) is not None
     return Decision(not bad, [R_ERROR] if bad else [], mode)
 
 
@@ -205,11 +209,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         t0 = time.monotonic()
         payload: object = None
+        raw = b""
         try:
-            payload = json.loads(sys.stdin.read())
+            raw = sys.stdin.buffer.read()   # 바이트로 — 텍스트 인코딩(ascii 등)에 판정이 좌우되지 않게
+            payload = json.loads(raw)
             d = judge(payload, environ)  # type: ignore[arg-type]
         except Exception as e:  # noqa: BLE001 — 판정기 내부 예외는 모두 폴백(spec §3.8 (다))
-            d = _fallback(payload, environ)
+            d = _fallback(payload, environ, raw.decode("utf-8", "replace"))
             d.error = f"{type(e).__name__}: {e}"
         out = final_output(d, old)
         if not _emit(out):
@@ -235,13 +241,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _emit(out: str) -> bool:
-    """바이트로 쓴다 — stdout 인코딩(ascii 등)과 무관하게, OLD 의 surrogateescape 바이트도 그대로."""
+    """fd 1 에 바이트로 직접 쓴다 — stdout 인코딩과 무관하고(OLD 의 surrogateescape 바이트도 그대로),
+    sys.stdout 버퍼를 거치지 않아 쓰기 실패 뒤 종료 시 다시 flush 하다 rc 120 이 되는 일이 없다."""
     if not out:
         return True
+    data = os.fsencode(out) + b"\n"
     try:
-        sys.stdout.buffer.write(os.fsencode(out) + b"\n")
-        sys.stdout.buffer.flush()
-    except (OSError, ValueError):
+        while data:
+            data = data[os.write(1, data):]
+    except OSError:
         return False
     return True
 

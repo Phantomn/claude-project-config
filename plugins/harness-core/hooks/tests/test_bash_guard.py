@@ -143,6 +143,34 @@ class MainTest(_WorldCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def run_bytes(self, stdin: bytes, extra: dict, stdout=subprocess.PIPE) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(SCRIPTS / "bash_guard.py"), "--old", OLD_ASK], input=stdin, stdout=stdout,
+                              stderr=subprocess.PIPE, env={**w.environ, **extra}, timeout=30, check=False)
+
+    def test_stdout_write_failure(self):   # 리뷰 라운드 2 (a): stdout 이 가득 찬 장치여도 rc 0, 출력 실패는 기록
+        with open("/dev/full", "wb") as full:
+            r = self.run_bytes(json.dumps(w.payload("rm src/main.py")).encode(), ON, stdout=full)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("출력 실패", self.log_lines()[-1]["error"])
+
+    def test_non_ascii_bytes_input(self):   # 리뷰 라운드 2 (b): 입력은 바이트로 — 텍스트 인코딩과 무관
+        w.sh("touch 한글.txt && git add 한글.txt && git commit -q -m k")
+        asc = {**ON, "PYTHONIOENCODING": "ascii"}
+        r = self.run_bytes(json.dumps(w.payload("rm 한글.txt"), ensure_ascii=False).encode(), asc)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(json.loads(r.stdout.decode())["hookSpecificOutput"]["permissionDecision"], "deny")
+        broken = b'{"tool_name": "Bash", "tool_input": {"command": "rm x\xff.txt"}, "cwd": "/"}'   # 깨진 UTF-8
+        r = self.run_bytes(broken, asc)
+        self.assertEqual(r.returncode, 0)
+        out = json.loads(r.stdout.decode())["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny"); self.assertIn("판정기 오류", out["permissionDecisionReason"])
+
+    def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
+        p = state_dir(w.environ) / "bash-guard.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True); p.write_text(""); p.chmod(0o644)
+        log_event({"x": 1}, w.environ)
+        self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+
     def test_internal_error_fallback(self):   # spec §3.8 (다), 재감사 rootcause-r1-s2-003·selfcontained-r1-s2-006
         r = self.run_main({"tool_name": "Bash", "tool_input": "rm -rf x", "cwd": str(w.repo)})
         self.assertEqual((r.returncode, r.stdout), (0, OLD_ASK + "\n"))
