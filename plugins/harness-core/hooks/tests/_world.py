@@ -274,6 +274,28 @@ class World:
     def make_worktree(self) -> None:
         self._git("worktree", "add", "-q", "-b", "wt-b", str(self.wt))
 
+    def no_env(self) -> None:
+        # ignore 대상 중 재생성 불가 파일을 치워 build/ 만 남긴다
+        for name in (".env", "local.sqlite"):
+            (self.repo / name).unlink()
+
+    def scratch_clone(self) -> None:
+        self._git("clone", "-q", str(self.repo), str(self.scratch / "s1/clone"))
+
+    def scratch_many(self) -> None:
+        d = self.scratch / "s1/many"
+        d.mkdir(parents=True)
+        for i in range(2001):   # DIR_ENTRY_CAP(2,000) 초과
+            (d / f"f{i}").touch()
+
+    def unpushed_branch(self, name: str) -> None:
+        self.local_branch(name, pushed=False, before_session=True)
+
+    def judge_cmd(self, cmd: str, cwd: str = "{REPO}"):
+        # 여기서만 — _world 를 쓰는 다른 테스트가 진입점에 묶이지 않게
+        from bash_guard import judge
+        return judge(self.payload(cmd, cwd), {**self.environ, "HARNESS_BASH_GUARD": "on"})
+
     def _commit_file(self, parent: str, name: str, text: str, env: dict[str, str], msg: str = "",
                      parents: tuple[str, ...] = ()) -> str:
         # 작업 트리(세션 전 수정 포함)를 건드리지 않고 parent 위에 파일 하나를 바꾼 커밋을 만든다
@@ -362,3 +384,15 @@ class World:
             self._docker("volume", "rm", "-f", f"{name}-db", f"{name}-fresh")
             self._docker_name = None
         shutil.rmtree(self.root, ignore_errors=True)
+
+
+def judge_case(case: dict):
+    """픽스처 한 항목: 새 World 에 setup("이름" 또는 "이름:인자" = World 메서드 호출)을 적용하고 on 모드로 판정."""
+    w = World()
+    try:
+        for step in case.get("setup", []):
+            name, _, arg = step.partition(":")
+            getattr(w, name)(*([arg] if arg else []))
+        return w.judge_cmd(case["command"], case.get("cwd", "{REPO}"))
+    finally:
+        w.close()

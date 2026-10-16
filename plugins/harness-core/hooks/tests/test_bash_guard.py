@@ -9,7 +9,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _world import World, WorldCase
+from _world import World, WorldCase, judge_case
 from bash_guard import FOOTER, Decision, judge, log_event, render
 from ledger import KIND_PRE_DIRTY, KIND_PRE_SESSION, Ledger, state_dir
 
@@ -183,6 +183,55 @@ class MainTest(_WorldCase):
         r = self.run_main({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": 5}, extra=ON)
         self.assertEqual(r.returncode, 0); self.assertNotIn("ask", r.stdout)
         self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+
+
+def load(name: str) -> list[dict]:
+    with open(Path(__file__).resolve().parent / "fixtures" / name, encoding="utf-8") as f:
+        return json.load(f)
+
+
+class AcceptanceTest(_WorldCase):   # spec §8 합격 묶음 — 부록 B·C
+    def test_false_positive_fixtures(self):
+        bad = [(c["id"], d.reasons) for c in load("false_positive.json") if not (d := judge_case(c)).allow]
+        self.assertEqual(bad, [])
+
+    def test_false_negative_fixtures(self):
+        bad = [c["id"] for c in load("false_negative.json") if judge_case(c).allow]
+        self.assertEqual(bad, [])
+
+    def test_never_ask_on(self):   # SC1: on 출력은 유효 JSON 이고 결정은 allow·deny 뿐
+        for c in load("false_positive.json") + load("false_negative.json"):
+            out = json.loads(render(judge_case(c)))["hookSpecificOutput"]
+            self.assertIn(out["permissionDecision"], ("allow", "deny"), c["id"])
+
+    def test_pr_flow_scenario(self):
+        steps = ["git worktree add {OUT}/wt2 -b feat/y", "cd {OUT}/wt2 && echo a > f.txt && git add f.txt && git commit -qm a",
+                 "cd {OUT}/wt2 && mv f.txt g.txt && git add -A && git commit -qm r",
+                 "cd {OUT}/wt2 && echo b > g.txt && git commit -qam b",   # 이름 변경은 moved-in 아님
+                 "cd {OUT}/wt2 && git push -u origin feat/y", "cd {OUT}/wt2 && git commit -q --amend -m b && git push --force",
+                 "git worktree remove {OUT}/wt2", "git branch -D feat/y", "git push origin --delete feat/y"]
+        for s in steps:
+            d = w.judge_cmd(s); self.assertTrue(d.allow, (s, d.reasons)); w.sh(s)
+
+    def step(self, s: str, allow: bool = True) -> None:
+        d = w.judge_cmd(s); self.assertEqual(d.allow, allow, (s, d.reasons))
+        if allow:
+            w.sh(s)   # 판정한 명령은 실행해 다음 단계가 실제 결과 상태를 보게 한다
+
+    def test_self_revert_scenario(self):
+        # 세션 중 수정은 실제 세션 경로로만 만든다 — 장부를 거치지 않은 수정 뒤 checkout 이 pre-dirty 를 남기는 것은 §13 한계(임의 스크립트)
+        w.clean_tree()
+        # Edit 도구 경로: touch-ledger 기록 뒤 파일 수정
+        r = subprocess.run([sys.executable, str(SCRIPTS / "touch-ledger.py")], input=json.dumps(w.edit_payload("{REPO}/src/main.py")),
+                           env=w.environ, capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(r.stdout, ""); w.touch_modify("{REPO}/src/main.py")
+        self.step("git checkout -- src/main.py")
+        # 판정기를 거치는 Bash 경로
+        self.step("echo y >> src/main.py"); self.step("git checkout -- src/main.py")
+        self.step("echo y >> src/main.py"); self.step("git reset --hard")
+        w.dirty_before_session("{REPO}/README.md"); self.assertFalse(w.judge_cmd("git reset --hard").allow)
+        s = "echo x >> README.md"; self.assertTrue(w.judge_cmd(s).allow); w.sh(s)   # >> 로 mtime 이 세션 중이 돼도
+        self.assertFalse(w.judge_cmd("git reset --hard").allow)                     # 장부 pre-dirty 로 deny
 
 
 if __name__ == "__main__":
