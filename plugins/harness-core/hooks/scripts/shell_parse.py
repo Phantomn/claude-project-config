@@ -180,6 +180,33 @@ def _read_dq(s: str, i: int) -> tuple[str, int]:
     raise LexError("닫히지 않은 큰따옴표")
 
 
+_ANSI_SIMPLE = {"a": 7, "b": 8, "e": 27, "E": 27, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, "'": 39, '"': 34, "?": 63}
+_ANSI_ESC = re.compile(r"\\(?:([abeEfnrtv\\'\"?])|([0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|c(\\\\|[^\\]))")
+
+
+def _ansi_c(text: str) -> str:
+    """`$'…'` 본문을 bash 처럼 푼다(실측): \\nnn·\\xHH 는 바이트, \\u·\\U 는 문자, \\cX 는 제어 문자, NUL 에서 끝, 모르는 \\z 는 그대로."""
+    out, i = bytearray(), 0
+    for m in _ANSI_ESC.finditer(text):
+        out += text[i:m.start()].encode("utf-8", "surrogateescape")
+        simple, octal, hx, uni4, uni8, ctl = m.groups()
+        if simple:
+            out.append(_ANSI_SIMPLE[simple])
+        elif octal:
+            out.append(int(octal, 8) & 0xFF)
+        elif hx:
+            out.append(int(hx, 16))
+        elif ctl:
+            out.append((ord(ctl[-1].upper()) ^ 0x40) & 0xFF)
+        elif int(uni4 or uni8, 16) <= 0x10FFFF:
+            out += chr(int(uni4 or uni8, 16)).encode("utf-8", "surrogatepass")
+        else:
+            out += m.group().encode()
+        i = m.end()
+    out += text[i:].encode("utf-8", "surrogateescape")
+    return bytes(out).split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
+
+
 def _read_word(s: str, i: int) -> tuple[Word, int]:
     n = len(s)
     parts: list[Part] = []
@@ -219,7 +246,7 @@ def _read_word(s: str, i: int) -> tuple[Word, int]:
                 j += 2 if s[j] == "\\" else 1
             if j >= n:
                 raise LexError("닫히지 않은 $'")
-            add(s[i + 2 : j], "'")
+            add(_ansi_c(s[i + 2 : j]), "'")
             i = j + 1
         elif c in "$`":
             j = _skip_sub(s, i)

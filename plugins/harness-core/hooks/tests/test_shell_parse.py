@@ -84,6 +84,11 @@ class LexTest(unittest.TestCase):
         self.assertEqual([x.body for x in lex("cat <<EOF\r\nx\r\nEOF\r\n") if x.kind == "redir"], ["x\r"])   # 구분자도 `EOF\r`
         self.assertEqual(names("rm\xa0-rf\xa0x"), ["rm\xa0-rf\xa0x"])   # 한 단어 = 없는 명령 이름
 
+    def test_ansi_c_quote_decoded(self):   # `$'…'` 는 bash 처럼 푼다(실측) — 안 풀면 `$'\x72m'` 가 rm 을 가린다
+        got = words(lex(r"$'\x72m' $'a\tb' $'\101\x42é' $'x\cAy' $'p\0q' $'\z' $'\c\\' $'\U0001F600' $'\xc3\xa9' $'\'q\"'"))
+        self.assertEqual(got, ["rm", "a\tb", "ABé", "x\x01y", "p", "\\z", "\x1c", "\U0001F600", "é", "'q\""])
+        self.assertEqual(names(r"$'\x72m' -rf x; $'r\x6d' y"), ["rm", "rm"])
+
     def test_unterminated(self):
         for s in ['echo "a', "echo 'a", "echo $(a", "cat <<EOF\nx\n"]:
             with self.assertRaises(LexError):
