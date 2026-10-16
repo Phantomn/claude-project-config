@@ -390,6 +390,13 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
         self.assertEqual(ev("rm -f *.tmp {SCRATCH}/s1/[ab]*"), [])
 
+    def test_extglob_is_unresolved(self):   # 재검토 New Breakage 2: 확장 글롭은 bash(extglob)만 펼친다 — 확정 불가
+        for c in ("shopt -s extglob\nrm -rf !(keep)", "shopt -s extglob\nrm -f src/@(main|x).py", "rm -rf +(a|b)", "rm -rf *(a)",
+                  "rm -rf ?(a)", "cd src && rm -f !(probe.ts)", 'for f in !(keep); do rm -rf "$f"; done',
+                  "rm -rf {SCRATCH}/s1/a-$X@(k)"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev('rm -f "!(keep)" {SCRATCH}/s1/@x'), [])   # 따옴표 안·괄호 없는 @ 는 리터럴
+
     def test_g_mktemp_result_is_scratch(self):
         for c in ("T=$(mktemp -d); echo x > $T/a; cp src/main.py $T/; rm -rf $T", "F=$(mktemp); git diff > $F; rm -f $F",
                   'D="$(mktemp -d -p {SCRATCH})"; cd "$D" && echo x > out.txt && cd - >/dev/null; rm -rf "$D"'):

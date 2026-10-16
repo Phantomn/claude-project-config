@@ -223,6 +223,10 @@ def _read_word(s: str, i: int) -> tuple[Word, int]:
             j = _skip_to(s, i + 2, ")")
             add(s[i:j], "")
             i = j
+        elif c == "(" and parts and parts[-1].quote == "" and parts[-1].text[-1:] in ("!", "@", "+", "*", "?"):
+            j = _skip_to(s, i + 1, ")")   # 확장 글롭 `!(…)` 등 — bash(extglob)는 단어로 읽는다(실측)
+            add(s[i:j], "")
+            i = j
         else:
             break  # 공백·연산자·리다이렉트
     return Word(tuple(parts)), i
@@ -509,8 +513,9 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
     return os.path.join(d, _MKTEMP_NAME)
 
 
-# 파이썬 fnmatch 가 bash 와 다르게 읽는 괄호 식 — `[^…]` 부정·`[[:class:]]`·`[=…=]`·`[.….]`(파이썬은 0건 → 리터럴 → 허용이 된다)
-_BASH_ONLY_GLOB = re.compile(r"\[[\^!]|\[[:=.]")
+# 파이썬 fnmatch 가 bash 와 다르게 읽는 괄호 식 — `[^…]` 부정·`[[:class:]]`·`[=…=]`·`[.….]`(파이썬은 0건 → 리터럴 → 허용이 된다),
+# 확장 글롭 `!(…)`·`@(…)`·`+(…)`·`*(…)`·`?(…)`(shopt extglob 여부를 모른다)
+_BASH_ONLY_GLOB = re.compile(r"\[[\^!]|\[[:=.]|[!@+*?]\(")
 
 
 def _bad_glob(ch: list[tuple[str, bool]]) -> bool:
@@ -777,7 +782,7 @@ def expand_hole(word: Word, seg: Segment) -> str | None:
         ch = _subst(words[0], seg.env, split=True, hole=HOLE)
     except LexError:
         return None
-    if ch is None or any(a and any(x in t for x in "*?[") for t, a in ch):
+    if ch is None or any(a and any(x in t for x in "*?[") for t, a in ch) or _bad_glob(ch):
         return None
     lit = "".join(t for t, _ in ch)
     if _XARGS_MARK in lit or (not lit.startswith("/") and seg.cwd is None):

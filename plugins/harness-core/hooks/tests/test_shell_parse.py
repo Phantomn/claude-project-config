@@ -56,6 +56,11 @@ class LexTest(unittest.TestCase):
             words(lex('echo "$(rm -rf "a b")" `ls`')), ["echo", '$(rm -rf "a b")', "`ls`"]
         )
 
+    def test_extglob_stays_in_word(self):   # bash(extglob)는 `!(…)`·`@(…)` 를 단어로 읽는다(명령 자리 포함, 실측)
+        self.assertEqual(words(lex("rm -rf !(keep) src/@(a|b).py +(x) *(y) ?(z)")),
+                         ["rm", "-rf", "!(keep)", "src/@(a|b).py", "+(x)", "*(y)", "?(z)"])
+        self.assertEqual(parse("(( y = 2*(1+2) )); echo $y", "/", {}).error, None)
+
     def test_dq_substitution_body_is_raw(self):
         w = lex('"$(echo \\" ; rm x ; echo \\")"')[0].word
         self.assertEqual(w.parts, (Part('$(echo \\" ; rm x ; echo \\")', '"'),))
