@@ -322,7 +322,10 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     """존재하는 정규화 경로들을 분류 1b~7 로(폴더 순회 없이). git·stat 은 저장소·묶음마다 한 번."""
     res: dict[str, Cls] = {}
     cache: dict[str, str | None] = {}
-    near = {p: _nearest_git(p, cache) for p in paths}
+    near: dict[str, str | None] = {}
+    for p in paths:   # 경로마다 조상 lstat — /mnt/c 에서는 수백 개만으로 수 초(재생 최대 7.5초 실측)
+        _budget(ctx)
+        near[p] = _nearest_git(p, cache)
     tops = sorted({t for t in near.values() if _is_session_repo(t, ctx)})
     new_tops = _session_new(tops, ctx)
     for p in paths:
@@ -348,6 +351,7 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
         if is_scratch(p, ctx):
             res[p] = Cls(SCRATCH, p)
     rest = [p for p in rest if p not in res]
+    _budget(ctx)   # 예산이 다한 뒤의 빈 births() 는 '세션 전'으로 떨어진다 — 시간 초과 사유가 맞다
     for p in _session_new(rest, ctx):
         res[p] = Cls(SESSION_NEW, p)
     for top, ps in groups.items():

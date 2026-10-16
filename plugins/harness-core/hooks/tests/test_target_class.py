@@ -573,5 +573,29 @@ class ClockMarginTest(_WorldCase):
         self.assertEqual([f.kind for f in w.evaluate_all("git stash drop stash@{0}", ctx=big)], ["OLD_STASH"])
 
 
+class ClassifyBudgetTest(_WorldCase):   # 재생 최대 판정 시간: 경로 수백 개의 파일 조회도 예산을 본다
+    def test_classify_many_stops_at_budget(self):
+        d = w.fmt("{OUT}/c2"); os.mkdir(d)
+        paths = [f"{d}/f{i}" for i in range(575)]
+        for p in paths:
+            open(p, "w").close()
+        with self.assertRaises(target_class._Unresolved) as e:
+            target_class._classify_many(paths, w.ctx(budget=0))
+        self.assertIn("시간 초과", str(e.exception))
+        c = classify(d, w.ctx(budget=0)); self.assertEqual(c.kind, UNRESOLVED); self.assertIn("시간 초과", c.detail)
+
+    def test_judge_ends_near_budget(self):
+        from bash_guard import judge
+        for n in ("c1", "c2"):
+            os.mkdir(w.fmt(f"{{OUT}}/{n}"))
+            for i in range(575):
+                open(w.fmt(f"{{OUT}}/{n}/f{i}"), "w").close()
+        budget = 0.005
+        t0 = time.monotonic()
+        d = judge(w.payload("rm -rf {OUT}/c1 {OUT}/c2"), {**w.environ, "HARNESS_BASH_GUARD": "on"}, budget=budget)
+        self.assertLess(time.monotonic() - t0, budget + 0.5)
+        self.assertFalse(d.allow); self.assertTrue(all("범위를 좁혀라" in r for r in d.reasons), d.reasons)   # 세션 파일이어도 못 다 보면 거부
+
+
 if __name__ == "__main__":
     unittest.main()
