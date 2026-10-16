@@ -18,6 +18,9 @@ KIND_TOUCHED = "touched"
 KIND_MOVED_IN = "moved-in"
 PRUNE_SECONDS = 7 * 24 * 3600
 COMPACT_BYTES = 5 * 1024 * 1024
+# 잠금 대기 상한: 마감이 없을 때 한 번의 대기, 마감이 지났어도 기록마다 주는 최소 대기
+LOCK_WAIT = 1.0
+LOCK_MIN_WAIT = 0.05
 
 _ENC = {"encoding": "utf-8", "errors": "surrogateescape"}
 
@@ -48,11 +51,12 @@ def _parse(line: str) -> tuple[str, Entry] | None:
 
 
 class Ledger:
-    def __init__(self, environ: Mapping[str, str], compact_bytes: int = COMPACT_BYTES) -> None:
+    def __init__(self, environ: Mapping[str, str], compact_bytes: int = COMPACT_BYTES, deadline: float | None = None) -> None:
         d = state_dir(environ)
         # 상대 경로 장부는 훅 cwd 마다 다른 파일이 되어 공유 장부가 아니다 — 만들지 않는다
         self.path: Path | None = d / "ledger.tsv" if d.is_absolute() else None
         self.compact_bytes = compact_bytes
+        self.deadline = deadline   # time.monotonic() 기준 잠금 대기 마감(판정 예산과 같은 값)
 
     def _read(self) -> str:
         if self.path is None:
@@ -85,11 +89,23 @@ class Ledger:
                 return p
         return None
 
-    def _lock(self) -> int:
+    def _lock(self) -> int | None:
+        """잠근 fd. 마감(판정 예산 끝, 없으면 지금+LOCK_WAIT)까지 못 잠그면 None — 잠금을 쥔 채 멈춘 프로세스가 있어도
+        훅 timeout 안에 끝나게."""
+        now = time.monotonic()
+        end = max(now + LOCK_MIN_WAIT, self.deadline if self.deadline is not None else now + LOCK_WAIT)
         # 압축이 파일을 rename 으로 바꾸므로, 잠근 뒤 그 inode 가 아직 현재 파일인지 확인한다
         while True:
             fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= end:
+                        os.close(fd)
+                        return None
+                    time.sleep(0.01)
             try:
                 if os.fstat(fd).st_ino == os.stat(self.path).st_ino:
                     return fd
@@ -106,6 +122,15 @@ class Ledger:
         line = f"{path}\t{kind}\t{session_id}\t{time.time():.6f}\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = self._lock()
+        if fd is None:
+            # 기록을 버리면 세션 전·남의 손길 정보가 사라져 보호가 약해진다 — 잠금 없이 한 줄 추가(O_APPEND 의 write 한 번은
+            # 다른 추가와 섞이지 않는다; 압축의 rename 과 겹치면 이 줄만 잃고, 중복 줄은 판정에 무해)
+            afd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(afd, line.encode(**_ENC))
+            finally:
+                os.close(afd)
+            return
         try:
             text = self._read()
             if kind != KIND_TOUCHED and any(p == path and e.kind == kind and e.session_id == session_id

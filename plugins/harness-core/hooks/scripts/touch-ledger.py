@@ -9,15 +9,17 @@ import json
 import os
 import sys
 
-from target_class import make_ctx, note_touch
-
 
 def main() -> int:
     try:
+        # 판정 모듈이 깨져도 모든 Write·Edit 에 훅 오류가 뜨지 않게 import 도 try 안에서
+        from target_class import make_ctx, note_touch
+
         payload = json.loads(sys.stdin.buffer.read())   # 바이트로 — 텍스트 인코딩에 좌우되지 않게
         ti = payload["tool_input"]
         path = ti.get("file_path") or ti.get("notebook_path")
         if isinstance(path, str) and path:
+            path = os.path.expanduser(path)
             if not os.path.isabs(path):
                 path = os.path.join(payload.get("cwd") or os.getcwd(), path)
             note_touch(path, make_ctx(payload, os.environ, 3.0), payload.get("tool_name"))

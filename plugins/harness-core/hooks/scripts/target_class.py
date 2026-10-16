@@ -82,7 +82,7 @@ _TEXT = {"encoding": "utf-8", "errors": "surrogateescape"}
 def make_ctx(payload: dict, environ: Mapping[str, str], budget: float) -> Ctx:
     deadline = time.monotonic() + budget
     return Ctx(environ, payload.get("session_id") or None,
-               payload.get("transcript_path"), Ledger(environ), deadline, _clock_margin(environ))
+               payload.get("transcript_path"), Ledger(environ, deadline=deadline), deadline, _clock_margin(environ))
 
 
 def session_start(transcript_path: str | None, environ: Mapping[str, str]) -> float | None:
