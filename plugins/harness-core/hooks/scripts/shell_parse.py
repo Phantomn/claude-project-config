@@ -941,7 +941,15 @@ def _mktemp_dir(w: Word) -> bool:
         for b in _word_subs(w))
 
 
-_FN = "\x00fn:"   # env 안의 '이 해석에서 정의한 함수 이름' 표시 — 갈래 합류를 따르고, 호출되면 cwd·변수를 미확정으로 둔다(OS2)
+# env 안의 '이 해석에서 정의한 함수' 표시(OS2·4b). 값 = 정의 시점 본문의 효과 요약 "cwd=0|1;vars=a,b;calls=g,h"
+# (쓰기 로그에서 얻는다 — cwd 변경 여부·쓴 변수·본문이 부른 맨이름). None = 미확정(재정의·재귀·중첩 정의·unset -f·source·eval·
+# 갈래마다 다른 정의) — 호출하면 cwd·변수 전부 미확정. 갈래 합류를 따른다
+_FN = "\x00fn:"
+
+
+def _fn_effect(v: str) -> tuple[bool, list[str], list[str]]:
+    cwd, vars_, calls = v.split(";")
+    return cwd == "cwd=1", [x for x in vars_[5:].split(",") if x], [x for x in calls[6:].split(",") if x]
 _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
 
 
@@ -1463,17 +1471,33 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[n] = None
             else:
                 _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
-        if w and _FN + w[0].literal() in state_env:   # 정의된 함수 호출 — 본문이 무엇을 바꿨는지 따라가지 않는다(fail-closed)
-            st["cwd"] = None
-            _forget(state_env)
-            state_env.pop("PWD", None)
-            state_env.pop(SHELL_CWD, None)
+        if fn_cur and builtin and _NAME.fullmatch(w[0].literal()):
+            fn_cur[-1]["calls"].add(w[0].literal())   # 본문이 부른 이름 — 나중에 함수가 되면(상호 호출) 요약을 믿지 않는다
+        if w and not wrappers and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출(래퍼 뒤는 함수가 아니다)
+            eff = state_env[fx]
+            known = eff is not None and not any(_FN + c in state_env for c in _fn_effect(eff)[2])
+            if not known or _fn_effect(eff)[0]:
+                st["cwd"] = None
+                state_env.pop("PWD", None)
+                state_env.pop(SHELL_CWD, None)
+            if not known:
+                _forget(state_env)
+            else:
+                for v in _fn_effect(eff)[1]:
+                    state_env[v] = None
+        if name == "unset" and any(x.literal().startswith("-") and "f" in x.literal() for x in w[1:]):
+            for x in w[1:]:
+                if not x.literal().startswith("-"):
+                    state_env[_FN + x.literal()] = None
         if name in ("source", "."):
             a = w[1].literal() if len(w) > 1 else ""
             if "/" in a and a.rpartition("/")[2] in ("activate", "activate.sh"):   # 가상환경 activate 는 자기 변수만 바꾼다
                 state_env.update(dict.fromkeys(_VENV_VARS))
             else:
                 _forget(state_env)
+            for k in list(state_env):
+                if k.startswith(_FN):
+                    state_env[k] = None   # source 가 함수를 다시 정의할 수 있다
         if name == "git":
             while len(w) > 2 and w[1].literal() == "-C":
                 unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)
@@ -1507,7 +1531,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
             st["cwd"] = after[0]
+            new_fns = [k for k, v in after[1].items() if k.startswith(_FN) and v != state_env.get(k)]
             state_env.replace(after[1])
+            for k in new_fns:
+                state_env[k] = None   # eval 로 정의·재정의된 함수는 미확정
         if name in ("cd", "pushd", "popd") and not builtin:
             pass   # 래퍼(sudo·env·nice …) 뒤·경로로 부른 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
         elif name in ("cd", "pushd"):
@@ -1609,8 +1636,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
         nonlocal snap, list_snap, in_pipe, andor
-        if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌린다
+        if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌리고 효과 요약을 남긴다
             isolated.add(len(stack))
+            fn_cur[-1]["depth"] = len(stack)
+            fn_cur[-1]["pos"] = len(state_env.log)
             st["fn"] = False
         e = now()
         stack.append((kind, *e, in_pipe, andor, st["dead"], list_snap))
@@ -1622,12 +1651,21 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         서브셸·파이프 구성원은 안쪽 변화가 밖으로 안 나간다."""
         nonlocal snap, list_snap, in_pipe, andor
         _, cwd0, env0, outer_pipe, andor, dead0, list_snap = stack.pop()
+        summary = None
+        if fn_cur and fn_cur[-1].get("depth") == len(stack):   # 함수 본문 끝 — 로그에서 효과 요약
+            f = fn_cur.pop()
+            written = set(state_env.log[f["pos"]:])
+            if not f["unknown"]:
+                summary = (f["name"], f"cwd={int(bool(written & {'PWD', SHELL_CWD}))};vars="
+                           + ",".join(sorted(k for k in written if not k.startswith("\x00"))) + ";calls=" + ",".join(sorted(f["calls"])))
         if kind == "(" or outer_pipe or len(stack) in isolated:
             isolated.discard(len(stack))
             set_state((cwd0, env0))
             st["dead"] = dead0
         elif ends is not None:
             join(ends)
+        if summary is not None and state_env.get(_FN + summary[0], "") is None:
+            state_env[_FN + summary[0]] = summary[1]   # 자리표시자(None)였을 때만 — 재정의·갈래 차이는 None 유지
         in_pipe = outer_pipe
         elem.update(n=2, sure=False, pre=None, exit=False, neg=False)   # 복합 명령은 실패 경로를 따로 모델링하지 않는다
         snap = (cwd0, env0)  # 그룹 뒤 `|` 가 오면 그룹 전체를 되돌리는 기준
@@ -1645,11 +1683,16 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     # 1 `|`·`)` 기대 / 2 `|` 뒤 단어 기대, ends = 분기 끝 상태들. stack 의 "case" 항목과 짝을 이룬다
     cases: list[dict] = []
     isolated: set[int] = set()   # 함수 본문인 stack 항목의 깊이
+    fn_cur: list[dict] = []   # 해석 중인 함수 본문(이름·로그 위치·부른 이름·미확정 여부)
 
     def define_fn(name: str | None) -> None:
         if name is None or not _NAME.fullmatch(name):
             raise LexError("함수 이름을 해석할 수 없음")
-        state_env[_FN + name] = "1"
+        unknown = (_FN + name) in state_env or bool(fn_cur)   # 재정의·함수 안 함수는 미확정
+        for f in fn_cur:
+            f["unknown"] = True
+        state_env[_FN + name] = None   # 본문 안 재귀 호출은 자리표시자(None)를 본다
+        fn_cur.append({"name": name, "calls": set(), "unknown": unknown})
         st["fn"] = True
 
     def at_start() -> bool:

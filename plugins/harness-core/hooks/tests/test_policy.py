@@ -487,6 +487,24 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("f() { local v=1 && cd {SCRATCH}/s1; }; rm -rf {SCRATCH}/s1"), [])
         self.assertEqual(ev("f() { rm src/main.py; }"), [("삭제", GIT_TRACKED)])   # 본문은 판정한다
 
+    def test_f4b_function_effect_summary(self):   # 4b: 호출은 본문 효과만큼만 미확정 — 적대 점검
+        for c in ("f() { echo x; }; f; rm -f {SCRATCH}/s1/x.txt", "log() { echo \"$@\"; }; cd {SCRATCH}/s1; log a; rm -f x.txt",
+                  "f() { x=1; }; f; rm -f {SCRATCH}/s1/x.txt", "f() { cd {SCRATCH}/s1; }; (f); rm -f {SCRATCH}/s1/x.txt",
+                  "f() { cd {SCRATCH}/s1; }; f; rm -f {SCRATCH}/s1/x.txt"):
+            self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev("f() { rm -rf src; }; echo"), [("삭제", GIT_TRACKED)])   # 본문은 정의 시점에 판정
+        for c in ("f() { cd {SCRATCH}/s1; }; f; rm -rf ./*", "f() { cd \"$1\"; }; f {SCRATCH}/s1; rm -rf ./*",
+                  "f=nothing; g() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { f=..; }; if t; then g; fi; rm -rf src/$f",
+                  "f=nothing; g() { f=..; }; h() { g; }; h; rm -rf src/$f", "f=nothing; g() { :; }; g() { f=..; }; g; rm -rf src/$f",
+                  "f=nothing; g() { h; }; h() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { :; }; source ./lib.sh; g; rm -rf src/$f",
+                  "f() { cd {SCRATCH}/s1; }; cd {SCRATCH}/s1; f; rm -rf ./*", "f=nothing; g() { read f; }; g; rm -rf src/$f"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        # 인자 흘림: 본문의 `$1` 은 정의 시점에 미확정이라 이미 거부 — 호출 재판정이 필요 없다(RED 확인)
+        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f {SCRATCH}/s1"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f src"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("f() { echo x > \"$1\"; }; f {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])
+        self.assertEqual(ev("f() { rm -rf \"$@\"; }; f src"), [("삭제", UNRESOLVED)])
+
     def test_f4_assume_success_refinements(self):   # fix-brief-4 NB4–NB7: 성공 가정 집합이 실제 성공 조건을 더 반영한다
         s1 = w.scratch / "s1"
         (s1 / "ro").mkdir(); (s1 / "ro").chmod(0o555); self.addCleanup((s1 / "ro").chmod, 0o755)

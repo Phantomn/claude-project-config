@@ -372,10 +372,10 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "f() { cd {D}/ex; } && rm y"):
             self.assertEqual(last(c).cwd, d, c)
         self.assertEqual(last("f=a; g() { f=b; }; rm $f").env["f"], "a")
-        for c in ("f=a; g() { f=b; }; g; rm $f", "f=a; g() { :; }; if t; then g; fi; rm $f", "f=a; function g { :; }; g; rm $f",
-                  "f=a; if t; then g() { :; }; fi; g; rm $f"):
+        for c in ("f=a; g() { f=b; }; g; rm $f", "f=a; g() { f=b; }; if t; then g; fi; rm $f", "f=a; function g { f=b; }; g; rm $f",
+                  "f=a; if t; then g() { f=b; }; fi; g; rm $f"):
             self.assertIsNone(last(c).env.get("f", "unset"), c)
-        for c in ("f() { cd {D}/ex; }; f; rm y", "f() { :; }; cd {D}/ex; f; rm y"):
+        for c in ("f() { cd {D}/ex; }; f; rm y", "f() { cd {D}/ex; }; cd {D}/ex; f; rm y"):
             self.assertIsNone(last(c).cwd, c)
         self.assertEqual(names("f() { rm x; }; g"), ["rm", "g"])   # 본문 단위는 판정한다
 
@@ -428,6 +428,25 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
         self.assertEqual(last("A=(); f=a; rm $f").env["f"], "a")   # 빈 배열 대입은 함수 머리가 아니다(재생에서 발견)
         self.assertEqual(names("x=(); rm y"), ["rm"])
+
+    def test_function_call_applies_effect_summary(self):   # 4b: 호출은 정의 시점 본문의 효과(cwd 변경·쓴 변수)만큼만 미확정
+        d, last = self._world()
+        for c, cwd in (("f() { echo hi; }; cd {D}/ex; f; rm y", f"{d}/ex"), ("f() { :; }; sudo f; cd {D}/ex; rm y", f"{d}/ex"),
+                       ("f() { cd {D}/ex; }; (f); rm y", d), ("f() { cd {D}/ex; }; f | cat; rm y", d), ("f() { x=1; }; cd {D}/ex; f; rm y", f"{d}/ex"),
+                       ("f() { cd {D}/ex; }; cd {D}/ex; f; rm y", None), ("f() { cd {D}/ex; }; if t; then f; fi; rm y", None),
+                       ("f() { cd {D}/ex; }; g() { f; }; g; rm y", None), ("f() { :; }; f() { cd /; }; f; rm y", None),
+                       ("f() { f; }; f; rm y", None), ("f() { g; }; g() { cd {D}/ex; }; f; rm y", None), ("f() { h() { cd /; }; h; }; f; rm y", None),
+                       ("f() { :; }; unset -f f; f; rm y", None), ("f() { :; }; source x; f; rm y", None),
+                       ("f() { :; }; eval 'f() { cd /; }'; f; rm y", None), ("f() { cd \"$1\"; }; f {D}/ex; rm y", None),
+                       ("f() { pushd {D}/ex >/dev/null; popd; }; f; rm y", None), ("f() { cd {D}/ex; }; \"f\"; rm y", None)):
+            self.assertEqual(last(c).cwd, cwd, c)
+        s = last("g=0; h=2; f() { g=1; echo $h; }; f; rm $g")
+        self.assertEqual((s.env.get("g"), s.env.get("h")), (None, "2"))
+        self.assertEqual(last("f=a; g() { export f=b; }; g; rm $f").env.get("f"), None)
+        self.assertEqual(last("f=a; g() { local f=b; }; g; rm $f").env.get("f"), None)   # 보수적(local 도 쓰기로 본다)
+        self.assertEqual(last("f=a; g() { read f; }; g; rm $f").env.get("f"), None)
+        self.assertEqual(last("f=a; g() { h=1; }; g; rm $f").env.get("f"), "a")
+        self.assertEqual(names("f() { rm x; }; f; f"), ["rm", "f", "f"])   # 본문은 정의 시점에 한 번만 판정
 
 
 def ex(word_src, cwd="/w", env=None):
