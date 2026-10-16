@@ -920,9 +920,10 @@ _NULL_OPS = (">", ">>", ">|", "<", "&>", "&>>", "<>")
 
 
 def _harmless(r: list[Redirect]) -> bool:
-    """실패할 수 없는 리다이렉트뿐인가 — `/dev/null` 로의 입출력과 fd 복제(`2>&1`·`>&2`). fd 닫기(`>&-`)·다른 파일은 실패할 수 있다(NB7)."""
+    """실패할 수 없는 리다이렉트뿐인가 — `/dev/null` 로의 입출력과 표준 fd(0·1·2)로의 복제(`2>&1`·`>&2`).
+    열려 있지 않은 fd 로의 복제(`>&3`)는 명령이 돌지 않고 실패한다, fd 닫기(`>&-`)·다른 파일도 실패할 수 있다(NB7·재검토 3 NB3)."""
     return all(x.target is not None and ((x.op in _NULL_OPS and x.target.literal() == "/dev/null")
-                                         or (x.op in (">&", "<&") and x.target.literal().isdigit())) for x in r)
+                                         or (x.op in (">&", "<&") and x.target.literal() in ("0", "1", "2"))) for x in r)
 
 
 def _sure_assign(w: list[Word], env: Mapping[str, str | None]) -> bool:

@@ -428,6 +428,15 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         for c in ("sudo cd {D}/ex; rm y", "env cd {D}/ex; rm y", "nice cd {D}/ex; rm y", "sudo cd {D}/ex && true; rm y"):   # 래퍼 뒤 cd 는 이 셸에서 돌지 않는다
             self.assertEqual(last(c).cwd, d, c)
 
+    def test_fd_dup_target_must_be_open(self):   # 5-2 NB3: `>&N` 은 N 이 0·1·2 일 때만 무해(열려 있지 않은 fd 는 명령이 돌지 않는다)
+        d, last = self._world()
+        for c in ("true >&3 && cd {D}/ex; rm y", "cd {D}/ex 2>&5 && ls; rm y", "echo x >&3 && cd {D}/ex; rm y", "cd {D}/ex >&3; rm y",
+                  "F=1 >&3 && cd {D}/ex; rm y", "mkdir -p {D}/n >&9 && cd {D}/n; rm y", "cd {D}/ex >&- && t; rm y", "cd {D}/ex <&7 && t; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c in ("cd {D}/ex 2>&1 && t; rm y", "cd {D}/ex >&2 && t; rm y", "cd {D}/ex 3>&1 && t; rm y", "cd {D}/ex 9>&1 && t; rm y",
+                  "cd {D}/ex 2>&0 && t; rm y"):
+            self.assertEqual(last(c).cwd, f"{d}/ex", c)
+
     def test_harmless_redirects_keep_sure(self):   # NB7: /dev/null·fd 복제만 있는 리다이렉트는 실패할 수 없다
         d, last = self._world()
         for c, cwd in (("cd {D}/ex 2>/dev/null && t; rm y", f"{d}/ex"), ("pushd {D}/ex >/dev/null && t; rm y", f"{d}/ex"),
