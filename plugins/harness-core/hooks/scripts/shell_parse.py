@@ -505,8 +505,10 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     return "$", i + 1
 
 
-def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False) -> list[tuple[str, bool]] | None:
-    """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None."""
+def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False,
+           hole: str | None = None) -> list[tuple[str, bool]] | None:
+    """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None.
+    hole 을 주면 확정 못 한 변수·치환 자리를 None 대신 hole 글자로 채운다."""
     out: list[tuple[str, bool]] = []
     for k, p in enumerate(parts):
         if p.quote == "'":
@@ -527,7 +529,9 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
             elif c in "$`":
                 val, j = _dollar(t, i, env)
                 if val is None:
-                    return None
+                    if hole is None:
+                        return None
+                    val = hole
                 if split and active and any(x.isspace() or x in "*?[" for x in val):
                     return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다
                 out += [(t[start:i], active), (val, False)]
@@ -666,6 +670,26 @@ def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str
         return out
     except LexError:
         return None
+
+
+HOLE = "\x00hole\x00"
+
+
+def expand_hole(word: Word, seg: Segment) -> str | None:
+    """확정 못 한 변수·치환 자리를 HOLE 로 남긴 경로 하나(상대경로는 seg.cwd 기준). 중괄호 여러 갈래·글롭·~user 면 None."""
+    try:
+        words = _brace_words(word.parts)
+        if words is None or len(words) != 1:
+            return None
+        ch = _subst(words[0], seg.env, split=True, hole=HOLE)
+    except LexError:
+        return None
+    if ch is None or any(a and any(x in t for x in "*?[") for t, a in ch):
+        return None
+    lit = "".join(t for t, _ in ch)
+    if _XARGS_MARK in lit or (not lit.startswith("/") and seg.cwd is None):
+        return None
+    return lit if lit.startswith("/") else os.path.join(seg.cwd, lit)  # type: ignore[arg-type]
 
 
 def expand(word: Word, seg: Segment) -> list[str] | None:

@@ -11,6 +11,7 @@ from fnmatch import fnmatch
 from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
+    HOLE,
     LexError,
     Mount,
     Part,
@@ -23,6 +24,7 @@ from shell_parse import (
     _resolve_dir,
     _strip_all,
     expand,
+    expand_hole,
     literal_args,
 )
 from target_class import (
@@ -54,9 +56,11 @@ from target_class import (
     git_upstream_branch,
     in_workspace,
     is_linked_worktree_root,
+    is_scratch,
     is_scratch_root,
     is_session_change,
     normalize,
+    protected_name,
 )
 
 SYSTEM_ROOTS = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot")
@@ -223,8 +227,30 @@ def _scratch_glob(word: Word, paths: list[str], ctx: Ctx) -> bool:
         any(is_scratch_root(os.path.realpath(os.path.dirname(x)), ctx) for x in paths)
 
 
+# 미확정 마지막 구성요소 자리에 넣는 없는 이름 — 분류가 MISSING(허용)이 된다
+_HOLE_NAME = "bash-guard-hole-" + os.urandom(6).hex()
+
+
+def _scratch_hole(word: Word, seg: Segment, ctx: Ctx) -> list[str] | None:
+    """확정 접두가 임시 루트 아래 세션 폴더(SCRATCH)이고 미확정 요소가 마지막 구성요소 안에만 있으면 [그 자리의 대표 경로].
+    정직한 실수 모델(spec §1.5) — 임시 폴더 안 한 구성요소를 다루는 명령이다. 접두 폴더 안·대상 이름이 보호 이름이면 None."""
+    p = expand_hole(word, seg)
+    if p is None or HOLE not in p:
+        return None
+    d, _, name = p.rpartition("/")
+    if not d or HOLE in d:
+        return None
+    nd = normalize(d, True)
+    target = os.path.join(nd, name.replace(HOLE, _HOLE_NAME))
+    if not is_scratch(nd, ctx) or is_scratch_root(nd, ctx) or protected_name(target):
+        return None
+    return [target] if classify(d, ctx, True).kind == SCRATCH else None
+
+
 def _job(op: str, rule: str, word: Word, seg: Segment, ctx: Ctx | None, advice: str = ADV_UNRESOLVED) -> Job:
     paths = expand(word, seg)
+    if paths is None and ctx is not None:
+        paths = _scratch_hole(word, seg, ctx)
     if paths and ctx is not None and _scratch_glob(word, paths, ctx):
         paths, advice = None, ADV_SCRATCH_ROOT
     return Job(op, rule, word.literal(), paths, word.literal().endswith("/"), advice)

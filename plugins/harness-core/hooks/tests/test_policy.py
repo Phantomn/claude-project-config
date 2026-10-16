@@ -363,6 +363,17 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("T=$(mktemp -p {HOME}); rm -f $T"), [("삭제", UNRESOLVED)])   # 임시 루트 밖 -p
         self.assertEqual(ev("T=$(date +%s); rm -rf {SCRATCH}/s1 /x/$T"), [("삭제", UNRESOLVED)])
 
+    def test_h_scratch_prefix_with_unresolved_last_component(self):
+        for c in ("rm -rf {SCRATCH}/s1/$ID", 'rm -rf "{SCRATCH}/s1/run-$$"', "echo x > {SCRATCH}/s1/$N.log",
+                  "cp src/main.py {SCRATCH}/s1/${ID}", "rm -f {SCRATCH}/s1/out-$(date +%s).txt", "cd {SCRATCH}/s1 && rm -rf ./$ID"):
+            self.assertEqual(ev(c), [], c)
+        (w.scratch / "s2").mkdir()
+        (w.scratch / "s2/key.pem").write_text("k\n", encoding="utf-8")
+        for c in ("rm -rf {SCRATCH}/s1/$ID/sub", "rm -rf {SCRATCH}/s1/$ID/", "rm -rf {SCRATCH}/$ID", "rm -rf {HOME}/data/$ID", "rm -rf $DIR/x",
+                  "rm -f {SCRATCH}/s1/$K.pem", "rm -f {SCRATCH}/s1/.env.$X", "rm -rf {SCRATCH}/s2/$ID", "rm -rf {SCRATCH}/s1/../$ID",
+                  "rm -rf {SCRATCH}/s1/*$ID", "rm -rf {SCRATCH}/s1/{a,$ID}", "rm -rf {SCRATCH}/nope/$ID", "rm -rf {SCRATCH}/s1/.git/$X"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+
 
 if __name__ == "__main__":
     unittest.main()
