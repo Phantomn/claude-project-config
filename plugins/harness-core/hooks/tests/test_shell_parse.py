@@ -375,6 +375,25 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertEqual(last(c).cwd, cwd, c)
         self.assertEqual(names("exit; rm x; { exit; }; rm y"), ["exit", "rm", "exit", "rm"])   # 도달 못 해도 단위는 판정
 
+    def test_break_and_continue_end_the_path(self):   # 5-4 NB2·OOS1: break/continue 시점 상태가 루프 종료 끝에 들어가고 뒤는 dead
+        d, last = self._world()
+        for c in ("while true; do break; cd {D}/ex; done; rm y", "while :; do if true; then break; fi; cd {D}/ex; done; rm y",
+                  "for i in 1 2; do break; cd {D}/ex; done; rm y", "for i in 1 2; do continue; cd {D}/ex; done; rm y",
+                  "until false; do break; cd {D}/ex; done; rm y", "for i in $(ls); do continue 1; cd {D}/ex; done; rm y",
+                  "while true; do while true; do break 2; done; cd {D}/ex; done; rm y", "select x in a; do break; cd {D}/ex; done; rm y"):
+            self.assertEqual(last(c).cwd, d, c)   # break 뒤의 cd 는 돌지 않는다 — 종료 상태는 break 시점(bash 와 같다)
+        for c in ("while true; do [ -d x ] && break; cd {D}/ex; done; rm y", "while true; do if [ -d x ]; then break; fi; cd {D}/ex; done; rm y",
+                  "for i in 1 2; do cd {D}/ex; continue; done; rm y"):   # break/continue 가 있는 for 는 일반 처리(0회 경로 합류)
+            self.assertIsNone(last(c).cwd, c)   # 조건부 break — break 시점과 본문 끝의 합류
+        for c, cwd in (("while true; do cd {D}/ex; break; done; rm y", f"{d}/ex"), ("cd {D}/ex && while [ ! -f done ]; do sleep 0; break; done; rm y", f"{d}/ex"),
+                       ("cd {D}/ex && until [ -f done ]; do break; done; rm y", f"{d}/ex"), ("cd {D}/ex && while true; do rm y; break; done", f"{d}/ex"),
+                       ("while true; do cd {D}/ex; break; cd {D}/missing; done; rm y", f"{d}/ex")):
+            self.assertEqual(last(c).cwd, cwd, c)
+        for c in ("break; rm y", "while true; do break $n; done", "while true; do (break); done", "while true; do break 0; done",
+                  "while true; do break 2; done", "f() { break; }"):   # 모델링 불가·루프 밖·서브셸 안은 해석 실패
+            self.assertIsNotNone(parse(c, "/w", {}).error, c)
+        self.assertEqual(names("while true; do break; rm x; done; rm y"), ["true", "break", "rm", "rm"])   # dead 뒤도 단위는 판정
+
     def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
         d, last = self._world()
         for c in ("cd {D}/missing || return; rm y", "cd {D}/missing || return 1; rm y", "cd {D}/missing 2>/dev/null || return 0; rm y"):

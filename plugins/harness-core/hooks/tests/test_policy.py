@@ -487,6 +487,15 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("f() { local v=1 && cd {SCRATCH}/s1; }; rm -rf {SCRATCH}/s1"), [])
         self.assertEqual(ev("f() { rm src/main.py; }"), [("삭제", GIT_TRACKED)])   # 본문은 판정한다
 
+    def test_f5_break_continue(self):   # 5-4 NB2
+        for c in ("while true; do break; cd {SCRATCH}/s1; done", "while :; do if true; then break; fi; cd {SCRATCH}/s1; done",
+                  "for i in 1 2; do break; cd {SCRATCH}/s1; done"):
+            self.assertEqual(ev(c + "; rm src/main.py"), [("삭제", GIT_TRACKED)], c)   # break 뒤 cd 는 돌지 않아 저장소에서 삭제
+        self.assertEqual(ev("while true; do [ -d {SCRATCH}/s1 ] && break; cd {SCRATCH}/s1; done; rm -rf ./*"), [("삭제", UNRESOLVED)])
+        for c in ("cd {SCRATCH}/s1 && while [ ! -f done ]; do sleep 0; break; done; rm -f x.txt", "cd {SCRATCH}/s1 && until [ -f done ]; do break; done; rm -f x.txt",
+                  "cd {SCRATCH}/s1 && while true; do rm -f x.txt; break; done", "while true; do cd {SCRATCH}/s1; break; done; rm -f x.txt"):
+            self.assertEqual(ev(c), [], c)
+
     def test_f4b_function_effect_summary(self):   # 4b: 호출은 본문 효과만큼만 미확정 — 적대 점검
         for c in ("f() { echo x; }; f; rm -f {SCRATCH}/s1/x.txt", "log() { echo \"$@\"; }; cd {SCRATCH}/s1; log a; rm -f x.txt",
                   "f() { x=1; }; f; rm -f {SCRATCH}/s1/x.txt", "f() { cd {SCRATCH}/s1; }; (f); rm -f {SCRATCH}/s1/x.txt",

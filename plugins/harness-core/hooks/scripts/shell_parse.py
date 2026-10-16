@@ -1544,6 +1544,16 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 if mk[1]:
                     state_env.update(dict.fromkeys([_MADE + x for x in mk[0]], "1"))
                 elem["sure"] = True
+        if name in ("break", "continue") and builtin:   # 그 시점 상태는 대상 루프의 종료 끝, 뒤는 도달 불가(재검토 3 NB2·OOS1)
+            n = w[1].literal() if len(w) > 1 else "1"
+            loops = [c for c in ctl if c["loop"]]
+            if not n.isdigit() or int(n) < 1 or int(n) > len(loops):
+                raise LexError(f"모델링할 수 없는 {name} {n}")
+            target = loops[-int(n)]
+            if any(k[0] == "(" for k in stack[target["depth"] + 1:]):
+                raise LexError(f"서브셸 안의 {name}")
+            target["ends"].append(now())
+            elem["exit"] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
@@ -1738,7 +1748,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         flush()
         if word in _CTL_OPEN or word in _LOOP_HEAD:   # 앞 `&&` 목록은 그룹처럼 stack 에 맡긴다(복합 명령이 그 요소)
             open_group("if" if word == "if" else "loop")
-            ctl.append({"mode": "cond", "ends": [], "until": word == "until"})
+            ctl.append({"mode": "cond", "ends": [], "until": word == "until", "loop": word != "if", "depth": len(stack) - 1})
             return
         kind, modes = _CTL[word]
         c = ctl[-1] if stack and stack[-1][0] == kind else None
@@ -1793,6 +1803,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             elif t.kind == "word":
                 if start and lit in _LOOPS:
                     open_loops, nested = open_loops + 1, True
+                elif start and lit in ("break", "continue"):
+                    nested = True   # 본문을 항목마다 따로 해석하면 루프 문맥이 없다 — 일반 처리
                 elif start and lit == "done":
                     if not open_loops:
                         break
