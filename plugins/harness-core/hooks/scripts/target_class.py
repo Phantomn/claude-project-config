@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import json
 import math
 import os
 import re
-import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
 
+# subprocess·hashlib·datetime 은 쓰는 함수 안에서 import — 모든 Bash 호출의 기동 지연(약 5ms)을 조회가 필요할 때만 낸다
+from guard_mode import (  # noqa: F401 — 재수출(기존 import 경로 유지)
+    MODE_RANK,
+    repo_root,
+    switch_mode,
+)
 from ledger import (
     KIND_CREATED,
     KIND_PRE_DIRTY,
@@ -22,6 +25,10 @@ from ledger import (
     Ledger,
 )
 from shell_parse import Mount
+
+TYPE_CHECKING = False   # typing import 를 피한다(bash_guard 와 같은 이유)
+if TYPE_CHECKING:
+    import subprocess
 
 # 벽시계가 뒤로 간다(WSL2 실측 약 30초마다 −0.6초·−0.68초 연속) — 세션 전 항목이 세션 시작 뒤로 찍혀
 # '세션이 만든 것'(저장소 통째 삭제 허용)이 되지 않게, 세션 시작 + 여유 안의 시각은 세션 전으로 본다
@@ -33,10 +40,15 @@ CLOCK_MARGIN_ENV = "HARNESS_BASH_GUARD_CLOCK_MARGIN"
 class Ctx:
     environ: Mapping[str, str]
     session_id: str | None
-    session_start: float | None
+    transcript_path: str | None
     ledger: Ledger
     deadline: float  # time.monotonic() 기준
     clock_margin: float = CLOCK_MARGIN
+
+    @functools.cached_property
+    def session_start(self) -> float | None:
+        # stat 외부 명령은 세션 시각이 필요한 판정에서만 — 대부분의 명령은 묻지 않는다
+        return session_start(self.transcript_path, self.environ)
 
     def remaining(self) -> float:
         return self.deadline - time.monotonic()
@@ -60,7 +72,6 @@ FIXED_SCRATCH_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp")
 WIN_TEMP_PATTERN = "/mnt/c/Users/*/AppData/Local/Temp"
 # '*' 를 한 경로 구성요소로만 맞춘다(fnmatch 의 '*' 는 '/' 도 넘어 임의 깊이 폴더까지 임시로 본다)
 _WIN_TEMP_RE = re.compile(re.escape(WIN_TEMP_PATTERN).replace(r"\*", "[^/]+"))
-MODE_RANK = {"off": 0, "shadow": 1, "on": 2}
 _ENV_EXAMPLES = {".env.example", ".env.sample", ".env.template"}
 _LOCAL_SUFFIXES = (".local.json", ".local.yaml", ".local.yml", ".local.toml")
 _KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "credentials")
@@ -71,12 +82,13 @@ _TEXT = {"encoding": "utf-8", "errors": "surrogateescape"}
 def make_ctx(payload: dict, environ: Mapping[str, str], budget: float) -> Ctx:
     deadline = time.monotonic() + budget
     return Ctx(environ, payload.get("session_id") or None,
-               session_start(payload.get("transcript_path"), environ), Ledger(environ), deadline, _clock_margin(environ))
+               payload.get("transcript_path"), Ledger(environ), deadline, _clock_margin(environ))
 
 
 def session_start(transcript_path: str | None, environ: Mapping[str, str]) -> float | None:
     if not transcript_path:
         return None
+    import subprocess
     try:
         r = subprocess.run(["stat", "-c", "%.9W", "--", transcript_path], env=dict(environ),
                            capture_output=True, timeout=2.0, check=False, **_TEXT)
@@ -115,6 +127,7 @@ def run(cmd: list[str], ctx: Ctx, cwd: str | None = None, stdin: str | None = No
     left = ctx.remaining()
     if left <= 0:
         return None
+    import subprocess
     try:
         return subprocess.run(cmd, cwd=cwd, env=dict(ctx.environ), capture_output=True, input=stdin,
                               timeout=min(2.0, left), check=False, **_TEXT)
@@ -168,36 +181,6 @@ def protected_name(path: str) -> bool:
         return True
     return (name.endswith(_LOCAL_SUFFIXES) or name.endswith((".pem", ".key"))
             or name.startswith(_KEY_PREFIXES) or name == ".netrc")
-
-
-def repo_root(path: str, environ: Mapping[str, str]) -> str | None:
-    p = os.path.abspath(path)
-    while True:
-        if os.path.lexists(os.path.join(p, ".git")):
-            break
-        if p == "/":
-            return None
-        p = os.path.dirname(p)
-    home = environ.get("HOME")
-    if p == "/" or (home and os.path.realpath(home) == os.path.realpath(p)):
-        return None
-    return p
-
-
-def switch_mode(path: str | None, environ: Mapping[str, str]) -> str:
-    root = repo_root(path, environ) if path else None
-    if root is None:
-        return "off"
-    for name in ("settings.local.json", "settings.json"):
-        try:
-            with open(os.path.join(root, ".claude", name), encoding="utf-8") as f:
-                env = json.load(f).get("env")
-        except (OSError, ValueError, AttributeError):
-            continue
-        if isinstance(env, dict) and "HARNESS_BASH_GUARD" in env:
-            v = env["HARNESS_BASH_GUARD"]
-            return v if isinstance(v, str) and v in MODE_RANK else "off"
-    return "off"
 
 
 # ---- 7분류·폴더 규칙·작업 영역·장부 기록 (spec §3.4, §3.7) ----
@@ -751,6 +734,7 @@ def _desktop_bind_source(src: str) -> str | None:
     """Docker Desktop(WSL) 변환 경로 → 원본 경로. 해시는 원본 경로의 sha256 이고, 이 배포판의
     /mnt/wsl/docker-desktop-bind-mounts/<배포판>/<해시> 에 원본 폴더가 바인드 마운트돼 있다(실측 2026-10-16)."""
     local = "/mnt/wsl/docker-desktop-bind-mounts/" + src[len(_DESKTOP_BIND):]
+    import hashlib
     digest = src.rsplit("/", 1)[1]
     try:
         with open("/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape") as f:
@@ -818,6 +802,7 @@ def docker_volume_created(name: str, ctx: Ctx) -> float | None:
     if m is None:
         return None
     tz = "+00:00" if m.group(3) in (None, "Z") else m.group(3)
+    from datetime import datetime
     try:
         return datetime.fromisoformat(f"{m.group(1)}.{(m.group(2) or '')[:6].ljust(6, '0')}{tz}").timestamp()
     except ValueError:

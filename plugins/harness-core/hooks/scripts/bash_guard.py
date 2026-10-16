@@ -12,27 +12,14 @@ import re
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime, timezone
 
-import policy
-from ledger import KIND_MOVED_IN, state_dir
-from shell_parse import Segment, parse
-from target_class import (
-    GIT_TRACKED,
-    MODE_RANK,
-    PRESERVED,
-    PROTECTED_NAME,
-    UNRESOLVED,
-    Ctx,
-    classify,
-    git_dirty,
-    is_session_change,
-    make_ctx,
-    normalize,
-    note_touch,
-    switch_mode,
-)
+# policy·shell_parse·target_class·ledger(와 dataclasses)는 판정이 필요할 때만 import — 이 훅은 모든 Bash 호출에 돈다
+from guard_mode import MODE_RANK, switch_mode
+
+TYPE_CHECKING = False   # typing import(약 3ms)도 피한다 — 타입 검사기는 이 이름을 typing.TYPE_CHECKING 처럼 다룬다
+if TYPE_CHECKING:
+    from shell_parse import Segment
+    from target_class import Ctx
 
 BUDGET_SECONDS = 5.0
 LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -42,14 +29,19 @@ REASON_CAP = 20
 R_PARSE = "거부: 명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"
 R_TIMEOUT = "거부: 판정 시간 초과 — 범위를 좁혀라"
 R_ERROR = "판정기 오류 — 단순한 형태로 나눠 실행하라"
+# 해석 오류·판정 대상·장부 기록이 생길 수 없는 모양: 판정 처리기·래퍼·제자리 수정이 없는 명령(git 은 표 밖 내장 하위명령)과
+# 확장·인용·리다이렉트·그룹이 없는 단어, 단순 연결자만. 판정 결과는 기본 모드의 허용과 같다(tests/test_bash_guard_fast.py 가 대조)
+_SAFE_UNIT = r"(?:ls|pwd|cd|echo|cat|head|tail|wc|grep|git (?:status|log|diff|show))(?: +[A-Za-z0-9_./,:=+@%~-]+)*"
+_TRIVIAL = re.compile(rf" *{_SAFE_UNIT} *(?:(?:&&|\|\||[|;]) *{_SAFE_UNIT} *)*")
 
 
-@dataclass
 class Decision:
-    allow: bool
-    reasons: list[str]
-    mode: str                    # 이 명령의 모드
-    error: str | None = None
+    # dataclass 가 아니다 — dataclasses import(inspect 포함 약 11ms)를 빠른 길에서 피한다
+    def __init__(self, allow: bool, reasons: list[str], mode: str, error: str | None = None) -> None:
+        self.allow = allow
+        self.reasons = reasons
+        self.mode = mode             # 이 명령의 모드
+        self.error = error
 
 
 def _env_mode(environ: Mapping[str, str]) -> str:
@@ -64,6 +56,19 @@ def _strongest(modes: list[str]) -> str:
 # ---- 장부 기록 (spec §3.7 기록 주체 2) ----
 
 def _note_moves(seg: Segment, ctx: Ctx) -> None:
+    import policy
+    from ledger import KIND_MOVED_IN
+    from target_class import (
+        GIT_TRACKED,
+        PRESERVED,
+        PROTECTED_NAME,
+        UNRESOLVED,
+        classify,
+        git_dirty,
+        is_session_change,
+        normalize,
+    )
+
     for src, dst in policy.mv_moves(seg):
         c = classify(src, ctx)
         # 분류·조회 실패는 '조건 거짓'이 아니라 '모름' — 보호 쪽으로 기록(pre-dirty 과보호와 같은 원칙)
@@ -77,6 +82,9 @@ def _note_moves(seg: Segment, ctx: Ctx) -> None:
 
 def _record(seg: Segment, ctx: Ctx) -> None:
     # 거부될 명령도 기록한다 — 기록은 '처음 손대기 직전 상태'라 실행 여부와 무관하게 참이다
+    import policy
+    from target_class import note_touch
+
     if seg.context.kind != "host" or seg.via_xargs:
         return   # shortcut: 컨테이너 안 제자리 수정·mv 는 기록하지 않는다 — 바인드 마운트 대상 오분류가 나오면 호스트 경로로 사상해 기록
     for p in policy.inplace_targets(seg):
@@ -108,6 +116,12 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
     modes = _base_mode(environ, cwd)
     if payload.get("tool_name") != "Bash" or not isinstance(command, str) or not command:
         return Decision(True, [], _strongest(modes))
+    if _TRIVIAL.fullmatch(command):
+        return Decision(True, [], _strongest(modes))
+    import policy
+    from shell_parse import parse
+    from target_class import make_ctx
+
     ctx = make_ctx(payload, environ, budget)
     res = parse(command, cwd, environ)
     if res.error:   # spec §3.8 (가)
@@ -157,6 +171,8 @@ def final_output(d: Decision, old: str) -> str:
 # ---- 기록 (spec §3.9) ----
 
 def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX_BYTES) -> None:
+    from ledger import state_dir
+
     d = state_dir(environ)
     if not d.is_absolute():
         return
@@ -233,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             ti = p.get("tool_input")
             command = ti.get("command") if isinstance(ti, dict) else None
             try:
+                from datetime import datetime, timezone
+
                 log_event({"ts": datetime.now(timezone.utc).isoformat(), "mode": d.mode, "session_id": p.get("session_id"),
                            "agent_id": p.get("agent_id"), "cwd": p.get("cwd"),
                            "command": command[:2000] if isinstance(command, str) else None,
