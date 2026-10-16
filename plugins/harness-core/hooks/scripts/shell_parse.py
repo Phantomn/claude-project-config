@@ -8,6 +8,7 @@ import glob
 import itertools
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
@@ -347,7 +348,13 @@ _LOOP_HEAD = ("for", "select")
 _LOOPS = ("for", "select", "while", "until")
 _FOR_CAP = 50   # for 목록 항목 상한 — 넘으면 루프 변수 미확정(본문을 항목마다 해석하는 비용)
 _FOR_TOTAL = 500   # 해석 한 번의 반복 총량 — 치환 안 루프 중첩이 곱으로 커지지 않게
-_for_runs = [0]   # parse() 마다 0 으로 — 훅은 한 프로세스에서 한 번씩 해석한다
+_FOR_CHARS = 200_000   # 해석 한 번에 본문을 다시 해석하는 글자 수 총량 — 반복 수만으로는 본문 길이 비용이 안 묶인다
+_for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
+_deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 지나면 루프를 묶지 않는다
+
+
+def _late() -> bool:
+    return _deadline[0] is not None and time.monotonic() > _deadline[0]
 
 
 SHELLS = {"bash", "sh", "zsh", "dash"}
@@ -681,6 +688,33 @@ def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> lis
     return out
 
 
+_GLOB_DIRS = 1000   # for 목록 글롭이 펼치는 중간 경로 상한
+
+
+def _glob_list(pat: str, cwd: str | None) -> list[str] | None:
+    """`glob.glob(pat, root_dir=cwd)` 를 구성요소마다 한 폴더씩 펼친다 — 폴더를 읽을 때마다 상한·마감을 봐서
+    맞는 것 없는 깊은 글롭(`/mnt/c/*/*/*/x` 55초 실측)도 끊긴다. 넘으면 None."""
+    pre = "/" if pat.startswith("/") else (cwd or "").rstrip("/") + "/"
+    bases = [pre]
+    for comp in [c for c in pat.split("/") if c]:
+        nxt: list[str] = []
+        for b in bases:
+            if _late():
+                return None
+            if glob.has_magic(comp):
+                nxt += glob.glob(os.path.join(glob.escape(b), comp))
+            elif os.path.lexists(p := os.path.join(b, comp)):
+                nxt.append(p)
+        if len(nxt) > _GLOB_DIRS:
+            return None
+        bases = nxt
+    if pat.endswith("/"):
+        bases = [b + "/" for b in bases if os.path.isdir(b)]
+    if len(bases) > _FOR_CAP:
+        return None
+    return sorted(b[len(pre):] if pre != "/" else b for b in bases)
+
+
 def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
     """for 목록 단어 -> 값들(중괄호·변수·글롭 전개, cwd 로 잇지 않는다). 확정 불가면 None."""
     try:
@@ -700,7 +734,9 @@ def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str
                 pat = "".join(t if a else glob.escape(t) for t, a in ch)
                 if cwd is None and not pat.startswith("/"):
                     return None
-                if (hits := sorted(glob.glob(pat, root_dir=cwd))):
+                if (hits := _glob_list(pat, cwd)) is None:
+                    return None
+                if hits:
                     out += hits
                     continue
             if lit or any(p.quote for p in parts):   # 따옴표 없는 빈 전개는 단어가 사라진다
@@ -1113,13 +1149,15 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     return None
 
 
-def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Context = HOST) -> ParseResult:
+def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Context = HOST,
+          deadline: float | None = None) -> ParseResult:
     state_env: dict[str, str | None] = {k: env[k] for k in ("HOME", "TMPDIR", "USER") if k in env}
     state_env[_TMPDIR0] = env.get("TMPDIR")
     if cwd is not None:
         state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []
-    _for_runs[0] = 0
+    _for_runs[:] = [0, 0]
+    _deadline[0] = deadline
     try:
         _parse(command, cwd, state_env, context, 0, segments)
     except LexError as e:
@@ -1314,14 +1352,16 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if (v := _values(wd, state_env, st["cwd"])) is None:
                 return None
             vals += v
+        body = command[toks[do].pos + 2 : toks[j].pos]
         # 0개 '확정'은 모델링 못 한 변수 변화일 수 있다 — 본문을 버리지 않고 일반 처리(루프 변수 미확정)로 한 번 본다
-        if not vals or len(vals) > _FOR_CAP or _for_runs[0] + len(vals) > _FOR_TOTAL:
+        if not vals or len(vals) > _FOR_CAP or _for_runs[0] + len(vals) > _FOR_TOTAL \
+                or _for_runs[1] + len(vals) * len(body) > _FOR_CHARS or _late():
             return None
         _for_runs[0] += len(vals)
+        _for_runs[1] += len(vals) * len(body)
         for wd in items:   # 머리 단어의 치환도 실행된다
             for code in _word_subs(wd):
                 _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
-        body = command[toks[do].pos + 2 : toks[j].pos]
         state: tuple[str | None, dict[str, str | None]] = (st["cwd"], dict(state_env))
         ends = []
         for v in vals:   # 반복은 앞 반복의 끝 상태에서 이어진다

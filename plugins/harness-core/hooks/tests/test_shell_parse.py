@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import os
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import shell_parse
 from shell_parse import LexError, Mount, Part, expand, lex, literal_args, parse
 
 
@@ -548,6 +550,37 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
         t0 = time.perf_counter()
         self.assertIsNone(parse(c, "/w", {}).error)
         self.assertLess(time.perf_counter() - t0, 2.0)
+
+    def test_reparse_cost_is_bounded(self):   # 적대 리뷰 I3: 반복 수가 아니라 다시 해석하는 글자 수로 묶는다
+        c = "echo " + "y" * 20000
+        for _ in range(6):
+            c = f"for v in {{1..50}}; do x=$({c}); done"
+        t0 = time.perf_counter()
+        self.assertIsNone(parse(c + "; rm q", "/w", {}).error)
+        self.assertLess(time.perf_counter() - t0, 1.0)
+        big = "echo " + "y" * 5000
+        self.assertEqual(rm_targets(f"for v in {{1..50}}; do rm x$v; {big}; done"), [None])   # 50 x 5KB 는 묶지 않는다
+        self.assertEqual(rm_targets(f"for v in 1 2; do rm x$v; {big}; done"), [["/w/x1"], ["/w/x2"]])
+
+    def test_deadline(self):   # 판정기 마감이 지나면 목록 글롭·반복 해석을 멈추고 루프 변수 미확정
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a").touch()
+            self.assertEqual([expand(s.argv[-1], s) for s in parse("for f in *; do rm $f; done", d, {}, deadline=time.monotonic() - 1).segments
+                              if s.name == "rm"], [None])
+            self.assertEqual([expand(s.argv[-1], s) for s in parse("for f in *; do rm $f; done", d, {}, deadline=time.monotonic() + 9).segments
+                              if s.name == "rm"], [[f"{d}/a"]])
+
+    def test_glob_list_matches_glob_and_is_capped(self):   # 구성요소마다 펼친 결과는 glob.glob 과 같고, 중간 폴더 수도 묶는다
+        with tempfile.TemporaryDirectory() as d:
+            for p in ("a/x.py", "b/y.py", "b/.h.py", "c.py", "[q]/z.py"):
+                Path(d, p).parent.mkdir(exist_ok=True)
+                Path(d, p).touch()
+            for pat in ("*/*.py", "./*.py", "*/", f"{d}/*/*.py", "[[]q]/*", "*/.*", "?/zz"):
+                self.assertEqual(shell_parse._glob_list(pat, d), sorted(glob.glob(pat, root_dir=d)), pat)
+            for i in range(1001):
+                os.mkdir(f"{d}/m{i}")
+            self.assertEqual(rm_targets('for f in m*/zz; do rm "$f"; done', d), [None])
+            self.assertEqual(rm_targets('for f in [q]/zz; do rm "$f"; done', d), [[f"{d}/[q]/zz"]])   # 상한 안이면 맞는 것 없는 패턴 그대로
 
 
 class MktempTest(unittest.TestCase):   # 재생 군집 U4: mktemp 결과는 임시 루트 아래의 새 경로

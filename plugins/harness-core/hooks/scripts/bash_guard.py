@@ -126,7 +126,7 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
     from target_class import make_ctx
 
     ctx = make_ctx(payload, environ, budget)
-    res = parse(command, cwd, environ)
+    res = parse(command, cwd, environ, deadline=ctx.deadline)
     if res.error:   # spec §3.8 (가)
         bad = FAIL_WORDS.search(command) is not None
         return Decision(not bad, [R_PARSE] if bad else [], _strongest(modes))
