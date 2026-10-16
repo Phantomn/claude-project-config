@@ -261,6 +261,16 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertLess(time.perf_counter() - t0, 1.0, c[:30])
 
 
+class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 집합을 한 곳(outcome/collect/join)에서 다룬다
+    def test_extglob_in_command_position_is_parse_error(self):   # NB1: extglob 꺼진 bash 는 `!(cmd)` 를 부정 서브셸로 실행한다
+        for c in ("!(rm -rf src)", "true && !(rm -rf src)", "if !(rm src); then :; fi", "@(echo y > f)", "+(x)",
+                  "!(cd /a) && t", "?(rm x)", "*(rm x)", "a; !(rm x)"):
+            self.assertIsNotNone(parse(c, "/w", {}).error, c)
+        for c in ("rm -rf !(keep)", "x=@(a); rm x", "echo '!(x)'", "[[ a == @(a|b) ]] && rm x", "echo $(( 2*(3) ))",
+                  "f() { :; }", "! (rm x)", "a=$((2*(3))) b", "echo @(a)"):
+            self.assertIsNone(parse(c, "/w", {}).error, c)
+
+
 def ex(word_src, cwd="/w", env=None):
     s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]
     return expand(s.argv[1], s)

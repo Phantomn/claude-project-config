@@ -844,6 +844,26 @@ def _is_assign(w: Word) -> bool:
     return bool(w.parts) and w.parts[0].quote == "" and bool(_ASSIGN.match(w.parts[0].text))
 
 
+_EXTGLOB = re.compile(r"[!@+*?]\(")
+
+
+def _cmd_extglob(w: Word) -> bool:
+    """명령 자리 단어에 따옴표 없는 확장 글롭 `!(…)` 등이 있는가 — extglob 꺼진 bash(기본)는 `!(cmd)` 를 부정 서브셸로
+    실행하고 `@(…)` 등은 구문 오류라, 단어로 읽으면 안쪽 명령이 판정에서 사라진다(재검토 NB1). 치환 안은 보지 않는다."""
+    for p in w.parts:
+        if p.quote:
+            continue
+        i, t = 0, p.text
+        while i < len(t):
+            if t[i] in "$`":
+                i = _skip_sub(t, i)
+            elif _EXTGLOB.match(t, i):
+                return True
+            else:
+                i += 1
+    return False
+
+
 def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None] | None:
     """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값`(누적)·`NAME[i]=값`(원소)은 미확정."""
     if not _is_assign(w):
@@ -1664,6 +1684,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 else:
                     close_group("{")
             else:
+                if at_start() and not _is_assign(w) and _cmd_extglob(w):
+                    raise LexError(f"명령 자리의 확장 글롭 {w.literal()[:20]!r}")
                 words.append(w)
         elif t.kind == "redir":
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
