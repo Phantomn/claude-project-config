@@ -41,6 +41,7 @@ class Token:
     fd: int | None = None
     target: Word | None = None
     body: str | None = None
+    pos: int = -1  # 단어 시작 위치(원문 인덱스) — for 본문 원문을 잘라낼 때 쓴다
 
 
 _PLAIN = re.compile(r"[^\s;&|()<>'\"\\$`]+")
@@ -265,10 +266,10 @@ def lex(src: str) -> list[Token]:
                 toks.append(Token("op", op=op))
                 i += len(op)
                 continue
-            w, i = _read_word(s, i)
+            start, (w, i) = i, _read_word(s, i)
             if not w.parts:
                 raise LexError(f"해석할 수 없는 문자 {c!r}")
-            toks.append(Token("word", word=w))
+            toks.append(Token("word", word=w, pos=start))
             last_word_end = i
     if pending:
         raise LexError(f"끝나지 않은 heredoc {pending[0][1]!r}")
@@ -343,6 +344,10 @@ _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
 _RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
 _LOOP_HEAD = ("for", "select")
+_LOOPS = ("for", "select", "while", "until")
+_FOR_CAP = 50   # for 목록 항목 상한 — 넘으면 루프 변수 미확정(본문을 항목마다 해석하는 비용)
+_FOR_TOTAL = 500   # 해석 한 번의 반복 총량 — 치환 안 루프 중첩이 곱으로 커지지 않게
+_for_runs = [0]   # parse() 마다 0 으로 — 훅은 한 프로세스에서 한 번씩 해석한다
 
 
 SHELLS = {"bash", "sh", "zsh", "dash"}
@@ -577,6 +582,34 @@ def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> lis
                 continue
         out.append(lit)
     return out
+
+
+def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
+    """for 목록 단어 -> 값들(중괄호·변수·글롭 전개, cwd 로 잇지 않는다). 확정 불가면 None."""
+    try:
+        words = _brace_words(w.parts)
+        if words is None:
+            return None
+        out: list[str] = []
+        for parts in words:
+            ch = _subst(parts, env, split=True)
+            if ch is None:
+                return None
+            lit = "".join(t for t, _ in ch)
+            if _XARGS_MARK in lit:
+                return None
+            if any(a and any(x in t for x in "*?[") for t, a in ch):
+                pat = "".join(t if a else glob.escape(t) for t, a in ch)
+                if cwd is None and not pat.startswith("/"):
+                    return None
+                if (hits := sorted(glob.glob(pat, root_dir=cwd))):
+                    out += hits
+                    continue
+            if lit or any(p.quote for p in parts):   # 따옴표 없는 빈 전개는 단어가 사라진다
+                out.append(lit)
+        return out
+    except LexError:
+        return None
 
 
 def expand(word: Word, seg: Segment) -> list[str] | None:
@@ -936,6 +969,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     if cwd is not None:
         state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []
+    _for_runs[0] = 0
     try:
         _parse(command, cwd, state_env, context, 0, segments)
     except LexError as e:
@@ -1082,7 +1116,70 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         in_pipe = outer_pipe
         snap = (cwd0, dict(env0))
 
-    for t in toks:
+    def bare(i: int) -> str | None:
+        t = toks[i] if i < len(toks) else None
+        return t.word.literal() if t is not None and t.kind == "word" and not t.word.is_quoted() else None
+
+    def for_loop(k: int) -> int | None:
+        """toks[k] = for. `for N in 목록; do …; done` 이고 목록이 확정되면 본문을 항목마다 해석하고 done 의 인덱스.
+        그 밖(목록 미확정·상한 초과·중첩 루프·in 없음)은 None — 일반 처리(루프 변수 미확정)."""
+        name = bare(k + 1)
+        if name is None or not _NAME.fullmatch(name) or bare(k + 2) != "in":
+            return None
+        i = k + 3
+        while i < len(toks) and toks[i].kind == "word":
+            i += 1
+        items = [t.word for t in toks[k + 3:i] if t.word is not None]
+        if i >= len(toks) or toks[i].op not in (";", "\n"):
+            return None
+        i += 1
+        while i < len(toks) and toks[i].op == "\n":
+            i += 1
+        if bare(i) != "do":
+            return None
+        do, j, start, open_loops, nested = i, i + 1, True, 0, False
+        while True:   # 명령 자리의 done 이 짝. 명령 자리 = 연산자 뒤·예약어 뒤
+            if j >= len(toks):
+                raise LexError("짝 없는 do")
+            t, lit = toks[j], bare(j)
+            if t.kind == "op":
+                start = True
+            elif t.kind == "word":
+                if start and lit in _LOOPS:
+                    open_loops, nested = open_loops + 1, True
+                elif start and lit == "done":
+                    if not open_loops:
+                        break
+                    open_loops -= 1
+                start = start and lit in _RESERVED
+            j += 1
+        if nested:
+            return None
+        vals: list[str] = []
+        for wd in items:
+            if (v := _values(wd, state_env, st["cwd"])) is None:
+                return None
+            vals += v
+        if len(vals) > _FOR_CAP or _for_runs[0] + len(vals) > _FOR_TOTAL:
+            return None
+        _for_runs[0] += len(vals)
+        for wd in items:   # 머리 단어의 치환도 실행된다
+            for code in _word_subs(wd):
+                _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
+        body = command[toks[do].pos + 2 : toks[j].pos]
+        state: tuple[str | None, dict[str, str | None]] = (st["cwd"], dict(state_env))
+        ends = []
+        for v in vals:   # 반복은 앞 반복의 끝 상태에서 이어진다
+            state = _parse(body, state[0], {**state[1], name: v}, context, depth, segments, via_xargs)
+            ends.append(state)
+        if ends:   # break 등으로 어느 반복에서 끝났는지 모른다
+            set_state(_merge(ends))
+        return j
+
+    skip = 0
+    for idx, t in enumerate(toks):
+        if idx < skip:
+            continue
         cur = cases[-1] if stack and stack[-1][0] == "case" else None
         word = t.word.literal() if t.kind == "word" and not t.word.is_quoted() else None
         if cur is not None and cur["mode"] == "head":
@@ -1113,6 +1210,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             else:
                 raise LexError("case 패턴을 해석할 수 없음")
             continue
+        if word == "for" and at_start():
+            flush()
+            if (end := for_loop(idx)) is not None:
+                skip = end   # done 은 일반 처리 — 예약어로 벗겨지고 뒤 리다이렉트는 루프 전체에 붙는다
+                continue
         if t.kind == "word" and word in ("case", "esac") and at_start():
             if word == "case":
                 flush()

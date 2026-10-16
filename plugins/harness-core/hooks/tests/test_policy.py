@@ -347,6 +347,13 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("case x in a) cd {HOME};; esac; rm -rf data"), [("삭제", UNRESOLVED)])   # 분기 뒤 cwd 미확정
         self.assertEqual(ev("case x in a) echo;; esac > {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
 
+    def test_f_for_literal_list(self):
+        self.assertEqual(ev("for f in a b; do echo x > {SCRATCH}/s1/$f.txt; mv {SCRATCH}/s1/$f.txt {SCRATCH}/s1/$f.bak; done"), [])
+        self.assertEqual(ev("for f in probe.ts main.py; do rm src/$f; done"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("for f in src/*.py; do cp $f $f.orig; done"), [])
+        self.assertEqual(ev("for f in $(ls); do rm $f; done"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("for f in a; do echo $f; done > {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+
 
 if __name__ == "__main__":
     unittest.main()

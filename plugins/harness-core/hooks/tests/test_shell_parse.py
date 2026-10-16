@@ -490,5 +490,65 @@ class CaseTest(unittest.TestCase):   # 재생 군집 P1: case 문 — 모든 분
             self.assertIsNotNone(parse(s, "/w", {}).error, s)
 
 
+def rm_targets(c, cwd="/w", env=None):
+    return [expand(s.argv[-1], s) for s in segs(c, cwd, env) if s.name == "rm"]
+
+
+class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 목록 for 루프 변수를 항목마다 묶는다
+    def test_literal_items(self):
+        self.assertEqual(rm_targets("for f in a b; do rm $f.x; done"), [["/w/a.x"], ["/w/b.x"]])
+        self.assertEqual(rm_targets('for f in "a b" c; do rm "$f"; done'), [["/w/a b"], ["/w/c"]])
+        self.assertEqual(rm_targets("for i in {1..3}; do rm f$i; done"), [["/w/f1"], ["/w/f2"], ["/w/f3"]])
+        self.assertEqual(rm_targets("for f in a b\ndo\n  rm $f\ndone"), [["/w/a"], ["/w/b"]])
+        self.assertEqual(rm_targets("D=/d; for f in $D/a ~/b; do rm $f; done"), [["/d/a"], ["/h/b"]])
+        self.assertEqual(rm_targets("for f in a; do :; done; rm $f"), [["/w/a"]])        # 루프 뒤 변수 = 마지막 항목
+        self.assertEqual(rm_targets("if t; then for f in a; do rm $f; done; fi"), [["/w/a"]])
+
+    def test_glob_items(self):
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("p.py", "q.py", "r.txt"):
+                Path(d, n).touch()
+            self.assertEqual(rm_targets("for f in *.py; do rm $f.bak; done", d), [[f"{d}/p.py.bak"], [f"{d}/q.py.bak"]])
+            self.assertEqual(rm_targets('for f in *.zz; do rm "$f"; done', d), [[f"{d}/*.zz"]])   # 맞는 것 없으면 패턴 그대로
+            self.assertEqual(rm_targets("for f in *.zz; do rm $f; done", d), [None])   # 따옴표 없으면 다시 글롭된다
+
+    def test_unsupported_stays_unresolved(self):
+        self.assertEqual(rm_targets("for f in $(ls); do rm $f; done"), [None])
+        self.assertIn("ls", names("for f in $(ls); do rm $f; done"))                  # 머리 단어의 치환은 계속 실행된다
+        self.assertEqual(rm_targets("for f in $X; do rm $f; done"), [None])
+        self.assertEqual(rm_targets("for f; do rm $f; done"), [None])
+        self.assertEqual(rm_targets("for f in " + " ".join(f"a{i}" for i in range(51)) + "; do rm $f; done"), [None])
+        self.assertEqual(rm_targets("for a in x; do for b in y; do rm $a$b; done; done"), [None])
+        self.assertEqual(rm_targets("for a in x; do while t; do rm $a; done; done"), [None])
+        self.assertEqual(rm_targets("for f in 'a;b' \"c d\"; do rm $f; done"), [["/w/a;b"], None])   # 따옴표 없는 값의 단어 분할
+
+    def test_pwd_item_descends(self):
+        self.assertIn("pwd", names("for f in $(pwd); do rm $f/x; done"))
+        self.assertEqual(rm_targets("for f in $(pwd); do rm $f/x; done"), [["/w/x"]])
+
+    def test_state_after_loop(self):
+        self.assertIsNone(rm_cwd("for d in a b; do cd $d; done; rm z"))
+        self.assertEqual(rm_cwd("for f in a; do echo; done; rm z"), "/w")
+        self.assertEqual(rm_cwd("for d in /a; do cd $d; done | cat; rm z"), "/w")
+        self.assertEqual([x.cwd for x in segs("for d in a b; do cd /x; rm $d; done") if x.name == "rm"], ["/x", "/x"])
+
+    def test_redirect_after_done(self):
+        s = [x for x in segs("for f in a; do echo $f; done > out") if x.redirects]
+        self.assertEqual([r.target.literal() for r in s[0].redirects], ["out"])
+
+    def test_adversarial(self):
+        for s in ["for f in a; do rm $f", "for f in a; do rm $f; done )", "for f in a b; do case $f in a) rm x;; done"]:
+            self.assertIsNotNone(parse(s, "/w", {}).error, s)
+        self.assertEqual(rm_targets("for f in a; do echo done; rm $f; done"), [["/w/a"]])   # 인자 done 은 끝이 아니다
+
+    def test_nested_in_substitution_is_bounded(self):
+        c = "rm q"
+        for _ in range(6):
+            c = f"for v in {{1..40}}; do x=$({c}); done"
+        t0 = time.perf_counter()
+        self.assertIsNone(parse(c, "/w", {}).error)
+        self.assertLess(time.perf_counter() - t0, 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()
