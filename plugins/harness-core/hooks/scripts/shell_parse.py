@@ -382,7 +382,7 @@ _VAR_DECL = ("export", "declare", "typeset", "local")
 # 래퍼 -> 값을 받는 옵션. 값 없는 옵션은 '-' 로 시작하는 단어 하나로 소비한다.
 _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
     "command": (),
-    "sudo": ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"),
+    "sudo": ("-u", "-g", "-h", "-p", "-C", "-D", "--chdir", "-r", "-t", "-U"),
     "timeout": ("-s", "-k"),
     "nice": ("-n",),
     "ionice": ("-c", "-n", "-p"),
@@ -1064,6 +1064,10 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
     """맨 앞 래퍼 하나를 벗긴 단어 목록. 래퍼가 아니면 None. `env X=값` 은 env 로 확장해 run_env 에 저장."""
     name = os.path.basename(words[0].literal())
     i = 1
+
+    def chdir(k: int, skip: int) -> None:   # env -C·sudo -D: 명령이 도는 폴더 — 바깥 셸이 확장한 단어(words[k] 의 앞 skip 글자 뒤)
+        run_env[_CHDIR] = _text(_drop(words[k], skip).parts, env) if k < len(words) else None
+
     if name == "env":
         while i < len(words):
             lit = words[i].literal()
@@ -1072,8 +1076,11 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
                 run_env[a[0]] = a[1]
             elif lit in ("-", "--ignore-environment"):
                 _reset_env(run_env)
-            elif lit.startswith(("--chdir", "--split-string")):
-                raise ModelError(f"env {lit}")   # 작업 폴더·단어 분리를 바꾸는 env — bash 는 돌린다
+            elif lit.startswith("--split-string"):
+                raise ModelError(f"env {lit}")   # 단어 분리를 다시 하는 env — bash 는 돌린다
+            elif lit.startswith("--chdir"):
+                chdir(i, 8) if "=" in lit else chdir(i + 1, 0)
+                i += "=" not in lit
             elif lit.startswith("--unset"):
                 run_env[lit.partition("=")[2] if "=" in lit else nxt] = None
                 i += "=" not in lit
@@ -1082,9 +1089,12 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
                     if c == "i":
                         _reset_env(run_env)
                     elif c in "uCS":
-                        if c != "u":
+                        if c == "S":
                             raise ModelError(f"env {lit}")
-                        run_env[lit[n:] or nxt] = None
+                        if c == "C":
+                            chdir(i, n) if lit[n:] else chdir(i + 1, 0)
+                        else:
+                            run_env[lit[n:] or nxt] = None
                         i += not lit[n:]
                         break
             elif not lit.startswith("-") or lit == "--":
@@ -1109,13 +1119,13 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
         lit = words[i].literal()
         if name == "sudo":
             if lit.startswith("--chdir"):
-                raise ModelError(f"sudo {lit}")
+                chdir(i, 8) if "=" in lit else chdir(i + 1, 0)
             reset &= not lit.startswith("--preserve-env")
-            for c in lit[1:] if not lit.startswith("--") else "":
+            for n, c in enumerate(lit[1:] if not lit.startswith("--") else "", 2):
                 reset &= c != "E"
                 if c == "D":
-                    raise ModelError(f"sudo {lit}")   # 작업 폴더를 바꾸는 sudo
-                if c in "ughpCrtU":   # 값을 받는 옵션 — 뒤 글자는 값
+                    chdir(i, n) if lit[n:] else chdir(i + 1, 0)
+                if c in "ughpCDrtU":   # 값을 받는 옵션 — 뒤 글자는 값
                     break
         i += 2 if lit in _WRAPPER_VALUE_OPTS[name] else 1
     if reset:
@@ -1126,6 +1136,17 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
 
 
 _RESET = "\x00reset"   # 래퍼가 환경을 비웠다 — 호출자가 바깥 변수(run_env)도 미확정으로 바꾼다
+_CHDIR = "\x00chdir"   # 래퍼(env -C·sudo -D)가 명령 폴더를 바꿨다 — 값 = 확장한 폴더(모르면 None)
+
+
+def _chdir(cwd: str | None, run_env: dict[str, str | None]) -> str | None:
+    """래퍼가 남긴 폴더로 명령 cwd 를 바꾼다(이 셸의 폴더는 그대로). 표시가 없으면 cwd 그대로."""
+    if _CHDIR not in run_env:
+        return cwd
+    d = run_env.pop(_CHDIR)
+    if d is None or (cwd is None and not d.startswith("/")):
+        return None
+    return os.path.normpath(os.path.join(cwd or "/", d))
 
 
 def _reset_env(run_env: dict[str, str | None]) -> None:
@@ -1342,6 +1363,11 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     cenv: dict[str, str | None] = {SHELL_CWD: cwd} if cwd else {}
     w = _strip_all(a[i + 1:], cenv, seg.env)
     cenv.pop(_RESET, None)
+    if (new := _chdir(cwd, cenv)) != cwd:
+        cwd = new
+        cenv.pop(SHELL_CWD, None)
+        if cwd:
+            cenv[SHELL_CWD] = cwd
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
@@ -1361,7 +1387,11 @@ def _child_env(seg: Segment, run_env: Mapping[str, str | None]) -> dict[str, str
         # 접두 할당(`X=1 sh -c`·env X=1)은 그 명령에 내보내진다 — 실행 env 값이 단어 확장 env 와 다르다
         if not k.startswith("\x00") and not run_env.get(_EXP + k) and (k in seg.env and v == seg.env[k]):
             env[k] = None
-    env["PWD"] = seg.cwd
+    for k in ("PWD", SHELL_CWD):   # 새 셸의 작업 폴더 = 명령 cwd(env -C 등으로 바뀌었을 수 있다)
+        if seg.cwd is None:
+            env.pop(k, None)
+        else:
+            env[k] = seg.cwd
     return env
 
 
@@ -1403,7 +1433,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
         w = _strip_all(cmd, env, seg.env)
         env.pop(_RESET, None)   # 이 env 는 바깥 변수까지 담아 _reset_env 가 이미 비웠다
         if w:
-            inner = Segment(_cmd_name(w), w, [], seg.cwd, dict(seg.env), seg.context, d, via_xargs=True)
+            inner = Segment(_cmd_name(w), w, [], _chdir(seg.cwd, env), dict(seg.env), seg.context, d, via_xargs=True)
             segments.append(inner)
             _descend(inner, segments, None, env)
     elif seg.name in _CONTAINER_CLIS:
@@ -1596,6 +1626,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         wrappers: list[str] = []
         extra: dict[str, str | None] = {}
         w = _strip_all(w, extra, unit_env, wrappers)
+        unit_cwd = _chdir(st["cwd"], extra)
         if extra.pop(_RESET, None):   # env -i·sudo·doas: 바깥 변수는 안쪽 명령에 없다 — 값을 모른다(fail-closed)
             run_env = {k: (v if k.startswith("\x00") else None) for k, v in run_env.items()}
         if extra:
@@ -1606,7 +1637,6 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
                 state_env[w[1].literal()] = None
             return None
-        unit_cwd = st["cwd"]
         name = _cmd_name(w)
         # 내장(cd·true·exit…)은 맨이름으로만 불린다 — `./true`·`/bin/true` 는 외부 프로그램, 래퍼 밑(command·builtin 제외)도 외부 검색
         builtin = bool(w) and "/" not in w[0].literal() and all(x in ("command", "builtin") for x in wrappers)

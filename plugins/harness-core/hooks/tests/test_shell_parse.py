@@ -140,10 +140,17 @@ class ParseTest(unittest.TestCase):
 
     def test_wrapper_env_and_dir_options(self):   # 항목 8: busybox 애플릿, env -S·-C·sudo -D, env -i·-u·sudo env_reset
         self.assertEqual(names("busybox rm -rf x"), ["rm"])
-        for c in ("env -S 'rm -rf x'", "env -S'rm x'", "env --split-string='rm x'", "env -iS 'rm x'", "env -C /tmp rm x",
-                  "env --chdir=/tmp rm x", "env -C/tmp rm x", "sudo -D /tmp rm x", "sudo --chdir=/tmp rm x"):
+        for c in ("env -S 'rm -rf x'", "env -S'rm x'", "env --split-string='rm x'", "env -iS 'rm x'"):
             r = parse(c, "/w", {})
-            self.assertTrue(r.error and r.unmodeled, c)   # 단어 분리·작업 폴더를 바꾸는 래퍼 — bash 는 돌린다
+            self.assertTrue(r.error and r.unmodeled, c)   # 단어 분리를 다시 하는 env — bash 는 돌린다
+        for c, cwd in (("env -C /tmp rm x", "/tmp"), ("env --chdir=/tmp rm x", "/tmp"), ("env -C/tmp rm x", "/tmp"),
+                       ("env --chdir /tmp rm x", "/tmp"), ("env -iC sub rm x", "/w/sub"), ("sudo -D /tmp rm x", "/tmp"),
+                       ("sudo --chdir=/tmp rm x", "/tmp"), ("sudo -u root -D /tmp rm x", "/tmp"), ("sudo -D/tmp rm x", "/tmp"),
+                       ("env -C $NOPE rm x", None), ("D=/d; env -C $D rm x", "/d"), ("echo a | xargs env -C /x rm", "/x")):
+            self.assertEqual([s.cwd for s in segs(c) if s.name == "rm"], [cwd], c)   # 명령은 그 폴더에서 돈다
+        self.assertEqual([s.cwd for s in segs("env -C /tmp true; rm x") if s.name == "rm"], ["/w"])   # 이 셸의 폴더는 그대로
+        rm = next(s for s in segs("env -C /t bash -c 'rm \"$PWD\"/a \"$(pwd)\"/b'") if s.name == "rm")
+        self.assertEqual([expand(a, rm) for a in rm.argv[1:]], [["/t/a"], ["/t/b"]])
 
         def inner(cmd):
             s = next(x for x in segs(cmd, env={"HOME": "/h", "X": "/x"}) if x.name == "rm")
