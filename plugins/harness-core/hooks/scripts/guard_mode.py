@@ -10,14 +10,15 @@ MODE_RANK = {"off": 0, "shadow": 1, "on": 2}
 
 def repo_root(path: str, environ: Mapping[str, str]) -> str | None:
     p = os.path.abspath(path)
+    # 루트는 dirname 이 자기 자신인 곳 — POSIX 는 `//` 를 `/` 와 따로 두어 `== "/"` 비교로는 끝나지 않는다(훅 멈춤)
     while True:
         if os.path.lexists(os.path.join(p, ".git")):
             break
-        if p == "/":
+        if os.path.dirname(p) == p:
             return None
         p = os.path.dirname(p)
     home = environ.get("HOME")
-    if p == "/" or (home and os.path.realpath(home) == os.path.realpath(p)):
+    if os.path.dirname(p) == p or (home and os.path.realpath(home) == os.path.realpath(p)):
         return None
     return p
 

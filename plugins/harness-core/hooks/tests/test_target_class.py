@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import multiprocessing
 import os
 import stat
@@ -258,6 +259,14 @@ class SwitchTest(_WorldCase):
         cwd = os.getcwd(); os.chdir(w.fmt("{REPO}")); self.addCleanup(os.chdir, cwd)
         self.assertEqual(repo_root("x/y", w.environ), w.fmt("{REPO}"))
         os.chdir(w.fmt("{OUT}")); self.assertIsNone(repo_root("x/y", w.environ))
+
+    def test_double_slash_root_ends(self):   # POSIX 는 `//` 를 따로 두어 dirname("//") == "//" — 루트 비교가 끝나지 않으면 훅이 멈춘다
+        w.set_repo_switch("on")
+        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); from guard_mode import repo_root, switch_mode; "
+                "e = json.loads(sys.argv[2]); print(json.dumps([repo_root('//nonexistent/x', e), switch_mode('/' + sys.argv[3], e)]))")
+        r = subprocess.run([sys.executable, "-c", code, str(Path(target_class.__file__).parent), json.dumps(w.environ),
+                            w.fmt("{REPO}/src/x")], capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(json.loads(r.stdout), [None, "on"])
 
     def test_switch_mode(self):
         self.assertEqual(switch_mode(w.fmt("{REPO}/src/main.py"), w.environ), "off")
