@@ -1,0 +1,205 @@
+"""bash-guard 테스트 세계: 실제 git·파일시스템으로 세션 전/세션 중 상태를 만든다 (대역 없음, spec D13)."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from target_class import Ctx, make_ctx
+
+_DEFAULT = object()
+
+
+class World:
+    def __init__(self, worktree: bool = False, docker: bool = False) -> None:
+        # tmpfs 이면서 임시 루트도 git 저장소도 아닌 곳(생성 시각 지원 실측 2026-10-14)
+        base = os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm"
+        self.root = tempfile.mkdtemp(prefix="bash-guard-world-", dir=base)
+        r = Path(self.root)
+        self.home, self.repo, self.scratch, self.out = r / "home", r / "home/proj", r / "scratch", r / "out"
+        self.wt = self.out / "wt"
+        self.origin = r / "origin.git"
+        for d in (self.home, self.scratch, self.out, r / "state"):
+            d.mkdir(parents=True)
+        self.environ: dict[str, str] = {
+            "HOME": str(self.home), "TMPDIR": str(self.scratch), "XDG_STATE_HOME": str(r / "state"),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "World", "GIT_AUTHOR_EMAIL": "world@example.invalid",
+            "GIT_COMMITTER_NAME": "World", "GIT_COMMITTER_EMAIL": "world@example.invalid",
+        }
+        self.session_id = str(uuid.uuid4())
+        self.docker = None  # Task 6 이 채움
+        try:
+            self._build(worktree)
+        except BaseException:
+            self.close()
+            raise
+
+    def _build(self, worktree: bool) -> None:
+        h, repo = self.home, self.repo
+        for rel, text in [("data/a.txt", "a\n"), ("data/db.sqlite", "db\n"), ("data/important.csv", "k,v\n"),
+                          ("notes.md", "n\n"), (".ssh/id_ed25519", "key\n")]:
+            self._write(h / rel, text)
+        self._git("init", "-q", "--bare", "-b", "main", str(self.origin), cwd=self.root)
+        repo.mkdir()
+        self._git("init", "-q", "-b", "main")
+        self._write(repo / ".gitignore", "build/\n.env\n*.sqlite\n")
+        self._write(repo / "src/main.py", "print('main')\n")
+        self._write(repo / "README.md", "# proj\n")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "init")
+        self._git("remote", "add", "origin", str(self.origin))
+        self._git("push", "-q", "-u", "origin", "main")
+        self._git("remote", "set-head", "origin", "main")
+        self._write(repo / "README.md", "# proj\nedited before session\n")
+        self._write(repo / "build/out.o", "obj\n")
+        self._write(repo / "local.sqlite", "local\n")
+        self._write(repo / "notes_presession.txt", "n\n")
+        self._write(repo / ".env", "SECRET=1\n")
+        self._stash("pre", int(time.time()) - 60)
+        if worktree:
+            self.make_worktree()
+            self._write(self.wt / "local.sqlite", "wt local\n")
+            self._write(self.wt / "build/out.o", "obj\n")
+        time.sleep(0.02)
+        self.transcript = str(Path(self.root) / "transcript.jsonl")
+        self._write(Path(self.transcript), "")
+        self.session_start = float(subprocess.check_output(["stat", "-c", "%.9W", self.transcript], text=True))
+        time.sleep(0.02)
+        self._write(repo / "src/probe.ts", "probe\n")
+        (repo / "out").mkdir()
+        self._write(self.scratch / "s1/x.txt", "x\n")
+        self._stash("session", self._in_session_second())
+
+    @staticmethod
+    def _write(p: Path, text: str) -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    def _in_session_second(self) -> int:
+        # reflog 시각은 초 단위라, 세션 시작과 같은 초에 찍히면 '>= 세션 시작' 비교가 깨진다 — 다음 초 이후로
+        return max(int(time.time()), int(self.session_start) + 1)
+
+    @staticmethod
+    def _dates(epoch: int) -> dict[str, str]:
+        d = f"@{epoch} +0000"
+        return {"GIT_COMMITTER_DATE": d, "GIT_AUTHOR_DATE": d}
+
+    def _stash(self, msg: str, epoch: int) -> None:
+        # pathspec 으로 main.py 만 넣어, 세션 전 README 수정은 작업 트리에 남긴다
+        self._write(self.repo / "src/main.py", f"print('{msg}')\n")
+        self._git("stash", "push", "-q", "-m", msg, "--", "src/main.py", env=self._dates(epoch))
+
+    def _git(self, *args: str, cwd: str | Path | None = None, env: dict[str, str] | None = None,
+             stdin: str | None = None) -> str:
+        return subprocess.run(["git", *args], cwd=cwd or self.repo, env={**self.environ, **(env or {})},
+                              input=stdin, capture_output=True, text=True, check=True).stdout.strip()
+
+    def fmt(self, s: str) -> str:
+        for k, v in (("{HOME}", self.home), ("{REPO}", self.repo), ("{SCRATCH}", self.scratch),
+                     ("{OUT}", self.out), ("{WT}", self.wt)):
+            s = s.replace(k, str(v))
+        return s
+
+    def payload(self, command: str, cwd: str = "{REPO}", session_id: str | None = None) -> dict:
+        return {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": self.fmt(command)},
+                "cwd": self.fmt(cwd), "session_id": session_id or self.session_id, "transcript_path": self.transcript}
+
+    def edit_payload(self, path: str, tool: str = "Edit") -> dict:
+        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+        return {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {key: self.fmt(path)},
+                "cwd": str(self.repo), "session_id": self.session_id, "transcript_path": self.transcript}
+
+    def ctx(self, budget: float = 5.0, transcript=_DEFAULT, session_id=_DEFAULT,
+            environ_extra: dict[str, str] | None = None) -> Ctx:
+        payload = {"transcript_path": self.transcript if transcript is _DEFAULT else transcript,
+                   "session_id": self.session_id if session_id is _DEFAULT else session_id}
+        return make_ctx(payload, {**self.environ, **(environ_extra or {})}, budget)
+
+    def sh(self, cmd: str, cwd: str = "{REPO}") -> str:
+        return subprocess.run(self.fmt(cmd), shell=True, cwd=self.fmt(cwd), env=self.environ,
+                              capture_output=True, text=True, check=True).stdout
+
+    def clean_tree(self) -> None:
+        self._git("reset", "-q", "--hard", "HEAD")
+
+    def dirty_before_session(self, path: str) -> None:
+        p = self.fmt(path)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("dirty before session\n")
+        t = self.session_start - 60
+        os.utime(p, (t, t))
+
+    def touch_modify(self, path: str) -> None:
+        with open(self.fmt(path), "a", encoding="utf-8") as f:
+            f.write("touched in session\n")
+
+    def checkout(self, branch: str, upstream: str | None = None) -> None:
+        exists = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"], cwd=self.repo,
+                                env=self.environ, capture_output=True, check=False).returncode == 0
+        self._git("checkout", "-q", *([] if exists else ["-b"]), branch)
+        if upstream:
+            # 추적 ref 가 없어도 upstream 설정만 남긴다(원격 브랜치 실재와 무관한 push 판정용)
+            remote, _, name = upstream.partition("/")
+            self._git("config", f"branch.{branch}.remote", remote)
+            self._git("config", f"branch.{branch}.merge", f"refs/heads/{name}")
+
+    def drop_origin_head(self) -> None:
+        self._git("remote", "set-head", "origin", "-d")
+
+    def remove_remote(self, name: str) -> None:
+        self._git("remote", "remove", name)
+
+    def make_worktree(self) -> None:
+        self._git("worktree", "add", "-q", "-b", "wt-b", str(self.wt))
+
+    def _commit_file(self, parent: str, name: str, text: str, env: dict[str, str], msg: str = "") -> str:
+        # 작업 트리(세션 전 수정 포함)를 건드리지 않고 parent 위에 파일 하나를 바꾼 커밋을 만든다
+        idx = str(Path(self.root) / f"index.{uuid.uuid4().hex}")
+        e = {**env, "GIT_INDEX_FILE": idx}
+        try:
+            self._git("read-tree", parent, env=e)
+            blob = self._git("hash-object", "-w", "--stdin", stdin=text, env=e)
+            self._git("update-index", "--add", "--cacheinfo", f"100644,{blob},{name}", env=e)
+            tree = self._git("write-tree", env=e)
+        finally:
+            Path(idx).unlink(missing_ok=True)
+        return self._git("commit-tree", tree, "-p", parent, "-m", msg or f"{name}: {text.strip()}", env=env)
+
+    def local_branch(self, name: str, pushed: bool, before_session: bool, extra_unpushed: int = 0,
+                     delete_remote: bool = False, squash_merged: bool = False) -> None:
+        env = self._dates(int(self.session_start) - 60 if before_session else self._in_session_second())
+        fname = f"{name}.txt"
+        tip = self._commit_file(self._git("rev-parse", "main", env=env), fname, f"{name}\n", env)
+        self._git("branch", name, tip, env=env)
+        if pushed:
+            self._git("push", "-q", "-u", "origin", name, env=env)
+        if squash_merged:
+            base = self._git("rev-parse", "refs/remotes/origin/main", env=env)
+            # 메시지를 달리해야 브랜치 커밋과 다른 해시가 된다(같으면 스쿼시가 아니라 그 커밋 자체가 main 에 들어감)
+            sq = self._commit_file(base, fname, f"{name}\n", env, msg=f"squash {name} (#1)")
+            self._git("push", "-q", "origin", f"{sq}:refs/heads/main", env=env)
+            self._git("fetch", "-q", "origin", env=env)
+        if delete_remote:
+            self._git("push", "-q", "origin", "--delete", name, env=env)
+            self._git("fetch", "-q", "--prune", "origin", env=env)
+        for i in range(extra_unpushed):
+            new = self._commit_file(tip, fname, f"{name}\nextra {i + 1}\n", env)
+            self._git("update-ref", "-m", f"commit: extra {i + 1}", f"refs/heads/{name}", new, tip, env=env)
+            tip = new
+
+    def set_repo_switch(self, value: str, local: bool = False) -> None:
+        p = self.repo / ".claude" / ("settings.local.json" if local else "settings.json")
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        data.setdefault("env", {})["HARNESS_BASH_GUARD"] = value
+        self._write(p, json.dumps(data))
+
+    def close(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
