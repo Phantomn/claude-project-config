@@ -103,15 +103,15 @@ def names(cmd):
 
 class ParseTest(unittest.TestCase):
     def test_split_and_cd_tracking(self):
-        self.assertEqual([(x.name, x.cwd) for x in segs("cd / && rm x; cd b; rm y") if x.name == "rm"], [("rm", "/"), ("rm", "/b")])   # cd 는 있는 폴더라야 성공한다
+        self.assertEqual([(x.name, x.cwd) for x in segs("cd / && rm x; cd usr; rm y") if x.name == "rm"], [("rm", "/"), ("rm", "/usr")])   # cd 는 있는 폴더라야 성공한다
 
     def test_subshell_restores(self):
-        self.assertEqual([x.cwd for x in segs("(cd /a; rm x); rm y") if x.name == "rm"], ["/a", "/w"])
+        self.assertEqual([x.cwd for x in segs("(cd /usr; rm x); rm y") if x.name == "rm"], ["/usr", "/w"])
 
     def test_cd_unknown(self):
         self.assertIsNone(rm_cwd("cd -; rm y"))
-        self.assertEqual(rm_cwd("cd; rm y"), "/h")
-        self.assertEqual(rm_cwd("cd ~/p; rm y"), "/h/p")
+        self.assertEqual([x.cwd for x in segs("cd; rm y", env={"HOME": "/tmp"}) if x.name == "rm"], ["/tmp"])
+        self.assertEqual([x.cwd for x in segs("cd ~/bin; rm y", env={"HOME": "/usr"}) if x.name == "rm"], ["/usr/bin"])
         self.assertIsNone(rm_cwd("cd $X; rm y"))
 
     def test_assignments_recorded(self):
@@ -165,19 +165,19 @@ class ParseTest(unittest.TestCase):
             self.assertFalse({"{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "for"} & set(n), c)
 
     def test_brace_group_is_not_subshell(self):
-        self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; }; rm y") if x.name == "rm"], ["/a", "/a"])
+        self.assertEqual([x.cwd for x in segs("{ cd /usr; rm x; }; rm y") if x.name == "rm"], ["/usr", "/usr"])
 
     def test_pipeline_and_background_are_subshells(self):
         self.assertEqual(rm_cwd("cd /a | cat; rm y"), "/w")
         self.assertEqual(rm_cwd("cat | cd /a; rm y"), "/w")
         self.assertEqual(rm_cwd("cd /a & rm y"), "/w")
-        self.assertEqual(rm_cwd("cd /a && rm x | cat"), "/a")
+        self.assertEqual(rm_cwd("cd /usr && rm x | cat"), "/usr")
         self.assertEqual(rm_cwd("cd / && cat | wc; rm y"), "/")
 
     def test_group_inside_pipeline(self):
-        for c in ["cat | (cd /a; rm x); rm y", "cat | { cd /a; rm x; }; rm y"]:
-            self.assertEqual([x.cwd for x in segs(c) if x.name == "rm"], ["/a", "/w"], c)
-        self.assertEqual([x.cwd for x in segs("{ cd /a; rm x; } | cat; rm y") if x.name == "rm"], ["/a", "/w"])
+        for c in ["cat | (cd /usr; rm x); rm y", "cat | { cd /usr; rm x; }; rm y"]:
+            self.assertEqual([x.cwd for x in segs(c) if x.name == "rm"], ["/usr", "/w"], c)
+        self.assertEqual([x.cwd for x in segs("{ cd /usr; rm x; } | cat; rm y") if x.name == "rm"], ["/usr", "/w"])
 
 
 class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조건부·0회 실행 본문의 변화는 '안 함' 경로와 합친다
@@ -203,8 +203,8 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
         self.assertEqual(self.last_rm("f=a; if g=1; then rm $g; fi").env["g"], "1")   # 조건은 늘 실행된다
         self.assertEqual(self.last_rm("f=..; echo | if a; then f=x; fi; rm $f").env["f"], "..")   # 파이프 구성원은 서브셸
         for c, cwd in (("if cd /a; then rm x; fi", "/a"), ("cd /a && cd b && rm x", "/a/b"), ("cd /a || exit; rm y", "/a"),
-                       ("while cd /a; do x; done; rm y", "/a"), ("(cd /a && cd b); rm y", "/w"), ("cd / && t || u; rm y", "/"),
-                       ("cd /a; if t; then rm x; fi", "/a"), ("for i in a b; do cd /c; done; rm y", "/c")):
+                       ("while cd /; do x; done; rm y", "/"), ("(cd /a && cd b); rm y", "/w"), ("cd / && t || u; rm y", "/"),
+                       ("cd /usr; if t; then rm x; fi", "/usr"), ("for i in a b; do cd /usr; done; rm y", "/usr")):
             self.assertEqual(self.last_rm(c).cwd, cwd, c)
         self.assertEqual(names("if a; then rm x; elif b; then rm y; else rm z; fi"), ["a", "rm", "b", "rm", "rm"])
 
@@ -230,11 +230,12 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             # 실패 경로가 실재하는 좌변은 그대로 합친다
             for c in ("[ -d x ] && cd {D}/ex; rm y", "t && cd {D}/ex; rm y", "cd {D}/missing && t; rm y", "cd {D}/file && t; rm y",
                       "mkdir {D}/ex && cd {D}/ex; rm y", "mkdir -p {D}/file && cd {D}/file; rm y", "mkdir {D}/no/sub && cd {D}/no/sub; rm y",
-                      "! true && cd {D}/ex; rm y", "echo x > {D}/o && cd {D}/ex; rm y", "F=$(cat x) && cd {D}/ex; rm y",
+                      "! [ -d x ] && cd {D}/ex; rm y", "echo x > {D}/o && cd {D}/ex; rm y", "F=$(cat x) && cd {D}/ex; rm y",
                       "T=$(mktemp) && cd $T; rm y", "cd $U && t; rm y", "cd - && t; rm y", "{ true; } && cd {D}/ex; rm y",
                       "echo | true && cd {D}/ex; rm y", "cd {D}/ex && cd nope; rm y"):
                 self.assertIsNone(last(c).cwd, c)
             self.assertIsNone(last("cd {D}/missing && f=a; rm $f").env.get("f"))
+            self.assertEqual(last("! true && cd {D}/ex; rm y").cwd, d)   # bash: `! true` 는 실패 — cd 는 돌지 않는다
             # 실패한 cd 뒤 `||` 우변은 cd 전 폴더에서 돈다
             for c in ("cd {D}/missing || rm y", "cd {D}/missing 2>/dev/null || rm y", "cd {D}/ex 2>/dev/null || rm y"):
                 self.assertEqual(last(c).cwd, d, c)
@@ -278,6 +279,48 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertIn("rm", names(c), c)
             self.assertNotIn("time", names(c), c)
         self.assertEqual(names("echo time if"), ["echo"])
+
+    def _world(self):
+        d = tempfile.mkdtemp(dir=os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d))
+        Path(d, "ex").mkdir()
+
+        def last(c):
+            return [x for x in parse(c.replace("{D}", d), d, {"HOME": d, "TMPDIR": d}).segments if x.name == "rm"][-1]
+        return d, last
+
+    def test_condition_failure_path(self):   # NB3: if/while/until 조건의 cd 실패 경로는 cd 전 상태에서 시작·합류한다
+        d, last = self._world()
+        for c in ("if cd {D}/missing; then :; fi; rm y", "while cd {D}/missing; do break; done; rm y",
+                  "until cd {D}/missing; do break; done; rm y", "if t; then :; elif cd {D}/missing; then :; fi; rm y",
+                  "if cd {D}/missing; then :; elif cd {D}/ex; then :; fi; rm y", "if [ -d x ]; then cd {D}/ex; fi; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c, cwd in (("if ! cd {D}/missing; then rm y; fi", d), ("if cd {D}/missing; then :; else rm y; fi", d),
+                       ("if cd {D}/ex; then rm y; fi", f"{d}/ex"), ("if cd {D}/ex; then :; fi; rm y", f"{d}/ex"),
+                       ("if true; then cd {D}/ex; fi; rm y", f"{d}/ex"), ("while cd {D}/ex; do break; done; rm y", f"{d}/ex"),
+                       ("until cd {D}/ex; do :; done; rm y", f"{d}/ex"), ("if cd {D}/missing; then rm y; fi", f"{d}/missing"),
+                       ("if ! cd {D}/ex; then :; fi; rm y", f"{d}/ex"), ("while ! cd {D}/ex; do :; done; rm y", f"{d}/ex")):
+            self.assertEqual(last(c).cwd, cwd, c)
+
+    def test_sequential_failed_cd(self):   # OS1: `;`·줄바꿈 뒤에서도 실패한 cd 의 두 경로(cd 전·cd 뒤)를 합친다
+        d, last = self._world()
+        for c in ("cd {D}/missing; rm y", "cd {D}/missing\nrm y", "cd {D}/missing; cd ..; rm y", "cd {D}/missing; true && rm y",
+                  "cd {D}/missing 2>/dev/null; rm y", "cd {D}/missing; cd ex; rm y", "pushd {D}/missing; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c, cwd in (("cd {D}/ex; rm y", f"{d}/ex"), ("mkdir -p {D}/n; cd {D}/n; rm y", f"{d}/n"), ("cd {D}/missing; cd {D}/ex; cd; rm y", d), ("cd {D}/missing; cd {D}/ex; rm y", f"{d}/ex"),
+                       ("true; cd {D}/ex; rm y", f"{d}/ex"), ("f=1; rm y", d)):
+            self.assertEqual(last(c).cwd, cwd, c)
+        self.assertEqual(last("f=a; echo; rm $f").env["f"], "a")
+
+    def test_exit_ends_path(self):   # OS6: exit 으로 끝나는 갈래·그룹은 합류에서 빠진다(서브셸 안 exit 은 서브셸만 끝낸다)
+        d, last = self._world()
+        for c, cwd in (("cd {D}/missing || { echo no; exit 1; }; rm y", f"{d}/missing"), ("cd {D}/ex || { exit 1; }; rm y", f"{d}/ex"),
+                       ("if cd {D}/missing; then :; else exit 1; fi; rm y", f"{d}/missing"),
+                       ("cd {D}/missing || exit; rm y", f"{d}/missing"), ("(cd {D}/missing || exit); rm y", d),
+                       ("if t; then exit; fi; rm y", d), ("cd {D}/missing || { cd {D}/ex || exit 1; }; rm y", None),
+                       ("{ cd {D}/missing || exit 1; }; rm y", f"{d}/missing"), ("exit 1 | cat; rm y", d)):
+            self.assertEqual(last(c).cwd, cwd, c)
+        self.assertEqual(names("exit; rm x; { exit; }; rm y"), ["exit", "rm", "exit", "rm"])   # 도달 못 해도 단위는 판정
 
 
 def ex(word_src, cwd="/w", env=None):
@@ -326,7 +369,7 @@ def inner(cmd):
 
 class RecursionTest(unittest.TestCase):
     def test_recursion(self):
-        self.assertEqual(inner("bash -lc 'cd /a; rm -rf x'"), [("cd", 1, "/w"), ("rm", 1, "/a")])
+        self.assertEqual(inner("bash -lc 'cd /usr; rm -rf x'"), [("cd", 1, "/w"), ("rm", 1, "/usr")])
         self.assertEqual(inner('eval "rm -rf x"'), [("rm", 1, "/w")])
         self.assertEqual(inner("sh <<EOF\nrm -rf x\nEOF"), [("rm", 1, "/w")])
         self.assertEqual(inner("echo 'rm -rf x' | sh"), [("rm", 1, "/w")])
@@ -342,7 +385,7 @@ class RecursionTest(unittest.TestCase):
         self.assertEqual(inner("cat > $(rm -rf d)"), [("rm", 1, "/w")])
 
     def test_eval_changes_current_shell(self):
-        self.assertEqual(rm_cwd("eval cd /a; rm y"), "/a")
+        self.assertEqual(rm_cwd("eval cd /usr; rm y"), "/usr")
 
     def test_depth_limit(self):
         self.assertIsNotNone(parse("eval " * 20 + "rm x", "/w", {}).error)
@@ -500,7 +543,7 @@ class ReviewFix4Test(unittest.TestCase):  # 리뷰 라운드 4
         self.assertEqual(targets("export PWD=/tmp; rm -rf $(pwd)"), [["/w"]])
         self.assertEqual(targets("env PWD=/tmp rm -rf $(pwd)"), [["/w"]])
         self.assertEqual(targets("PWD=/tmp; rm -rf $PWD"), [["/tmp"]])
-        self.assertEqual(targets("cd /a; rm -rf $(pwd)"), [["/a"]])
+        self.assertEqual(targets("cd /usr; rm -rf $(pwd)"), [["/usr"]])
 
     def test_prefix_assignment_not_visible_to_same_line(self):
         self.assertEqual(targets("PWD=/tmp rm -rf $PWD"), [["/w"]])
@@ -590,10 +633,10 @@ class CaseTest(unittest.TestCase):   # 재생 군집 P1: case 문 — 모든 분
     def test_state_merge(self):
         self.assertIsNone(rm_cwd("case x in a) cd /a;; esac; rm y"))     # 어느 분기가 돌았는지 모른다
         self.assertEqual(rm_cwd("case x in a) echo;; esac; rm y"), "/w")
-        self.assertEqual([x.cwd for x in segs("case x in a) cd /a; rm q;; b) rm r;; esac") if x.name == "rm"], ["/a", "/w"])
+        self.assertEqual([x.cwd for x in segs("case x in a) cd /usr; rm q;; b) rm r;; esac") if x.name == "rm"], ["/usr", "/w"])
         self.assertEqual([x.cwd for x in segs("case x in a) cd /a;& b) rm r;; esac") if x.name == "rm"], [None])
         self.assertIsNone(segs("case x in a) X=/a;; esac; rm $X")[-1].env.get("X"))
-        self.assertEqual(rm_cwd("cd /a; case x in a) echo;; esac | cd /b; rm y"), "/a")
+        self.assertEqual(rm_cwd("cd /usr; case x in a) echo;; esac | cd /tmp; rm y"), "/usr")
 
     def test_adversarial(self):
         self.assertEqual(names("case x in a) echo ';;' esac;; esac; rm y"), ["echo", "rm"])   # 따옴표 안 ;; 와 인자 esac
@@ -643,7 +686,7 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
         self.assertIsNone(rm_cwd("for d in a b; do cd $d; done; rm z"))
         self.assertEqual(rm_cwd("for f in a; do echo; done; rm z"), "/w")
         self.assertEqual(rm_cwd("for d in /a; do cd $d; done | cat; rm z"), "/w")
-        self.assertEqual([x.cwd for x in segs("for d in a b; do cd /x; rm $d; done") if x.name == "rm"], ["/x", "/x"])
+        self.assertEqual([x.cwd for x in segs("for d in a b; do cd /usr; rm $d; done") if x.name == "rm"], ["/usr", "/usr"])
 
     def test_redirect_after_done(self):
         s = [x for x in segs("for f in a; do echo $f; done > out") if x.redirects]

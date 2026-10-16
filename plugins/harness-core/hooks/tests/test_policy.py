@@ -456,6 +456,21 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "cd missing_dir && true; rm -rf ./*", "cd missing_dir && F=x.txt; rm -f {SCRATCH}/s1/$F"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
 
+    def test_f4_condition_and_exit_paths(self):   # fix-brief-4 NB3·OS1·OS6: 조건 자리·`;` 뒤 cd 의 실패 경로, exit 으로 끝나는 갈래
+        rm = "; rm -rf ./*"
+        for c in ("cd {SCRATCH}/missing" + rm, "cd {SCRATCH}/missing\nrm -rf ./*", "cd {SCRATCH}/missing; cd .." + rm,
+                  "if cd {SCRATCH}/missing; then :; fi" + rm, "while cd {SCRATCH}/missing; do break; done" + rm,
+                  "until cd {SCRATCH}/missing; do sleep 1; break; done" + rm, "if t; then :; elif cd {SCRATCH}/missing; then :; fi" + rm,
+                  "cd {SCRATCH}/missing || { cd {SCRATCH}/s1 || exit 1; }" + rm):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        for c in ("if ! cd {SCRATCH}/missing; then rm src/main.py; fi", "if cd {SCRATCH}/missing; then :; else rm src/main.py; fi",
+                  "(cd {SCRATCH}/missing || exit); rm src/main.py"):
+            self.assertEqual(ev(c), [("삭제", GIT_TRACKED)], c)
+        for c in ("if true; then cd {SCRATCH}/s1; fi; rm -f x.txt", "if cd {SCRATCH}/s1; then :; fi; rm -f x.txt",
+                  "cd {SCRATCH}/s1 || { echo no; exit 1; }; rm -f x.txt", "if cd {SCRATCH}/s1; then :; else exit 1; fi; rm -f x.txt",
+                  "if ! cd {SCRATCH}/s1; then rm src/main.py; fi; rm -f x.txt"):
+            self.assertEqual(ev(c), [], c)
+
     def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
         for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",
                   'for f in [^.]*; do rm -rf "$f"; done', 'for f in [[:alpha:]]*; do rm -rf "$f"; done'):

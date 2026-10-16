@@ -1298,13 +1298,17 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     if depth > _MAX_DEPTH:
         raise LexError("재귀 깊이 초과")
     toks = lex(command)
-    st = {"cwd": cwd}
-    stack: list[tuple[str, str | None, dict[str, str | None], bool]] = []
+    st: dict = {"cwd": cwd, "dead": False}   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
+    stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead) — 열 때의 바깥 상태
     words: list[Word] = []
     redirects: list[Redirect] = []
     pipe_prev: Segment | None = None
-    # 진행 중인 `&&`·`||` 요소의 [단위 수(복합·파이프는 2 이상), 실패 경로 없음, 실패 끝 상태(cd 는 cd 전, 그 밖 None=끝 상태)]
-    elem: list = [0, False, None]
+    # 진행 중인 요소 — n: 단위 수(복합·파이프는 2 이상), sure: 실패 경로 없음, pre: 실패 끝(cd 는 cd 전 상태), exit: 경로 끝.
+    # 요소가 끝나면 outcome() 이 (성공 끝들, 실패 끝들)로 바꾸고, 모든 구문이 그 집합을 collect/join 으로 합류한다
+    elem: dict = {"n": 0, "sure": False, "pre": None, "exit": False, "neg": False}
+
+    def reset_elem() -> None:
+        elem.update(n=0, sure=False, pre=None, exit=False, neg=False)
 
     def flush() -> Segment | None:
         nonlocal words, redirects
@@ -1321,12 +1325,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         return seg
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
+        nonlocal last_list
         neg = False
         while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
             neg |= w[0].literal() == "!"
             w = w[2 if w[0].literal() == "time" and len(w) > 1 and w[1].literal() == "-p" else 1:]
-        if w or r:   # `&&`·`||` 목록 요소의 단위 수와 '실패 경로 없음' 여부(andor_step 이 읽는다)
-            elem[:] = [elem[0] + 1, False, None]
+        if w or r:   # 요소의 단위 수와 '실패 경로 없음' 여부(outcome 이 읽는다)
+            elem.update(n=elem["n"] + 1, sure=False, pre=None, exit=False, neg=neg)
+            last_end[0] = last_list = None   # 상태가 바뀔 수 있다 — 앞서 만든 끝 상태를 지금 상태로 믿지 않는다
         if _NAMEREF in state_env:
             _forget(state_env)
         for m in _OP_ASSIGN.finditer(" ".join([x.literal() for x in w] + [rd.target.literal() for rd in r if rd.target]
@@ -1338,7 +1344,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[k] = v
                 if v is not None and _mktemp_dir(x):
                     state_env[_MADE + v] = "1"
-            elem[1] = not (neg or r) and _only_mktemp(w)
+            elem["sure"] = not r and _only_mktemp(w)
             if not r:
                 return None
             w = []
@@ -1382,18 +1388,18 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            elem[1] = name not in ("typeset", "local") and not (neg or r) and _only_mktemp(w)   # 함수 밖 local 은 늘 실패
+            elem["sure"] = name not in ("typeset", "local") and not r and _only_mktemp(w)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
             return None
-        if not (neg or r):
+        if not r:
             if name in _SURE_CMDS or (name == "readonly" and _only_mktemp(w)):
-                elem[1] = True
+                elem["sure"] = True
             elif name in ("exit", "return"):
-                elem[1] = "exit"
+                elem["exit"] = True
             elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env)) is not None:
                 state_env.update(dict.fromkeys([_MADE + x for x in mk], "1"))
-                elem[1] = True
+                elem["sure"] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
@@ -1401,14 +1407,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env.clear()
             state_env.update(after[1])
         if name in ("cd", "pushd"):
-            elem[2] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
+            elem["pre"] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
             args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
                 state_env.get("HOME") if name == "cd" else None)
             if st["cwd"] is not None:
                 state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
                 # 있는 폴더·앞서 만든 폴더로의 cd 만 실패 경로가 없다 — 없는 폴더(`cd build && …`)는 실패 끝을 유지
-                elem[1] = not (neg or r) and (_made(st["cwd"], state_env) or (
+                elem["sure"] = not r and (_made(st["cwd"], state_env) or (
                     os.path.isdir(st["cwd"]) and os.access(st["cwd"], os.X_OK)))
             else:
                 state_env.pop("PWD", None)
@@ -1419,74 +1425,110 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env.pop(SHELL_CWD, None)
         return seg
 
-    snap = (st["cwd"], dict(state_env))
+    snap = (st["cwd"], dict(state_env))   # 파이프라인 시작 상태 — 구성원은 서브셸이라 끝나면 여기로 돌아온다
     in_pipe = False
-    # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자, 지금 요소가 도달 불가) — 우변은 조건부라
-    # '안 함' 경로와 합친다
+    # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자, 지금 요소가 시작부터 도달 불가)
     andor: tuple[list, list, str, bool] | None = None
-
-    def restore() -> None:
-        st["cwd"] = snap[0]
-        state_env.clear()
-        state_env.update(snap[1])
+    last_end: list = [None]   # outcome 이 마지막으로 만든 끝 상태 — 같은 객체 하나로 합류하면 상태를 다시 놓지 않는다
+    last_list: tuple[list, list] | None = None   # 방금 `;`·줄바꿈으로 닫은 목록의 (성공 끝들, 실패 끝들) — 조건 자리가 읽는다
 
     def now() -> tuple[str | None, dict[str, str | None]]:
         return st["cwd"], dict(state_env)
 
-    def andor_step(op: str | None) -> None:
-        # 방금 끝난 요소의 끝 상태를 목록에 넣고, op 가 있으면 다음 요소의 시작(&& 는 성공, || 는 실패 경로의 합), 없으면 목록 끝(합)
-        # 실패 경로가 사실상 없는 단순 명령 하나(elem)는 실패 끝을 남기지 않는다. 시작 경로가 없는 요소(`true || x` 의 x)는
-        # 단위는 판정하되 끝 상태를 합류에서 뺀다
+    def set_state(s: tuple[str | None, dict[str, str | None]]) -> None:
+        st["cwd"], st["dead"], last_end[0] = s[0], False, None
+        state_env.clear()
+        state_env.update(s[1])
+
+    def restore() -> None:
+        set_state(snap)
+
+    # ---- 경로 집합: 모든 구문(단순 명령·`&&`/`||`·`;`·조건 자리·그룹·갈래)이 같은 세 함수로 끝 상태를 모으고 합친다 ----
+
+    def outcome() -> tuple[list, list]:
+        """방금 끝난 요소의 (성공 끝들, 실패 끝들). 도달 불가 자리에서 끝났으면 둘 다 빈 목록.
+        단순 명령 하나: 실패 경로 없음(sure)이면 실패 끝 없음, cd 는 실패 끝이 cd 전 상태, exit 은 둘 다 없음, `!` 는 둘을 뒤바꿈.
+        복합·파이프는 둘 다 끝 상태."""
+        if st["dead"]:
+            last_end[0] = None
+            return [], []
+        e = last_end[0] = now()
+        if elem["n"] != 1:
+            return [e], [e]
+        if elem["exit"]:
+            return [], []
+        ok, fail = [e], ([] if elem["sure"] else [elem["pre"] or e])
+        return (fail, ok) if elem["neg"] else (ok, fail)   # `!` 는 성공·실패 끝을 뒤바꾼다
+
+    def collect() -> tuple[list, list]:
+        """진행 중인 목록을 닫고 (성공 끝들, 실패 끝들). 시작부터 도달 불가였던 요소는 목록에 기여하지 않는다."""
         nonlocal andor
-        e, one = now(), elem[0] == 1
-        oks = [] if one and elem[1] == "exit" else [e]   # exit·return 은 목록 뒤로 이어지는 끝이 없다
-        fails = [] if one and elem[1] else [elem[2] if one and elem[2] else e]
-        elem[:] = [0, False, None]
-        dead = False
-        if andor is None:
-            ok, fail = oks, fails
-        else:
-            ok, fail, last, dead = andor
-            if not dead:
-                ok, fail = (oks, fail + fails) if last == "&&" else (ok + oks, fails)
-        if op is None:
+        ok, fail = outcome()
+        reset_elem()
+        if andor is not None:
+            pok, pfail, last, dead0 = andor
+            if dead0:
+                ok, fail = pok, pfail
+            elif last == "&&":
+                fail = pfail + fail
+            else:
+                ok = pok + ok
             andor = None
-            if ok or fail:   # 모든 경로가 exit 이면 뒤는 도달 불가 — 지금 상태 그대로 단위만 판정한다
-                set_state(_merge(ok + fail))
+        return ok, fail
+
+    def join(states: list) -> None:
+        """끝 상태들의 합을 지금 상태로. 비면 도달 불가. 방금 만든 끝 하나면 그대로 둔다."""
+        if not states:
+            st["dead"] = True
+        elif not all(s is last_end[0] for s in states):
+            set_state(_merge(states))
+
+    def andor_step(op: str | None) -> None:
+        # op 가 있으면 다음 요소의 시작(&& 는 성공, || 는 실패 끝들의 합), 없으면 목록 끝(모든 끝의 합)
+        nonlocal andor
+        ok, fail = collect()
+        if op is None:
+            join(ok + fail)
         else:
             s = ok if op == "&&" else fail
             andor = (ok, fail, op, not s)
-            if s and (len(s) > 1 or s[0] is not e):   # 방금 끝난 상태 하나면 그대로(실패한 cd·도달 불가 요소 뒤는 다시 놓는다)
-                set_state(_merge(s))
+            join(s)
 
     def end_list() -> None:
-        if andor is not None:
-            andor_step(None)
-        elem[:] = [0, False, None]
+        # `;`·줄바꿈·그룹 끝: 목록의 모든 끝을 합친다(`cd missing; …` 도 cd 전·뒤 두 경로). 조건 자리(then·do)가 읽도록 남긴다
+        nonlocal last_list
+        last_list = collect()
+        join(last_list[0] + last_list[1])
 
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
         nonlocal snap, in_pipe, andor
-        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor))
+        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor, st["dead"]))
         in_pipe, andor = False, None
         snap = (st["cwd"], dict(state_env))
 
-    def close_group(kind: str) -> None:
+    def close_compound(kind: str, ends: list | None) -> None:
+        """복합 명령(그룹·서브셸·if·루프·case)을 닫는다. ends = 갈래 끝들(None 이면 지금 상태 그대로).
+        서브셸·파이프 구성원은 안쪽 변화가 밖으로 안 나간다."""
         nonlocal snap, in_pipe, andor
+        _, cwd0, env0, outer_pipe, andor, dead0 = stack.pop()
+        if kind == "(" or outer_pipe:
+            set_state((cwd0, env0))
+            st["dead"] = dead0
+        elif ends is not None:
+            join(ends)
+        in_pipe = outer_pipe
+        elem.update(n=2, sure=False, pre=None, exit=False, neg=False)   # 복합 명령은 실패 경로를 따로 모델링하지 않는다
+        snap = (cwd0, env0)  # 그룹 뒤 `|` 가 오면 그룹 전체를 되돌리는 기준
+
+    def close_group(kind: str) -> None:
         flush()
         if in_pipe:  # 그룹 안 마지막 파이프 구성원
             restore()
         end_list()
         if not stack or stack[-1][0] != kind:
             raise LexError(f"짝 없는 {'}' if kind == '{' else ')'!r}")
-        _, cwd0, env0, outer_pipe, andor = stack.pop()
-        if kind == "(" or outer_pipe:  # 서브셸, 또는 파이프 구성원인 { } 는 안쪽 변화가 밖으로 안 나간다
-            st["cwd"] = cwd0
-            state_env.clear()
-            state_env.update(env0)
-        in_pipe = outer_pipe
-        elem[:] = [2, False, None]   # 복합 명령은 실패 경로를 따로 모델링하지 않는다
-        snap = (cwd0, env0)  # 그룹 뒤 `|`·`&` 가 오면 그룹 전체를 되돌리는 기준
+        close_compound(kind, None)
 
     # 열린 case 문(spec 밖 구문 — 재생 군집 P1): mode head(머리)·pat(패턴)·body(분기 본문), pat = 0 단어 기대 /
     # 1 `|`·`)` 기대 / 2 `|` 뒤 단어 기대, ends = 분기 끝 상태들. stack 의 "case" 항목과 짝을 이룬다
@@ -1496,55 +1538,46 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         lits = [None if x.is_quoted() else x.literal() for x in words]
         return not redirects and all(x in _RESERVED or (x == "-p" and lits[i - 1:i] == ["time"]) for i, x in enumerate(lits))
 
-    def set_state(s: tuple[str | None, dict[str, str | None]]) -> None:
-        st["cwd"] = s[0]
-        state_env.clear()
-        state_env.update(s[1])
-
-    def close_ctl(s: tuple[str | None, dict[str, str | None]]) -> None:
-        # s = 합친 끝 상태. 파이프 구성원인 복합 명령은 안쪽 변화가 밖으로 안 나간다
-        nonlocal snap, in_pipe, andor
-        _, cwd0, env0, outer_pipe, andor = stack.pop()
-        set_state((cwd0, env0) if outer_pipe else s)
-        in_pipe = outer_pipe
-        elem[:] = [2, False, None]
-        snap = (cwd0, dict(env0))
-
     def close_case() -> None:
         # 어느 분기가 돌았는지(또는 아무것도 안 돌았는지) 모르므로 상태는 시작과 모든 분기 끝이 같을 때만 유지
         c = cases.pop()
         end_list()
-        if c["mode"] == "body":
+        if c["mode"] == "body" and not st["dead"]:
             c["ends"].append(now())
-        close_ctl(_merge([stack[-1][1:3], *c["ends"]]))
+        close_compound("case", [stack[-1][1:3], *c["ends"]])
 
     # 열린 if·루프(while/until/for/select): mode cond(조건)·body(본문)·else·done(목록 확정 for — for_loop 가 이미 합쳤다),
-    # cond = 마지막 조건 뒤 상태, ends = 갈래 끝 상태들. stack 의 "if"·"loop" 항목과 짝을 이룬다
+    # cond = 조건이 거짓(until 은 참)인 끝 상태들, ends = 갈래 끝 상태들. stack 의 "if"·"loop" 항목과 짝을 이룬다
     ctl: list[dict] = []
 
     def control(word: str) -> None:
-        """if·while·until 을 열고 then·elif·else·fi·do·done 으로 갈래를 넘긴다. 조건부 본문은 '안 함' 경로와 합친다."""
+        """if·while·until 을 열고 then·elif·else·fi·do·done 으로 갈래를 넘긴다. 본문은 조건의 성공 끝에서 시작하고,
+        거짓 갈래·else 없는 경로·루프 종료는 조건의 실패 끝(cd 실패 = 조건 전 상태)에서 시작·합류한다."""
         nonlocal snap
         flush()
         if word in _CTL_OPEN or word in _LOOP_HEAD:   # 앞 `&&` 목록은 그룹처럼 stack 에 맡긴다(복합 명령이 그 요소)
             open_group("if" if word == "if" else "loop")
-            ctl.append({"mode": "cond", "ends": []})
+            ctl.append({"mode": "cond", "ends": [], "until": word == "until"})
             return
-        end_list()
         kind, modes = _CTL[word]
         c = ctl[-1] if stack and stack[-1][0] == kind else None
         if c is None or c["mode"] not in modes:
             raise LexError(f"짝 없는 {word}")
-        e = now()
-        if word in ("fi", "done"):   # 조건이 거짓이거나 0회 돈 경로(else 없음)도 합친다
-            ctl.pop()
-            close_ctl(e if c["mode"] == "done" else _merge([*c["ends"], e] + ([] if c["mode"] == "else" else [c["cond"]])))
-            return
         if word in ("then", "do"):
-            c.update(mode="body", cond=e)
-        else:   # elif·else — 다음 조건·else 본문은 앞 조건이 거짓인 상태에서
-            c["ends"].append(e)
-            set_state(c["cond"])
+            ok, fail = last_list or collect()
+            if c["until"]:
+                ok, fail = fail, ok
+            c.update(mode="body", cond=fail)
+            join(ok)
+        else:
+            end_list()
+            if not st["dead"]:
+                c["ends"].append(now())
+            if word in ("fi", "done"):
+                ctl.pop()
+                close_compound(kind, None if c["mode"] == "done" else c["ends"] + ([] if c["mode"] == "else" else c["cond"]))
+                return
+            join(c["cond"])   # elif·else — 다음 조건·else 본문은 앞 조건이 거짓인 상태에서
             c["mode"] = "cond" if word == "elif" else "else"
         snap = now()
 
@@ -1669,10 +1702,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 restore()
             end_list()
             in_pipe, pipe_prev = False, None
-            end = (st["cwd"], dict(state_env))
-            cur["ends"].append(end)
+            ends = [] if st["dead"] else [now()]
+            cur["ends"] += ends
             # ;& ·;;& 는 다음 분기 본문이 이 분기 끝 상태에서 이어질 수도 있다
-            set_state(stack[-1][1:3] if t.op == ";;" else _merge([stack[-1][1:3], end]))
+            set_state(_merge([stack[-1][1:3], *([] if t.op == ";;" else ends)]))
             snap = (st["cwd"], dict(state_env))
             cur["mode"] = "pat"
             continue
@@ -1700,7 +1733,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             elif t.op not in ("|", "|&"):
                 end_list()
             else:
-                elem[0] += 2   # 파이프라인은 단순 명령 하나가 아니다
+                elem["n"] += 2   # 파이프라인은 단순 명령 하나가 아니다
             in_pipe = t.op in ("|", "|&")
             pipe_prev = seg if in_pipe else None
             snap = (st["cwd"], dict(state_env))
