@@ -430,6 +430,7 @@ def _seq(a: str, b: str, step: str | None) -> list[str] | None:
 
 # mktemp 결과 대신 쓰는 이름 — 없는 경로라 분류가 MISSING(허용)이 된다. 프로세스마다 고유
 _MKTEMP_NAME = "bash-guard-mktemp-" + os.urandom(6).hex()
+_TMPDIR0 = "\x00tmpdir"   # env 안의 호출 시점 TMPDIR — 변수 이름이 될 수 없는 키라 명령 안 할당으로 덮이지 않는다
 _MKTEMP_OPT = re.compile(r"-([duqt]*)(?:p(.*))?")
 
 
@@ -442,7 +443,10 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
     if not toks or any(x.kind == "op" for x in toks) or toks[0].kind != "word" or toks[0].word.literal() != "mktemp":
         return None
     a = [x.word for x in toks if x.kind == "word"]
-    default = env.get("TMPDIR") or "/tmp"
+    tmp = env.get("TMPDIR")
+    if tmp != env.get(_TMPDIR0):
+        return None   # 이 명령 안에서 바꾼 TMPDIR 는 임시 루트로 믿지 않는다
+    default = tmp or "/tmp"
     d: str | None = None
     tmpl, t_flag, i = None, False, 1
     while i < len(a):
@@ -470,6 +474,8 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
             if tmpl is None:
                 return None
         i += 1
+    if d is not None and tmpl is not None and "/" in tmpl:
+        return None   # GNU mktemp 는 -p 폴더 뒤 템플릿의 `/`·`..` 로 폴더 밖에 만든다
     if d is None:
         if tmpl is not None and "/" in tmpl:
             if t_flag or not tmpl.startswith("/"):
@@ -480,8 +486,15 @@ def _mktemp(body: str, env: Mapping[str, str | None]) -> str | None:
         else:
             d = default
     d = os.path.normpath(d or default)
-    roots = [os.path.normpath(r) for r in ("/tmp", "/var/tmp", env.get("TMPDIR")) if r]
-    return os.path.join(d, _MKTEMP_NAME) if any(d == r or d.startswith(r + "/") for r in roots) else None
+    roots = [os.path.normpath(r) for r in ("/tmp", "/var/tmp", tmp) if r]
+    if not any(d == r or d.startswith(r + "/") for r in roots) or not os.path.isdir(d):
+        return None   # 폴더가 없으면 mktemp 가 실패해 결과가 빈 값이 된다
+    return os.path.join(d, _MKTEMP_NAME)
+
+
+def _mktemp_tail_unsafe(lit: str, globbing: bool) -> bool:
+    """mktemp 결과 자리 뒤의 `..`·글롭 — 결과가 빈 값(실패)이면 `/..`·`/*` 가 된다."""
+    return _MKTEMP_NAME in lit and (globbing or ".." in lit.partition(_MKTEMP_NAME)[2].split("/"))
 
 
 def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, int]:
@@ -650,13 +663,14 @@ def _expand_word(w: Word, env: Mapping[str, str | None], cwd: str | None) -> lis
         if ch is None:
             return None
         lit = "".join(t for t, _ in ch)
-        if _XARGS_MARK in lit:
+        globbing = any(a and any(x in t for x in "*?[") for t, a in ch)
+        if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing):
             return None
         if not lit.startswith("/"):
             if cwd is None:
                 return None
             lit = os.path.join(cwd, lit) if lit else cwd
-        if any(a and any(x in t for x in "*?[") for t, a in ch):
+        if globbing:
             pat = "".join(t if a else glob.escape(t) for t, a in ch)
             if not pat.startswith("/"):
                 pat = os.path.join(glob.escape(cwd), pat)
@@ -679,9 +693,10 @@ def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str
             if ch is None:
                 return None
             lit = "".join(t for t, _ in ch)
-            if _XARGS_MARK in lit:
+            globbing = any(a and any(x in t for x in "*?[") for t, a in ch)
+            if _XARGS_MARK in lit or _mktemp_tail_unsafe(lit, globbing):
                 return None
-            if any(a and any(x in t for x in "*?[") for t, a in ch):
+            if globbing:
                 pat = "".join(t if a else glob.escape(t) for t, a in ch)
                 if cwd is None and not pat.startswith("/"):
                     return None
@@ -1100,6 +1115,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
 
 def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Context = HOST) -> ParseResult:
     state_env: dict[str, str | None] = {k: env[k] for k in ("HOME", "TMPDIR", "USER") if k in env}
+    state_env[_TMPDIR0] = env.get("TMPDIR")
     if cwd is not None:
         state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []

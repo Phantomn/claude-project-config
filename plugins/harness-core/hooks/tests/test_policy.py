@@ -385,6 +385,15 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("T=$(mktemp -p {HOME}); rm -f $T"), [("삭제", UNRESOLVED)])   # 임시 루트 밖 -p
         self.assertEqual(ev("T=$(date +%s); rm -rf {SCRATCH}/s1 /x/$T"), [("삭제", UNRESOLVED)])
 
+    def test_g_mktemp_unmodeled_failure_or_root(self):   # 적대 리뷰 I1·I2·M3
+        for c in ("export TMPDIR={REPO}; X=$(mktemp -d); rm -rf $X/../*", "TMPDIR={REPO}; X=$(mktemp -d); rm -rf $X/x",
+                  'X=$(mktemp -d -p {SCRATCH}/nope); rm -rf "$X"/*', "X=$(mktemp {SCRATCH}/nope/f.XXXX); rm -rf $X",
+                  "for d in $(mktemp -d -p {SCRATCH}/nope); do rm -rf $d/*; done", "X=$(mktemp -d); rm -rf $X/../*",
+                  "X=$(mktemp -d); rm -rf $X/../s1", "X=$(mktemp -d); rm -rf $X/*",
+                  "X=$(mktemp -d -p {SCRATCH} ../home/proj/tXXXX); rm -f $X/../src/main.py"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("X=$(mktemp -d -p {SCRATCH}/s1); rm -rf $X; rm -f $(mktemp)"), [])   # 있는 폴더 아래는 그대로 확정
+
     def test_h_scratch_prefix_with_unresolved_last_component(self):
         for c in ('rm -rf "{SCRATCH}/s1/run-$$"', "echo x > {SCRATCH}/s1/$N.log", "cp src/main.py {SCRATCH}/s1/r-${ID}",
                   "rm -f {SCRATCH}/s1/out-$(date +%s).txt", "cd {SCRATCH}/s1 && rm -rf ./run-$ID", 'rm -f "{SCRATCH}/s1/a-$(ls | head -1)"',

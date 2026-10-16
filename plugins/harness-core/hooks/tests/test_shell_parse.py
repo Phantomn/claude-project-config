@@ -550,31 +550,39 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
         self.assertLess(time.perf_counter() - t0, 2.0)
 
 
-MK_ENV = {"HOME": "/h", "TMPDIR": "/t"}
-
-
 class MktempTest(unittest.TestCase):   # 재생 군집 U4: mktemp 결과는 임시 루트 아래의 새 경로
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.t = d.name
+        os.mkdir(f"{self.t}/work")
+
     def one(self, c):
-        r = rm_targets(c, env=MK_ENV)
+        r = rm_targets(c.replace("/t/", self.t + "/"), env={"HOME": "/h", "TMPDIR": self.t})
         self.assertEqual(len(r), 1, c)
         return r[0]
 
     def test_scratch_marker(self):
-        for c, root in (("X=$(mktemp); rm $X", "/t"), ("X=$(mktemp -d); rm -rf $X", "/t"), ('X="$(mktemp -p /tmp)"; rm "$X"', "/tmp"),
-                        ("X=$(mktemp -t f.XXXX); rm $X", "/t"), ("X=$(mktemp --tmpdir=/var/tmp x.XXX); rm $X", "/var/tmp"),
-                        ("X=$(mktemp /tmp/f.XXXXXX); rm $X", "/tmp"), ("X=`mktemp -dq`; rm -r $X", "/t"),
-                        ("X=$(mktemp -d -p /t/work); rm -rf $X/sub", "/t/work"), ("X=$(mktemp --suffix .py); rm $X", "/t"),
-                        ("rm $(mktemp -u)", "/t")):
+        t = self.t
+        for c, root in (("X=$(mktemp); rm $X", t), ("X=$(mktemp -d); rm -rf $X", t), ('X="$(mktemp -p /tmp)"; rm "$X"', "/tmp"),
+                        ("X=$(mktemp -t f.XXXX); rm $X", t), ("X=$(mktemp --tmpdir=/var/tmp x.XXX); rm $X", "/var/tmp"),
+                        ("X=$(mktemp /tmp/f.XXXXXX); rm $X", "/tmp"), ("X=`mktemp -dq`; rm -r $X", t),
+                        ("X=$(mktemp -d -p /t/work); rm -rf $X/sub", t + "/work"), ("X=$(mktemp --suffix .py); rm $X", t),
+                        ("rm $(mktemp -u)", t)):
             p = self.one(c)
             self.assertTrue(p and len(p) == 1 and p[0].startswith(root + "/") and "mktemp" in p[0] and "\x00" not in p[0], (c, p))
-        self.assertEqual(self.one("X=$(mktemp); rm $X")[0].count("/"), 2)
+        self.assertEqual(self.one("X=$(mktemp); rm $X")[0].count("/"), t.count("/") + 1)
         self.assertNotIn("TMPDIR", rm_targets("X=$(mktemp); rm $X", env={"HOME": "/h"})[0][0])
         self.assertTrue(rm_targets("X=$(mktemp); rm $X", env={"HOME": "/h"})[0][0].startswith("/tmp/"))
 
     def test_outside_or_unknown_stays_unresolved(self):
         for c in ("X=$(mktemp -p /etc); rm $X", "X=$(mktemp f.XXX); rm $X", "X=$(mktemp -p $U); rm $X", "X=$(mktemp -p /tmp/../etc); rm $X",
                   "X=$(date +%s); rm $X", "X=$(uuidgen); rm $X", "X=$(mktemp | cat); rm $X", "X=$(mktemp -t a/b.XX); rm $X",
-                  "X=$(mktemp --bogus); rm $X", "X=$(mktemp ./f.XX); rm $X"):
+                  "X=$(mktemp --bogus); rm $X", "X=$(mktemp ./f.XX); rm $X",
+                  # 적대 리뷰 I1·I2·M3: 없는 폴더(실패 → 빈 값), 명령 안에서 바꾼 TMPDIR, 결과 뒤 `..`·글롭, -p 뒤 슬래시 템플릿
+                  "X=$(mktemp -d -p /t/nope); rm -rf $X", "X=$(mktemp /t/nope/f.XXX); rm $X", "export TMPDIR=/w; X=$(mktemp -d); rm -rf $X",
+                  "X=$(mktemp -d); rm -rf $X/..", "X=$(mktemp -d); rm -rf $X/../x", "X=$(mktemp -d); rm -rf $X/*",
+                  "X=$(mktemp -d -p /t/work ../../w/tXX); rm -rf $X"):
             self.assertEqual(self.one(c), None, c)
 
 
