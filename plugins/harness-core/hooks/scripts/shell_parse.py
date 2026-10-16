@@ -1000,7 +1000,9 @@ def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -
             q = os.path.dirname(q)
         if not (_made(q, env) or (os.path.isdir(q) and os.access(q, os.W_OK | os.X_OK))):   # 권한·읽기 전용 FS 는 실패
             return None
-    return (made, mode is None or (mode.isdigit() and bool(int(mode, 8) & 0o100))) if out else None
+    if mode is not None and not (mode and all(c in "01234567" for c in mode)):
+        return None   # 비8진·기호·빈 모드 — mkdir 자체가 실패할 수 있다(재검토 3 NB8: `int(mode, 8)` 크래시)
+    return (made, mode is None or bool(int(mode, 8) & 0o100)) if out else None
 
 
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:

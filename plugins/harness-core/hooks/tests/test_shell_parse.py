@@ -415,6 +415,9 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "mkdir -pm 700 {D}/m && cd {D}/m; rm y"):
             self.assertEqual(last(c).cwd, f"{d}/m", c)
         self.assertEqual(last("mkdir -m 644 {D}/m && rm y").cwd, d)   # mkdir 자체는 성공한다
+        for c in ("mkdir -m 89 {D}/m && cd {D}/m; rm y", "mkdir -m 8 {D}/m && cd {D}/m; rm y", "mkdir {D}/m -m && cd {D}/m; rm y",
+                  "mkdir -m 89 {D}/m && cd {D}/ex; rm y", "mkdir -m u+x {D}/m && cd {D}/ex; rm y"):   # 5-2 NB8: 잘못된 모드는 mkdir 자체가 실패할 수 있다
+            self.assertIsNone(last(c).cwd, c)
 
     def test_wrapped_command_is_not_sure(self):   # NB6: 래퍼를 벗긴 이름으로 성공 가정을 정하지 않는다(command·builtin 은 결과에 영향 없음)
         d, last = self._world()
