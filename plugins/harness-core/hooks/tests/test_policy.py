@@ -401,13 +401,26 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [], c)
 
     def test_f_conditional_changes_are_merged(self):   # 재검토 Out-of-Scope 1: if·&&/||·while/until·0회 for 본문의 변화를 믿지 않는다
-        for c in ("f=..; if false; then f=nothing; fi; rm -rf src/$f", "f=..; true || f=nothing; rm -rf src/$f",
+        for c in ("f=..; if false; then f=nothing; fi; rm -rf src/$f",
                   "f=..; while false; do f=nothing; done; rm -rf src/$f", "D=src; if [ -d tmp ]; then D=tmp/out; fi; rm -rf $D",
                   "if [ -d x ]; then cd {SCRATCH}/s1; fi; rm -rf src", "[ -d x ] && cd {SCRATCH}/s1; rm -rf src"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
         for c in ("if cd {SCRATCH}/s1; then rm -f x.txt; fi", "cd {SCRATCH} && cd s1 && rm -f x.txt",
                   "if true; then f=x.txt; else f=x.txt; fi; rm -f {SCRATCH}/s1/$f"):
             self.assertEqual(ev(c), [], c)
+
+    def test_f_assume_success_left_side(self):   # fix-brief-3 항목 1: 실패 경로가 사실상 없는 `&&`·`||` 좌변
+        # bash: true 는 늘 성공해 `||` 우변(f=nothing)이 돌지 않는다 — f 는 `..` 그대로, src/.. = 저장소
+        self.assertEqual(ev("f=..; true || f=nothing; rm -rf src/$f"), [("삭제", PROTECTED_NAME)])
+        self.assertEqual(ev("f=nothing; true || f=..; rm -rf src/$f"), [])
+        self.assertEqual(ev("true || cd {SCRATCH}/s1; rm -f main.py"), [])   # cd 는 돌지 않는다 — cwd 는 저장소
+        for c in ("mkdir -p {SCRATCH}/s1/n && cd {SCRATCH}/s1/n && echo x > a.txt; rm -rf ./*",
+                  "cd {SCRATCH}/s1 && F=x.txt; rm -f $F", "cd {SCRATCH}/s1 && T=$(mktemp -d) && echo x > $T/a; rm -rf $T",
+                  "cd {SCRATCH} && mkdir -p s1/m && cd s1/m && echo x > o.txt\nrm -f o.txt"):
+            self.assertEqual(ev(c), [], c)
+        for c in ("[ -d x ] && cd {SCRATCH}/s1; rm -rf ./*", "./build.sh && cd {SCRATCH}/s1; rm -rf ./*",
+                  "cd missing_dir && true; rm -rf ./*", "cd missing_dir && F=x.txt; rm -f {SCRATCH}/s1/$F"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
 
     def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
         for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",

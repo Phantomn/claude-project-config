@@ -891,6 +891,58 @@ def _clobbered(name: str, w: list[Word]) -> list[str]:
     return out
 
 
+_SURE_CMDS = (":", "true", "echo", "printf")   # 리다이렉트가 없으면 실패 경로가 사실상 없다(정직한 실수 모델 §1.5)
+
+
+def _only_mktemp(w: list[Word]) -> bool:
+    """단어들의 명령 치환이 모두 mktemp — 대입 명령의 종료 상태는 마지막 치환의 상태라 다른 명령은 실패할 수 있다."""
+    return all(b.split()[:1] == ["mktemp"] for x in w for b in _word_subs(x))
+
+
+def _mktemp_dir(w: Word) -> bool:
+    return any((a := b.split())[:1] == ["mktemp"] and any(
+        y == "--directory" or ((m := _MKTEMP_OPT.fullmatch(y)) is not None and "d" in m.group(1)) for y in a[1:])
+        for b in _word_subs(w))
+
+
+def _made(p: str, made: set[str]) -> bool:
+    """같은 해석 안에서 앞서 mkdir·mktemp -d 가 만든 폴더(또는 그 상위)."""
+    return any(m == p or m.startswith(p + "/") for m in made)
+
+
+def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None], made: set[str]) -> list[str] | None:
+    """`mkdir` 이 실패할 수 없는 모양이면 만드는 경로들, 아니면 None(대상 미확정·이미 있음·상위가 폴더가 아님)."""
+    parents, out, i, ops = False, [], 1, False
+    while i < len(w):
+        lit = w[i].literal()
+        if not ops and lit == "--":
+            ops = True
+        elif not ops and lit.startswith("--"):
+            parents |= lit == "--parents"
+            i += lit == "--mode"
+        elif not ops and lit.startswith("-") and lit != "-":
+            head, m, val = lit[1:].partition("m")
+            parents |= "p" in head
+            i += bool(m) and not val
+        else:
+            r = _expand(w[i], env, cwd)
+            if not r or len(r) != 1:
+                return None
+            out.append(os.path.normpath(r[0]))
+        i += 1
+    for p in out:
+        if os.path.lexists(p):
+            if not (parents and os.path.isdir(p)):
+                return None
+            continue
+        q = os.path.dirname(p)
+        while parents and q != "/" and not os.path.lexists(q) and not _made(q, made):
+            q = os.path.dirname(q)
+        if not (_made(q, made) or os.path.isdir(q)):
+            return None
+    return out or None
+
+
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
     if w.literal() == "-":
         return None
@@ -1224,6 +1276,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     words: list[Word] = []
     redirects: list[Redirect] = []
     pipe_prev: Segment | None = None
+    made: set[str] = set()   # 이 해석에서 mkdir·mktemp -d 가 만든 폴더 — 뒤 cd 의 실패 경로 판정
+    # 진행 중인 `&&`·`||` 요소의 [단위 수(복합·파이프는 2 이상), 실패 경로 없음, 실패 끝 상태(cd 는 cd 전, 그 밖 None=끝 상태)]
+    elem: list = [0, False, None]
 
     def flush() -> Segment | None:
         nonlocal words, redirects
@@ -1240,8 +1295,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         return seg
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
+        neg = False
         while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
+            neg |= w[0].literal() == "!"
             w = w[1:]
+        if w or r:   # `&&`·`||` 목록 요소의 단위 수와 '실패 경로 없음' 여부(andor_step 이 읽는다)
+            elem[:] = [elem[0] + 1, False, None]
         if _NAMEREF in state_env:
             _forget(state_env)
         for m in _OP_ASSIGN.finditer(" ".join([x.literal() for x in w] + [rd.target.literal() for rd in r if rd.target]
@@ -1251,6 +1310,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             for x in w:
                 k, v = _assign_of(x, state_env)  # type: ignore[misc]
                 state_env[k] = v
+                if v is not None and _mktemp_dir(x):
+                    made.add(v)
+            elem[1] = not (neg or r) and _only_mktemp(w)
             if not r:
                 return None
             w = []
@@ -1286,11 +1348,22 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_NAMEREF] = "1"
                 elif (a := _assign_of(x, state_env)) is not None:
                     state_env[a[0]] = a[1]
+                    if a[1] is not None and _mktemp_dir(x):
+                        made.add(a[1])
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
+            elem[1] = name != "typeset" and not (neg or r) and _only_mktemp(w)
             return None
         if not (w or r):
             return None
+        if not (neg or r):
+            if name in _SURE_CMDS or (name == "readonly" and _only_mktemp(w)):
+                elem[1] = True
+            elif name in ("exit", "return"):
+                elem[1] = "exit"
+            elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env, made)) is not None:
+                made.update(mk)
+                elem[1] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
@@ -1298,11 +1371,14 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env.clear()
             state_env.update(after[1])
         if name in ("cd", "pushd"):
+            elem[2] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
             args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
                 state_env.get("HOME") if name == "cd" else None)
             if st["cwd"] is not None:
                 state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
+                # 있는 폴더·앞서 만든 폴더로의 cd 만 실패 경로가 없다 — 없는 폴더(`cd build && …`)는 실패 끝을 유지
+                elem[1] = not (neg or r) and (_made(st["cwd"], made) or os.path.isdir(st["cwd"]))
             else:
                 state_env.pop("PWD", None)
                 state_env.pop(SHELL_CWD, None)
@@ -1314,8 +1390,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     snap = (st["cwd"], dict(state_env))
     in_pipe = False
-    # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자) — 우변은 조건부라 '안 함' 경로와 합친다
-    andor: tuple[list, list, str] | None = None
+    # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자, 지금 요소가 도달 불가) — 우변은 조건부라
+    # '안 함' 경로와 합친다
+    andor: tuple[list, list, str, bool] | None = None
 
     def restore() -> None:
         st["cwd"] = snap[0]
@@ -1327,24 +1404,34 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def andor_step(op: str | None) -> None:
         # 방금 끝난 요소의 끝 상태를 목록에 넣고, op 가 있으면 다음 요소의 시작(&& 는 성공, || 는 실패 경로의 합), 없으면 목록 끝(합)
+        # 실패 경로가 사실상 없는 단순 명령 하나(elem)는 실패 끝을 남기지 않는다. 시작 경로가 없는 요소(`true || x` 의 x)는
+        # 단위는 판정하되 끝 상태를 합류에서 뺀다
         nonlocal andor
-        e = now()
+        e, one = now(), elem[0] == 1
+        oks = [] if one and elem[1] == "exit" else [e]   # exit·return 은 목록 뒤로 이어지는 끝이 없다
+        fails = [] if one and elem[1] else [elem[2] if one and elem[2] else e]
+        elem[:] = [0, False, None]
+        dead = False
         if andor is None:
-            ok, fail = [e], [e]
+            ok, fail = oks, fails
         else:
-            ok, fail, last = andor
-            ok, fail = ([e], fail + [e]) if last == "&&" else (ok + [e], [e])
+            ok, fail, last, dead = andor
+            if not dead:
+                ok, fail = (oks, fail + fails) if last == "&&" else (ok + oks, fails)
         if op is None:
             andor = None
-            set_state(_merge(ok + fail))
+            if ok or fail:   # 모든 경로가 exit 이면 뒤는 도달 불가 — 지금 상태 그대로 단위만 판정한다
+                set_state(_merge(ok + fail))
         else:
-            andor = (ok, fail, op)
-            if len(s := ok if op == "&&" else fail) > 1:   # 하나면 방금 끝난 상태 그대로
+            s = ok if op == "&&" else fail
+            andor = (ok, fail, op, not s)
+            if len(s) > 1 or (s and dead):   # 하나면 방금 끝난 상태 그대로(도달 불가 요소 뒤는 제외)
                 set_state(_merge(s))
 
     def end_list() -> None:
         if andor is not None:
             andor_step(None)
+        elem[:] = [0, False, None]
 
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
@@ -1367,6 +1454,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env.clear()
             state_env.update(env0)
         in_pipe = outer_pipe
+        elem[:] = [2, False, None]   # 복합 명령은 실패 경로를 따로 모델링하지 않는다
         snap = (cwd0, env0)  # 그룹 뒤 `|`·`&` 가 오면 그룹 전체를 되돌리는 기준
 
     # 열린 case 문(spec 밖 구문 — 재생 군집 P1): mode head(머리)·pat(패턴)·body(분기 본문), pat = 0 단어 기대 /
@@ -1387,6 +1475,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         _, cwd0, env0, outer_pipe, andor = stack.pop()
         set_state((cwd0, env0) if outer_pipe else s)
         in_pipe = outer_pipe
+        elem[:] = [2, False, None]
         snap = (cwd0, dict(env0))
 
     def close_case() -> None:
@@ -1576,6 +1665,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 andor_step(t.op)
             elif t.op not in ("|", "|&"):
                 end_list()
+            else:
+                elem[0] += 2   # 파이프라인은 단순 명령 하나가 아니다
             in_pipe = t.op in ("|", "|&")
             pipe_prev = seg if in_pipe else None
             snap = (st["cwd"], dict(state_env))

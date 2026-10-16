@@ -103,7 +103,7 @@ def names(cmd):
 
 class ParseTest(unittest.TestCase):
     def test_split_and_cd_tracking(self):
-        self.assertEqual([(x.name, x.cwd) for x in segs("cd /a && rm x; cd b; rm y") if x.name == "rm"], [("rm", "/a"), ("rm", "/a/b")])
+        self.assertEqual([(x.name, x.cwd) for x in segs("cd / && rm x; cd b; rm y") if x.name == "rm"], [("rm", "/"), ("rm", "/b")])   # cd 는 있는 폴더라야 성공한다
 
     def test_subshell_restores(self):
         self.assertEqual([x.cwd for x in segs("(cd /a; rm x); rm y") if x.name == "rm"], ["/a", "/w"])
@@ -172,7 +172,7 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(rm_cwd("cat | cd /a; rm y"), "/w")
         self.assertEqual(rm_cwd("cd /a & rm y"), "/w")
         self.assertEqual(rm_cwd("cd /a && rm x | cat"), "/a")
-        self.assertEqual(rm_cwd("cd /a && cat | wc; rm y"), "/a")
+        self.assertEqual(rm_cwd("cd / && cat | wc; rm y"), "/")
 
     def test_group_inside_pipeline(self):
         for c in ["cat | (cd /a; rm x); rm y", "cat | { cd /a; rm x; }; rm y"]:
@@ -185,7 +185,7 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
         return [x for x in segs(cmd) if x.name == "rm"][-1]
 
     def test_conditional_changes_are_merged(self):
-        for c in ("f=..; if false; then f=nothing; fi; rm $f", "f=..; true || f=nothing; rm $f", "f=..; t && f=nothing; rm $f",
+        for c in ("f=..; if false; then f=nothing; fi; rm $f", "f=..; t && f=nothing; rm $f",
                   "f=..; while false; do f=nothing; done; rm $f", "f=..; until t; do f=nothing; done; rm $f",
                   "f=..; for x in $(ls); do f=nothing; done; rm $f", "f=..; select x in a; do f=nothing; done; rm $f",
                   "f=..; if a; then if b; then f=x; fi; fi; rm $f", "f=..; if a; then f=x; elif b; then f=y; fi; rm $f",
@@ -203,10 +203,39 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
         self.assertEqual(self.last_rm("f=a; if g=1; then rm $g; fi").env["g"], "1")   # 조건은 늘 실행된다
         self.assertEqual(self.last_rm("f=..; echo | if a; then f=x; fi; rm $f").env["f"], "..")   # 파이프 구성원은 서브셸
         for c, cwd in (("if cd /a; then rm x; fi", "/a"), ("cd /a && cd b && rm x", "/a/b"), ("cd /a || exit; rm y", "/a"),
-                       ("while cd /a; do x; done; rm y", "/a"), ("(cd /a && cd b); rm y", "/w"), ("cd /a && t || u; rm y", "/a"),
+                       ("while cd /a; do x; done; rm y", "/a"), ("(cd /a && cd b); rm y", "/w"), ("cd / && t || u; rm y", "/"),
                        ("cd /a; if t; then rm x; fi", "/a"), ("for i in a b; do cd /c; done; rm y", "/c")):
             self.assertEqual(self.last_rm(c).cwd, cwd, c)
         self.assertEqual(names("if a; then rm x; elif b; then rm y; else rm z; fi"), ["a", "rm", "b", "rm", "rm"])
+
+    def test_assume_success_left_side(self):   # fix-brief-3 항목 1: 실패 경로가 사실상 없는 좌변은 합류에서 실패 끝을 뺀다
+        with tempfile.TemporaryDirectory(dir=os.environ.get("XDG_RUNTIME_DIR") or "/dev/shm") as d:
+            Path(d, "ex").mkdir()
+            Path(d, "file").touch()
+            env = {"HOME": d, "TMPDIR": d}
+
+            def last(c):
+                return [x for x in parse(c.replace("{D}", d), d, env).segments if x.name == "rm"][-1]
+            # bash: true 는 늘 성공 — `||` 우변은 돌지 않는다
+            self.assertEqual(last("f=..; true || f=nothing; rm $f").env["f"], "..")
+            self.assertEqual(last("f=..; : || f=x && g=1; rm $f").env["f"], "..")
+            for c, cwd in (("mkdir -p {D}/n && cd {D}/n && t; rm y", f"{d}/n"), ("mkdir -p {D}/a/b && cd {D}/a; rm y", f"{d}/a"),
+                           ("cd {D}/ex && t; rm y", f"{d}/ex"), ("mkdir {D}/n2 && cd n2; rm y", f"{d}/n2"),
+                           ("T=$(mktemp -d) && cd $T && t; rm y", f"{d}/{shell_parse._MKTEMP_NAME}"), ("cd; cd ex && t; rm y", f"{d}/ex"),
+                           ("echo a && printf b && true && : && export X=1 && cd ex; rm y", f"{d}/ex")):
+                self.assertEqual(last(c).cwd, cwd, c)
+            for c, v in (("cd {D}/ex && f=a; rm $f", "a"), ("cd ex && T=$(mktemp -d) && f=a; rm $f", "a"),
+                         ("declare f=a && local g=1 && readonly h=2 && cd ex; rm $f", "a")):
+                self.assertEqual(last(c).env.get("f"), v, c)
+            # 실패 경로가 실재하는 좌변은 그대로 합친다
+            for c in ("[ -d x ] && cd {D}/ex; rm y", "t && cd {D}/ex; rm y", "cd {D}/missing && t; rm y", "cd {D}/file && t; rm y",
+                      "mkdir {D}/ex && cd {D}/ex; rm y", "mkdir -p {D}/file && cd {D}/file; rm y", "mkdir {D}/no/sub && cd {D}/no/sub; rm y",
+                      "! true && cd {D}/ex; rm y", "echo x > {D}/o && cd {D}/ex; rm y", "F=$(cat x) && cd {D}/ex; rm y",
+                      "T=$(mktemp) && cd $T; rm y", "cd $U && t; rm y", "cd - && t; rm y", "{ true; } && cd {D}/ex; rm y",
+                      "echo | true && cd {D}/ex; rm y", "cd {D}/ex && cd nope; rm y"):
+                self.assertIsNone(last(c).cwd, c)
+            self.assertIsNone(last("cd {D}/missing && f=a; rm $f").env.get("f"))
+            self.assertEqual(names("true || rm x; rm y"), ["true", "rm", "rm"])   # 도달 못 하는 우변도 단위는 판정한다
 
     def test_unbalanced_is_parse_error(self):
         for c in ("fi", "if true; fi", "if true; then x", "then x", "done", "while t; done", "do x; done", "if t; then x; done",
