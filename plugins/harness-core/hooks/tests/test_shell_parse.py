@@ -458,6 +458,15 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertEqual(last("f() { x=${10}; }; f 1 2 3 4 5 6 7 8 9 ten; rm $x").env.get("x"), "ten")
         self.assertIn("rm", names("f() { :; }; f; f() { rm x; }; trap f EXIT"))   # NB7 unknown 정의의 본문 판정은 남는다
 
+    def test_function_shadows_wrapper_and_variable_command_names(self):   # 6-3 OOS1·OOS2
+        d, last = self._world()
+        for c, cwd in (("command() { cd {D}/ex; }; command true; rm y", f"{d}/ex"), ("sudo() { cd {D}/ex; }; sudo ls; rm y", f"{d}/ex"),
+                       ("env() { cd {D}/ex; }; env; rm y", f"{d}/ex"), ("nice() { cd {D}/ex; }; nice x; rm y", f"{d}/ex"),
+                       ("c=cd; $c {D}/ex; rm y", f"{d}/ex"), ("$u {D}/ex; rm y", None), ("c=f; $c; f() { cd {D}/ex; }; rm y", d),   # 정의 전 호출은 보통 명령(bash 도 not found)
+                       ("f() { cd {D}/ex; }; command f; rm y", d)):   # `command f` 는 함수를 건너뛴다
+            self.assertEqual(last(c).cwd, cwd, c)
+        self.assertIsNone(last("$u x; rm $f").env.get("f", "unset"))
+
     def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
         d, last = self._world()
         for c in ("cd {D}/missing || return; rm y", "cd {D}/missing || return 1; rm y", "cd {D}/missing 2>/dev/null || return 0; rm y"):

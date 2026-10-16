@@ -1490,6 +1490,20 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 run_env = dict(unit_env)
             run_env[a[0]] = a[1]
             w = w[1:]
+        if w and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts):
+            v = _text(w[0].parts, unit_env, split=True)   # 변수로 부르는 명령 — 확정되면 그 이름, 아니면 전부 미확정(간접 호출, fail-closed)
+            if v:
+                w = [Word((Part(v, ""),))] + w[1:]
+            else:
+                st["cwd"] = None
+                state_env.pop("PWD", None)
+                state_env.pop(SHELL_CWD, None)
+                _forget(state_env)
+        if w and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출 — 래퍼를 벗기기 전에 본다(래퍼 이름을 가리는 함수도 함수가 우선)
+            if not _harmless(r):   # 호출 단위의 리다이렉트가 실패하면 함수가 돌지 않는다 — 호출 전 상태가 실패 끝
+                elem["pre"] = now()
+            inline_call(w[0].literal(), state_env[fx], w[1:], unit_env, run_env)
+            return None
         wrappers: list[str] = []
         extra: dict[str, str | None] = {}
         w = _strip_all(w, extra, unit_env, wrappers)
@@ -1501,15 +1515,6 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
                 state_env[w[1].literal()] = None
             return None
-        if w and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts) and any(k.startswith(_FN) for k in state_env):
-            v = _text(w[0].parts, unit_env, split=True)   # 함수가 정의된 뒤 변수로 부르는 명령 — 확정되면 그 이름, 아니면 전부 미확정(fail-closed)
-            if v:
-                w = [Word((Part(v, ""),))] + w[1:]
-            else:
-                st["cwd"] = None
-                state_env.pop("PWD", None)
-                state_env.pop(SHELL_CWD, None)
-                _forget(state_env)
         unit_cwd = st["cwd"]
         name = _cmd_name(w)
         # 내장(cd·true·exit…)은 맨이름으로만 불린다 — `./true`·`/bin/true` 는 외부 프로그램, 래퍼 밑(command·builtin 제외)도 외부 검색
@@ -1523,11 +1528,6 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[n] = None
             else:
                 _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
-        if w and not wrappers and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출(래퍼 뒤는 함수가 아니다) — 인라인 해석
-            if not _harmless(r):   # 호출 단위의 리다이렉트가 실패하면 함수가 돌지 않는다 — 호출 전 상태가 실패 끝
-                elem["pre"] = now()
-            inline_call(w[0].literal(), state_env[fx], w[1:], unit_env, run_env)
-            return None
         if name == "return" and builtin and state_env.get(_INFN):   # 함수 범위의 return — 호출 끝으로 합류
             returns.append(now())
             elem["exit"] = True
@@ -1564,10 +1564,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            if name in ("local", "declare", "typeset") and state_env.get(_INFN) \
+            if name in ("local", "declare", "typeset") and fn_locals and state_env.get(_INFN) \
                     and not any(x.literal().startswith("-") and "g" in x.literal()[1:] for x in w[1:]):   # 함수 범위(-g 는 전역) — 호출 끝에 복원
-                if fn_locals:
-                    fn_locals[-1].update(x.literal().partition("=")[0] for x in w[1:] if not x.literal().startswith("-"))
+                fn_locals[-1].update(x.literal().partition("=")[0] for x in w[1:] if not x.literal().startswith("-"))
             elem["sure"] = (name not in ("typeset", "local") or bool(state_env.get(_INFN))) and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
