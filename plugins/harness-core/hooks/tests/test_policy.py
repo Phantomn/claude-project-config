@@ -41,6 +41,15 @@ class DeleteTest(_WorldCase):
         self.assertEqual(ev("find . -name x -exec mv {} /t \\;"), []); self.assertEqual(ev("find . -fprint /t/x -delete"), [("삭제", UNRESOLVED)])
         self.assertEqual(ev("ls | xargs rm -f"), [("삭제", UNRESOLVED)]); self.assertEqual(ev("git ls-files -z | xargs -0 git rm --cached"), [])
 
+    def test_find_exec_shell_busybox(self):   # 항목 8(Task 7 deferred): -exec 셸·busybox 안의 삭제, -exec /bin/rm 미리보기
+        for c in ("find . -name '*.o' -exec sh -c 'rm \"$1\"' _ {} \\;", "find . -type f -exec bash -c 'rm -- \"$@\"' _ {} +",
+                  "find . -exec busybox rm {} +", "find . -exec sh -c 'rm \"$(' _ {} \\;"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("find . -name '*.py' -exec /bin/rm {} +"), [("삭제", GIT_TRACKED)])   # 미리보기로 대상 확정
+        self.assertEqual(ev("find . -name '*.o' -exec /usr/bin/rm -f {} \\;"), [])
+        self.assertEqual(ev("find . -name '*.py' -exec sh -c 'wc -l \"$1\"' _ {} \\;"), [])
+        self.assertEqual(ev("busybox rm src/main.py"), [("삭제", GIT_TRACKED)])
+
 
 class OverwriteTest(_WorldCase):
     def test_overwrite(self):
@@ -123,7 +132,8 @@ def judged(c):
 
 class ReviewFixTest(_WorldCase):
     def test_find_exec_variants(self):                 # 리뷰 1: -exec 뒤 명령 이름 정규화
-        for c in ["find {HOME}/data -exec /bin/rm {} +", "find {HOME}/data -exec sudo rm {} +",
+        self.assertEqual({k for _, k in ev("find {HOME}/data -exec /bin/rm {} +")}, {PRESERVED})   # 미리보기 형태(항목 8)
+        for c in ["find {HOME}/data -exec sudo rm {} +",
                   "find {HOME}/data -exec shred -u {} +", "find {HOME}/data -exec unlink {} \\;", "find {HOME}/data -ok rm {} \\;"]:
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
             self.assertEqual(judged(c), [True], c)

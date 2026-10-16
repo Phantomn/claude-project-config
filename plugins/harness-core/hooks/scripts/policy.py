@@ -11,8 +11,10 @@ from fnmatch import fnmatch
 from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
+    _SHELL_C,
     BASE_HOLE,
     HOLE,
+    SHELLS,
     LexError,
     Mount,
     Part,
@@ -26,6 +28,7 @@ from shell_parse import (
     _strip_all,
     expand,
     expand_hole,
+    lex,
     literal_args,
 )
 from target_class import (
@@ -285,10 +288,24 @@ def _find_deletes(seg: Segment) -> bool:
     for i, w in enumerate(a):
         if w.literal() in _FIND_EXEC:
             j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
-            # /bin/rm·sudo rm·\rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
-            if _cmd_name(_strip_all(a[i + 1:j], {}, seg.env)) in _DELETERS:
+            # /bin/rm·sudo rm·\rm·busybox rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
+            cmd = _strip_all(a[i + 1:j], {}, seg.env)
+            if _cmd_name(cmd) in _DELETERS or (_cmd_name(cmd) in SHELLS and _shell_deletes(cmd, seg)):
                 return True
     return False
+
+
+def _shell_deletes(cmd: list[Word], seg: Segment) -> bool:
+    """`sh -c '<코드>'` 의 코드에 삭제 명령 이름이 단어로 있는가(자리 무관 — 보수). 코드를 못 읽으면 True."""
+    k = next((n for n, w in enumerate(cmd) if _SHELL_C.fullmatch(w.literal())), None)
+    if k is None or k + 1 >= len(cmd):
+        return False
+    # parse 가 아니라 lex — parse 는 해석기 전역(마감·함수 표)을 다시 세팅한다
+    try:
+        toks = lex(cmd[k + 1].literal())
+    except LexError:
+        return True
+    return any(t.word is not None and os.path.basename(t.word.literal()) in _DELETERS for t in toks)
 
 
 def _find(seg: Segment, ctx: Ctx | None) -> list[Job]:

@@ -710,7 +710,7 @@ def find_preview(args: list[str], cwd: str, ctx: Ctx) -> list[str] | None:
             action = a
             expr.append("-print0")
             i += 1
-        elif a in ("-exec", "-execdir") and action is None and args[i + 1:i + 2] == ["rm"]:
+        elif a in ("-exec", "-execdir") and action is None and os.path.basename(args[i + 1] if i + 1 < len(args) else "") == "rm":
             j = i + 2
             while j < len(args) and args[j] in _RM_FLAGS:
                 j += 1
