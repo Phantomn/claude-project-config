@@ -69,6 +69,24 @@ class OverwriteTest(_WorldCase):
         self.assertFalse(w.judge_cmd("git log -1 --output=README.md").allow)
         self.assertTrue(w.judge_cmd("git log --oneline -5").allow)
 
+    def test_git_file_writers(self):   # 이름 붙은 파일을 쓰는 git 옵션·인자 표(policy._GIT_FILE_OPTS, git 2.43 실측)
+        for c in ("git stash show -p --output=README.md", "git reflog show --output=README.md", "git reflog --output README.md",
+                  "git shortlog HEAD --output=README.md", "git blame --output=README.md src/main.py",
+                  "git rev-list HEAD --output=README.md", "git fast-export --output=README.md HEAD",
+                  "git range-diff HEAD~1...HEAD --output=README.md", "git archive -o README.md HEAD",
+                  "git archive -oREADME.md HEAD", "git archive -v -o README.md HEAD", "git archive --output README.md HEAD",
+                  "git bundle create README.md HEAD", "git bundle create -q --version 3 README.md HEAD",
+                  "git fast-export --export-marks=README.md HEAD", "git fast-import --export-marks=README.md",
+                  "git -C src archive --outp=../README.md HEAD"):
+            self.assertEqual(ev(c), [("덮어쓰기", "DIRTY")], c)
+            self.assertTrue(policy.is_judged_op(parse(w.fmt(c), w.fmt("{REPO}"), w.environ).segments[0]), c)
+        for c in ("git archive -o out.tar HEAD", "git bundle create - HEAD", "git bundle verify README.md",
+                  "git archive --format=zip HEAD", "git config -f README.md --get x.y", "git format-patch -1 -o {SCRATCH}/s1",
+                  "git stash show -p", "git fast-export --import-marks=README.md HEAD"):
+            self.assertEqual(ev(c), [], c)
+        seg = parse("git bundle create README.md HEAD", w.fmt("{REPO}"), w.environ).segments[0]
+        self.assertEqual(policy.inplace_targets(seg), [w.fmt("{REPO}/README.md")])
+
 
 class DiskSystemTest(_WorldCase):
     def test_disk_system_chmod(self):

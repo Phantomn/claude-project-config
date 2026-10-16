@@ -466,23 +466,38 @@ _GIT_BUILTINS = frozenset((
 ))
 
 
-# diff 출력 옵션을 받는 하위명령 — `--output[=]<파일>` 은 그 파일을 덮어쓴다(git 2.43 실측: 공백 값도 받음)
-_GIT_OUTPUT_SUBS = frozenset(("log", "diff", "show", "format-patch", "whatchanged", "diff-files", "diff-index", "diff-tree",
-                              "range-diff"))
+# 이름 붙은 파일을 덮어쓰는 git 옵션 표(하위명령 → 옵션; None = 모든 하위명령). git 2.43 실측: 내용을 미리 쓴 파일이 바뀌는가.
+# `--output` 은 diff·rev 옵션을 받는 하위명령(log·diff·show·whatchanged·diff-tree·diff-files·diff-index·range-diff·format-patch·
+# stash show·reflog·shortlog·blame·rev-list·fast-export) 모두가 받고, 받지 않는 하위명령은 git 이 거부하므로 전부에 적용한다.
+# 위치 인자로 쓰는 것은 `bundle create <파일>` 하나. 표 밖(실측): config -f(설정 파일 제자리 편집, 설정 형식 아니면 거부),
+# format-patch -o·bugreport -o·diagnose -o·pack-objects(폴더에 새 이름으로 생성), merge-file(제자리 병합) — LIMITS
+_GIT_FILE_OPTS: dict[str | None, tuple[str, ...]] = {
+    None: ("--output",), "archive": ("-o", "--output"), "fast-export": ("--export-marks",), "fast-import": ("--export-marks",)}
 
 
-def _git_output(seg: Segment, repo: str | None, rest: list[Word], k: int) -> list[Job]:
-    out = []
+def _git_files(seg: Segment, sub: str, repo: str | None, rest: list[Word], k: int) -> list[Job]:
+    opts = _GIT_FILE_OPTS[None] + _GIT_FILE_OPTS.get(sub, ())
+    vals: list[Word | None] = []
     for n, w in enumerate(rest[:k]):
         x = w.literal()
+        nxt = rest[n + 1] if n + 1 < len(rest) else None
         name, eq, _ = x[2:].partition("=")
-        # git 2.43 은 접두 약어(--outp)를 거부하지만 버전마다 다를 수 있어 접두도 덮어쓰기로 본다
-        if not x.startswith("--") or not name or not "output".startswith(name):
-            continue
-        v = _drop(w, len(name) + 3) if eq else (rest[n + 1] if n + 1 < len(rest) else None)
-        if v is not None:
-            out.append(Job(OP_OVERWRITE, OVERWRITE, v.literal(), _expand(v, seg.env, repo) if repo else None))
-    return out
+        # git 2.43 은 하위명령에 따라 접두 약어(--outp)를 받기도 거부하기도 한다 — 접두도 같은 옵션으로 본다
+        if x.startswith("--") and name and any(o[2:].startswith(name) for o in opts if o.startswith("--")):
+            vals.append(_drop(w, len(name) + 3) if eq else nxt)
+        elif "-o" in opts and x.startswith("-") and not x.startswith("--") and "o" in x:
+            i = x.index("o") + 1   # `-oF`·`-v -o F`·`-vo F`
+            vals.append(_drop(w, i) if i < len(x) else nxt)
+    if sub == "bundle" and rest[:1] and rest[0].literal() == "create":
+        it = iter(rest[1:k])
+        for w in it:
+            x = w.literal()
+            if x == "--version":
+                next(it, None)
+            elif not x.startswith("-") or x == "-":
+                vals.append(None if x == "-" else w)   # `-` 는 표준 출력
+                break
+    return [Job(OP_OVERWRITE, OVERWRITE, v.literal(), _expand(v, seg.env, repo) if repo else None) for v in vals if v is not None]
 
 
 def _short(r: list[str]) -> str:
@@ -569,42 +584,43 @@ def _git_handler(seg: Segment, ctx: Ctx | None, exists: Callable[[str], bool] = 
     def dirty(ws: list[Word] | None) -> list[Job]:   # ws None = 저장소 전체
         return [Job(f"git {sub}", GIT_DIRTY, repo or label, None if repo is None else specs(ws or []), repo=repo)]
 
-    if sub in _GIT_OUTPUT_SUBS:
-        return _git_output(seg, repo, rest, k)
-    force = "--force" in r or "f" in s
-    if sub == "reset":
-        return dirty(None) if "--hard" in r else []
-    if sub == "checkout":
-        paths = post or [w for w in words if repo and exists(os.path.join(repo, w.literal()))]
-        return dirty(paths) if paths else dirty(None) if force else []
-    if sub == "switch":
-        return dirty(None) if force or "--discard-changes" in r else []
-    if sub == "restore":
-        if ("--staged" in r or "S" in s) and not ("--worktree" in r or "W" in s):
-            return []
-        paths = post + [w for n, w in enumerate(pre) if not r[n].startswith("-") and not (n and r[n - 1] in ("-s", "--source"))]
-        return dirty(paths) if paths else []
-    if sub == "rm":
-        return dirty(post + words) if force and "--cached" not in r and (post or words) else []
-    if sub == "worktree":
-        return [job(WORKTREE, specs((words[1:] + post)[:1]), op="git worktree")] if first == "remove" else []
-    if sub == "clean":
-        return [] if "--dry-run" in r or "n" in s else [job(CLEAN, args=tuple(r))]
-    if sub == "stash" and first in ("drop", "clear"):
-        ref = words[1].literal() if first == "drop" and len(words) > 1 else "stash@{0}"
-        return [job(STASH, args=(first, f"stash@{{{ref}}}" if ref.isdigit() else ref))]
-    if sub == "branch":
-        delete = "D" in s or (("--delete" in r or "d" in s) and force)
-        if not delete or "--remotes" in r or "r" in s:
-            return []
-        return [replace(job(BRANCH, args=(w.literal(),), op="git branch -D"), label=w.literal()) for w in words]
-    if (sub == "reflog" and first in ("expire", "delete")) or (sub == "gc" and {"--prune=now", "--prune=all"} & set(r)) \
-            or sub in ("prune", "filter-branch", "filter-repo"):
-        return [replace(job(REFLOG), paths=[])]   # 저장소를 몰라도 거부 — 조회가 필요 없다
-    if sub == "push":
-        # 평범한 push 는 기본 브랜치를 덮지 않는다 — 저장소·원격 조회 없이 판정 생략
-        return [job(PUSH, args=tuple(r))] if _push_rewrites(r) else []
-    return []
+    def rules() -> list[Job]:
+        force = "--force" in r or "f" in s
+        if sub == "reset":
+            return dirty(None) if "--hard" in r else []
+        if sub == "checkout":
+            paths = post or [w for w in words if repo and exists(os.path.join(repo, w.literal()))]
+            return dirty(paths) if paths else dirty(None) if force else []
+        if sub == "switch":
+            return dirty(None) if force or "--discard-changes" in r else []
+        if sub == "restore":
+            if ("--staged" in r or "S" in s) and not ("--worktree" in r or "W" in s):
+                return []
+            paths = post + [w for n, w in enumerate(pre) if not r[n].startswith("-") and not (n and r[n - 1] in ("-s", "--source"))]
+            return dirty(paths) if paths else []
+        if sub == "rm":
+            return dirty(post + words) if force and "--cached" not in r and (post or words) else []
+        if sub == "worktree":
+            return [job(WORKTREE, specs((words[1:] + post)[:1]), op="git worktree")] if first == "remove" else []
+        if sub == "clean":
+            return [] if "--dry-run" in r or "n" in s else [job(CLEAN, args=tuple(r))]
+        if sub == "stash" and first in ("drop", "clear"):
+            ref = words[1].literal() if first == "drop" and len(words) > 1 else "stash@{0}"
+            return [job(STASH, args=(first, f"stash@{{{ref}}}" if ref.isdigit() else ref))]
+        if sub == "branch":
+            delete = "D" in s or (("--delete" in r or "d" in s) and force)
+            if not delete or "--remotes" in r or "r" in s:
+                return []
+            return [replace(job(BRANCH, args=(w.literal(),), op="git branch -D"), label=w.literal()) for w in words]
+        if (sub == "reflog" and first in ("expire", "delete")) or (sub == "gc" and {"--prune=now", "--prune=all"} & set(r)) \
+                or sub in ("prune", "filter-branch", "filter-repo"):
+            return [replace(job(REFLOG), paths=[])]   # 저장소를 몰라도 거부 — 조회가 필요 없다
+        if sub == "push":
+            # 평범한 push 는 기본 브랜치를 덮지 않는다 — 저장소·원격 조회 없이 판정 생략
+            return [job(PUSH, args=tuple(r))] if _push_rewrites(r) else []
+        return []
+
+    return _git_files(seg, sub, repo, rest, k) + rules()
 
 
 def _compose_project(g: list[tuple[str, Word]], seg: Segment, ctx: Ctx | None) -> str:

@@ -40,6 +40,13 @@ class ShapeTest(unittest.TestCase):
         for n in ("rm", "find", "sed", "tee", "mv", "xargs", "bash", "sudo", "docker", "eval", "git branch", "git stash"):
             self.assertIsNone(_TRIVIAL.fullmatch(n), n)
 
+    def test_git_file_options_not_trivial(self):   # 파일을 쓰는 git 옵션 표의 모든 하위명령 공통 옵션은 빠른 길에 들지 않는다
+        self.assertFalse(set(policy._GIT_FILE_OPTS) & set(GIT_SUBS))   # 하위명령 전용 행은 빠른 길 밖 하위명령뿐
+        for s in GIT_SUBS:
+            for o in policy._GIT_FILE_OPTS[None]:
+                for c in (f"git {s} {o}=F", f"git {s} {o} F", f"git {s} -p {o[:4]}=F"):
+                    self.assertIsNone(_TRIVIAL.fullmatch(c), c)
+
     def test_names_have_no_handler_wrapper_or_inplace(self):
         special = (set(policy.HANDLERS) | set(sp._WRAPPER_VALUE_OPTS) | set(sp._SIMPLE_WRAPPERS) | sp.SHELLS
                    | set(sp._CONTAINER_CLIS) | set(sp._VAR_DECL) | set(sp._RESERVED) | set(sp._LOOP_HEAD)
