@@ -946,9 +946,8 @@ _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든
 
 
 def _made(p: str, env: Mapping[str, str | None]) -> bool:
-    """같은 해석에서 앞서 (모든 경로가) 만든 폴더 또는 그 상위."""
-    n = len(_MADE)
-    return any(v and k.startswith(_MADE) and (k[n:] == p or k[n:].startswith(p + "/")) for k, v in env.items())
+    """같은 해석에서 앞서 (모든 경로가) 만든 폴더 — `mkdir -p` 가 만든 중간 폴더도 기록되어 있다(env 전체 순회는 변수 수에 비례)."""
+    return bool(env.get(_MADE + p))
 
 
 def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -> tuple[list[str], bool] | None:
@@ -977,17 +976,20 @@ def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -
                 return None
             out.append(os.path.normpath(r[0]))
         i += 1
+    made: list[str] = []
     for p in out:
         if os.path.lexists(p):
             if not (parents and os.path.isdir(p)):
                 return None
             continue
+        made.append(p)
         q = os.path.dirname(p)
         while parents and q != "/" and not os.path.lexists(q) and not _made(q, env):
+            made.append(q)   # -p 가 만드는 중간 폴더
             q = os.path.dirname(q)
         if not (_made(q, env) or (os.path.isdir(q) and os.access(q, os.W_OK | os.X_OK))):   # 권한·읽기 전용 FS 는 실패
             return None
-    return (out, mode is None or (mode.isdigit() and bool(int(mode, 8) & 0o100))) if out else None
+    return (made, mode is None or (mode.isdigit() and bool(int(mode, 8) & 0o100))) if out else None
 
 
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
@@ -1309,11 +1311,71 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     return ParseResult(segments)
 
 
-def _merge(states: list[tuple[str | None, dict[str, str | None]]]) -> tuple[str | None, dict[str, str | None]]:
-    """여러 갈래 끝 상태의 합: 모두 같은 값만 남기고 다르면 None(확정 불가)."""
+_POS = "\x00pos"   # 스냅샷이 찍힌 쓰기 로그 위치 — 그 뒤에 쓰인 키만 지금 상태와 다를 수 있다(NB9)
+
+
+class _Env(dict):
+    """쓰기 로그를 남기는 env. 불변식: 스냅샷 S(위치 p)와 지금 상태의 차이는 log[p:] 안에 있다 — 합류가 전체 키 대신
+    그 조각만 비교한다(변수 수에 대해 이차였던 합류 비용의 근본 원인, 재검토 NB9)."""
+    __slots__ = ("_snap", "log")
+
+    def __init__(self, src: Mapping[str, str | None]) -> None:
+        super().__init__(src)
+        super().pop(_POS, None)   # 다른 해석의 로그 위치
+        self.log: list[str] = []
+        self._snap: dict[str, str | None] | None = None   # 마지막 스냅샷 — 그 뒤 쓰기가 없으면 복사 없이 다시 쓴다(스냅샷은 불변)
+
+    def __setitem__(self, k: str, v: str | None) -> None:
+        self.log.append(k)
+        super().__setitem__(k, v)
+
+    def pop(self, k: str, *default):   # type: ignore[override]
+        self.log.append(k)
+        return super().pop(k, *default)
+
+    def update(self, m: Mapping[str, str | None]) -> None:   # type: ignore[override]
+        self.log.extend(m)
+        super().update(m)
+
+    def snapshot(self) -> dict[str, str | None]:
+        if self._snap is None or self._snap[_POS] != len(self.log):
+            super().__setitem__(_POS, len(self.log))
+            self._snap = dict(self)
+        return self._snap
+
+    def replace(self, e: Mapping[str, str | None]) -> None:
+        """상태를 e 로 바꾼다. e 가 이 로그의 스냅샷이면 그 뒤에 쓰인 키만 다시 로그에 적는다(차이는 그 안에 있다)."""
+        pos = e.get(_POS)
+        changed = self.log[pos:] if pos is not None else [*self, *e]
+        super().clear()
+        super().update(e)
+        self.log.extend(changed)
+
+
+def _merge(states: list[tuple[str | None, dict[str, str | None]]],
+           log: list[str] | None = None) -> tuple[str | None, dict[str, str | None]]:
+    """여러 갈래 끝 상태의 합: 모두 같은 값만 남기고 다르면 None(확정 불가). log 가 있고 모두 그 로그의 스냅샷이면
+    가장 이른 스냅샷 뒤에 쓰인 키만 비교한다(결과의 위치 = 가장 이른 위치)."""
     cwd = states[0][0] if all(c == states[0][0] for c, _ in states) else None
-    keys = {k for _, e in states for k in e}
-    return cwd, {k: (vals.pop() if len(vals := {e.get(k) for _, e in states}) == 1 else None) for k in keys}
+    pos = [e.get(_POS) for _, e in states]
+    if log is None or None in pos:
+        keys = {k for _, e in states for k in e} - {_POS}
+        return cwd, {k: (vals.pop() if len(vals := {e.get(k) for _, e in states}) == 1 else None) for k in keys}
+    envs = sorted((e for _, e in states), key=lambda e: e[_POS])
+    if envs[0][_POS] == envs[-1][_POS]:
+        return cwd, envs[0]   # 사이에 쓰기가 없었다 — env 가 모두 같다
+    # 위치순 인접 쌍은 그 사이 로그 조각에서만 다를 수 있다 — 조각들을 다 합쳐도 로그 길이라 비용이 갈래 수에 선형
+    out = dict(envs[0])
+    for a, b in itertools.pairwise(envs):
+        for k in set(log[a[_POS]:b[_POS]]):
+            if k in a and k in b and a[k] == b[k]:
+                continue
+            if k in a or k in b:
+                out[k] = None
+            else:
+                out.pop(k, None)   # 어느 갈래에도 없는 키
+    out[_POS] = envs[0][_POS]
+    return cwd, out
 
 
 def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], context: Context, depth: int,
@@ -1322,6 +1384,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     if depth > _MAX_DEPTH:
         raise LexError("재귀 깊이 초과")
     toks = lex(command)
+    state_env = _Env(state_env)   # 쓰기 로그(합류 비용) — 호출자의 dict 는 그대로 둔다
     st: dict = {"cwd": cwd, "dead": False, "fn": False}   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
     stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead, list_snap) — 열 때의 바깥 상태
     words: list[Word] = []
@@ -1342,10 +1405,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         # 구분자에 따옴표가 없는 heredoc 본문의 치환도 실행된다
         subs += [x for rd in r if rd.op in _HEREDOC and rd.body and rd.target is not None and not rd.target.is_quoted()
                  for x in _subs(rd.body, False)]
-        sub_cwd, sub_env = st["cwd"], dict(state_env)
+        sub_cwd, sub_env = st["cwd"], (dict(state_env) if subs else None)
         seg = unit(w, r)
         for code in subs:
-            _parse(code, sub_cwd, dict(sub_env), context, depth + 1, segments, via_xargs)
+            _parse(code, sub_cwd, dict(sub_env), context, depth + 1, segments, via_xargs)   # type: ignore[arg-type]
         return seg
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
@@ -1373,13 +1436,18 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 return None
             w = []
         # 같은 줄 단어는 할당 전 env 로 확장되고(seg.env), 접두 할당은 실행되는 안쪽 코드에만 보인다(run_env)
-        unit_env = dict(state_env)
-        run_env = dict(state_env)
+        unit_env = state_env.snapshot()   # Segment.env — 스냅샷처럼 바꾸지 않는다
+        run_env = unit_env   # 접두 할당·래퍼 env 가 있을 때만 따로 복사한다
         while w and (a := _assign_of(w[0], run_env)) is not None:  # 맨 앞 할당끼리는 왼쪽부터 순차 확장
+            if run_env is unit_env:
+                run_env = dict(unit_env)
             run_env[a[0]] = a[1]
             w = w[1:]
         wrappers: list[str] = []
-        w = _strip_all(w, run_env, unit_env, wrappers)
+        extra: dict[str, str | None] = {}
+        w = _strip_all(w, extra, unit_env, wrappers)
+        if extra:
+            run_env = {**run_env, **extra}
         # 래퍼 밑의 명령은 성공 가정을 못 받는다(sudo 는 비밀번호·권한, env·nice 는 PATH 검색) — command·builtin 은 결과를 바꾸지 않는다(NB6)
         plain = _harmless(r) and all(x in ("command", "builtin") for x in wrappers)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
@@ -1437,8 +1505,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         segments.append(seg)
         if (after := _descend(seg, segments, pipe_prev, run_env)) is not None:
             st["cwd"] = after[0]
-            state_env.clear()
-            state_env.update(after[1])
+            state_env.replace(after[1])
         if name in ("cd", "pushd", "popd") and any(x not in ("command", "builtin") for x in wrappers):
             pass   # 래퍼(sudo·env·nice …) 뒤의 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
         elif name in ("cd", "pushd"):
@@ -1460,7 +1527,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env.pop(SHELL_CWD, None)
         return seg
 
-    snap = (st["cwd"], dict(state_env))   # 파이프라인 시작 상태 — 구성원은 서브셸이라 끝나면 여기로 돌아온다
+    snap = (st["cwd"], state_env.snapshot())   # 파이프라인 시작 상태 — 구성원은 서브셸이라 끝나면 여기로 돌아온다
     list_snap = snap   # 목록 시작 상태 — `A && cd X &` 는 목록 전체가 배경 서브셸이라 끝나면 여기로 돌아온다(OS3)
     in_pipe = False
     # 진행 중인 `&&`·`||` 목록: (성공 끝 상태들, 실패 끝 상태들, 직전 연산자, 지금 요소가 시작부터 도달 불가)
@@ -1469,12 +1536,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     last_list: tuple[list, list] | None = None   # 방금 `;`·줄바꿈으로 닫은 목록의 (성공 끝들, 실패 끝들) — 조건 자리가 읽는다
 
     def now() -> tuple[str | None, dict[str, str | None]]:
-        return st["cwd"], dict(state_env)
+        return st["cwd"], state_env.snapshot()
 
     def set_state(s: tuple[str | None, dict[str, str | None]]) -> None:
         st["cwd"], st["dead"], last_end[0] = s[0], False, None
-        state_env.clear()
-        state_env.update(s[1])
+        state_env.replace(s[1])
 
     def restore() -> None:
         set_state(snap)
@@ -1513,11 +1579,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         return ok, fail
 
     def join(states: list) -> None:
-        """끝 상태들의 합을 지금 상태로. 비면 도달 불가. 방금 만든 끝 하나면 그대로 둔다."""
+        """끝 상태들의 합을 지금 상태로. 비면 도달 불가. 방금 만든 끝 하나면 그대로 둔다. 마감이 지났으면 해석 실패."""
+        if _late():
+            raise LexError("해석 시간 초과")
         if not states:
             st["dead"] = True
         elif not all(s is last_end[0] for s in states):
-            set_state(_merge(states))
+            set_state(_merge(states, state_env.log))
 
     def andor_step(op: str | None) -> None:
         # op 가 있으면 다음 요소의 시작(&& 는 성공, || 는 실패 끝들의 합), 없으면 목록 끝(모든 끝의 합)
@@ -1542,9 +1610,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌린다
             isolated.add(len(stack))
             st["fn"] = False
-        stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor, st["dead"], list_snap))
+        e = now()
+        stack.append((kind, *e, in_pipe, andor, st["dead"], list_snap))
         in_pipe, andor = False, None
-        snap = list_snap = (st["cwd"], dict(state_env))
+        snap = list_snap = e
 
     def close_compound(kind: str, ends: list | None) -> None:
         """복합 명령(그룹·서브셸·if·루프·case)을 닫는다. ends = 갈래 끝들(None 이면 지금 상태 그대로).
@@ -1626,7 +1695,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 return
             join(c["cond"])   # elif·else — 다음 조건·else 본문은 앞 조건이 거짓인 상태에서
             c["mode"] = "cond" if word == "elif" else "else"
-        snap = list_snap = now()
+        snap = list_snap = last_end[0] or now()   # 상태가 그대로면 방금 만든 끝을 다시 쓴다
 
     def bare(i: int) -> str | None:
         t = toks[i] if i < len(toks) else None
@@ -1758,8 +1827,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             ends = [] if st["dead"] else [now()]
             cur["ends"] += ends
             # ;& ·;;& 는 다음 분기 본문이 이 분기 끝 상태에서 이어질 수도 있다
-            set_state(_merge([stack[-1][1:3], *([] if t.op == ";;" else ends)]))
-            snap = (st["cwd"], dict(state_env))
+            set_state(_merge([stack[-1][1:3], *([] if t.op == ";;" else ends)], state_env.log))
+            snap = now()
             cur["mode"] = "pat"
             list_snap = snap
             continue
@@ -1796,7 +1865,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 elem["n"] += 2   # 파이프라인은 단순 명령 하나가 아니다
             in_pipe = t.op in ("|", "|&")
             pipe_prev = seg if in_pipe else None
-            snap = (st["cwd"], dict(state_env))
+            snap = last_end[0] or now()
             if not in_pipe and t.op not in ("&&", "||"):
                 list_snap = snap
         elif t.op == "(":
@@ -1812,4 +1881,6 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     end_list()
     if stack:
         raise LexError("닫히지 않은 그룹")
-    return st["cwd"], state_env
+    env = dict(state_env)
+    env.pop(_POS, None)   # 다른 해석의 로그 위치는 의미가 없다
+    return st["cwd"], env

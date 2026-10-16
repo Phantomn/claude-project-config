@@ -261,6 +261,22 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertIsNone(parse(c, "/w", {}).error)
             self.assertLess(time.perf_counter() - t0, 1.0, c[:30])
 
+    def test_merge_cost_is_not_quadratic_in_variables(self):   # NB9: 합류는 스냅샷 뒤에 바뀐 키만 비교한다
+        for c in ("".join(f"while a && b{i}=1; do c || d{i}=2; done\n" for i in range(4000)),
+                  "".join(f"t && if a; then f{i}=1; fi || u\n" for i in range(4000)),
+                  "".join(f"mkdir -p /tmp/q{i} && cd /tmp/q{i} && " for i in range(4000)) + "x",
+                  "".join(f"t && v{i}=$(c) || u; " for i in range(4000))):
+            t0 = time.perf_counter()
+            self.assertIsNone(parse(c, "/w", {}).error)
+            self.assertLess(time.perf_counter() - t0, 3.0, c[:30])
+        # 지난 마감은 합류에서 LexError(fail-closed)
+        self.assertIsNotNone(parse("a && b; c", "/w", {}, deadline=time.monotonic() - 1).error)
+        # 합류 정확성: 바뀐 키만 비교해도 결과는 같다
+        s = segs("f=1; g=2; if t; then f=3; h=4; else g=5; fi; cd /usr || true; rm x")[-1]
+        self.assertEqual((s.env.get("f"), s.env.get("g"), s.env.get("h"), s.cwd), (None, None, None, "/usr"))
+        s = segs("f=1; { g=2; f=3; } && f=1; rm x")[-1]   # 그룹은 실패 경로를 두므로 f 는 합류에서 미확정, g 는 두 경로 모두 2
+        self.assertEqual((s.env.get("f"), s.env.get("g")), (None, "2"))
+
 
 class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 집합을 한 곳(outcome/collect/join)에서 다룬다
     def test_extglob_in_command_position_is_parse_error(self):   # NB1: extglob 꺼진 bash 는 `!(cmd)` 를 부정 서브셸로 실행한다
@@ -793,11 +809,10 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
         self.assertEqual(rm_targets(f"for v in {{1..50}}; do rm x$v; {big}; done"), [None])   # 50 x 5KB 는 묶지 않는다
         self.assertEqual(rm_targets(f"for v in 1 2; do rm x$v; {big}; done"), [["/w/x1"], ["/w/x2"]])
 
-    def test_deadline(self):   # 판정기 마감이 지나면 목록 글롭·반복 해석을 멈추고 루프 변수 미확정
+    def test_deadline(self):   # 판정기 마감이 지나면 해석 실패(fail-closed — fix-brief-4 NB9); 남은 시간이 있으면 반복 해석
         with tempfile.TemporaryDirectory() as d:
             Path(d, "a").touch()
-            self.assertEqual([expand(s.argv[-1], s) for s in parse("for f in *; do rm $f; done", d, {}, deadline=time.monotonic() - 1).segments
-                              if s.name == "rm"], [None])
+            self.assertIsNotNone(parse("for f in *; do rm $f; done", d, {}, deadline=time.monotonic() - 1).error)
             self.assertEqual([expand(s.argv[-1], s) for s in parse("for f in *; do rm $f; done", d, {}, deadline=time.monotonic() + 9).segments
                               if s.name == "rm"], [[f"{d}/a"]])
 
