@@ -414,7 +414,7 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertEqual(last("f=a; f=b && cd {D}/ex &\nrm $f").env["f"], "a")
         self.assertEqual([x.cwd for x in segs("cd /usr && rm x &\nrm y") if x.name == "rm"], ["/usr", "/w"])   # 배경 안 단위는 판정
 
-    def test_function_definition_is_isolated(self):   # OS2: 정의는 상태를 바꾸지 않고, 정의된 이름의 호출은 상태를 미확정으로
+    def test_function_definition_is_isolated(self):   # OS2: 정의는 상태를 바꾸지 않는다(본문은 격리 상태에서 판정)
         d, last = self._world()
         for c in ("f() { cd {D}/ex; }; rm y", "function g { cd {D}/ex; }; rm y", "function g() { cd {D}/ex; }\nrm y",
                   "f()\n{\n cd {D}/ex\n}\nrm y", "f() ( cd {D}/ex ); rm y", "f() if true; then cd {D}/ex; fi; rm y",
@@ -422,12 +422,10 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "f() { cd {D}/ex; } && rm y"):
             self.assertEqual(last(c).cwd, d, c)
         self.assertEqual(last("f=a; g() { f=b; }; rm $f").env["f"], "a")
-        for c in ("f=a; g() { f=b; }; g; rm $f", "f=a; g() { f=b; }; if t; then g; fi; rm $f", "f=a; function g { f=b; }; g; rm $f",
-                  "f=a; if t; then g() { f=b; }; fi; g; rm $f"):
-            self.assertIsNone(last(c).env.get("f", "unset"), c)
-        for c in ("f() { cd {D}/ex; }; f; rm y", "f() { cd {D}/ex; }; cd {D}/ex; f; rm y"):
-            self.assertIsNone(last(c).cwd, c)
-        self.assertEqual(names("f() { rm x; }; g"), ["rm", "g"])   # 본문 단위는 판정한다
+        self.assertEqual(names("f() { rm x; }; g"), ["rm", "g"])   # 본문 단위는 정의 시점에 판정한다
+        self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
+        self.assertEqual(last("A=(); f=a; rm $f").env["f"], "a")   # 빈 배열 대입은 함수 머리가 아니다(재생에서 발견)
+        self.assertEqual(names("x=(); rm y"), ["rm"])
 
     def test_mktemp_failure_is_not_sure(self):   # NB4: mktemp 가 실패로 모델링된 대입은 성공 가정에서 뺀다
         d, last = self._world()
@@ -498,24 +496,46 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertEqual(last("A=(); f=a; rm $f").env["f"], "a")   # 빈 배열 대입은 함수 머리가 아니다(재생에서 발견)
         self.assertEqual(names("x=(); rm y"), ["rm"])
 
-    def test_function_call_applies_effect_summary(self):   # 4b: 호출은 정의 시점 본문의 효과(cwd 변경·쓴 변수)만큼만 미확정
+    def test_function_call_is_inlined(self):   # 5-6: 호출 지점에서 본문을 호출 시점 상태·인자로 다시 해석한다
         d, last = self._world()
         for c, cwd in (("f() { echo hi; }; cd {D}/ex; f; rm y", f"{d}/ex"), ("f() { :; }; sudo f; cd {D}/ex; rm y", f"{d}/ex"),
                        ("f() { cd {D}/ex; }; (f); rm y", d), ("f() { cd {D}/ex; }; f | cat; rm y", d), ("f() { x=1; }; cd {D}/ex; f; rm y", f"{d}/ex"),
-                       ("f() { cd {D}/ex; }; cd {D}/ex; f; rm y", None), ("f() { cd {D}/ex; }; if t; then f; fi; rm y", None),
-                       ("f() { cd {D}/ex; }; g() { f; }; g; rm y", None), ("f() { :; }; f() { cd /; }; f; rm y", None),
-                       ("f() { f; }; f; rm y", None), ("f() { g; }; g() { cd {D}/ex; }; f; rm y", None), ("f() { h() { cd /; }; h; }; f; rm y", None),
-                       ("f() { :; }; unset -f f; f; rm y", None), ("f() { :; }; source x; f; rm y", None),
-                       ("f() { :; }; eval 'f() { cd /; }'; f; rm y", None), ("f() { cd \"$1\"; }; f {D}/ex; rm y", None),
-                       ("f() { pushd {D}/ex >/dev/null; popd; }; f; rm y", None), ("f() { cd {D}/ex; }; \"f\"; rm y", None)):
+                       ("f() { cd {D}/ex; }; f; rm y", f"{d}/ex"), ("f() { cd {D}/ex; }; cd {D}/ex; f; rm y", f"{d}/ex"),
+                       ("f() { cd {D}/ex; }; if t; then f; fi; rm y", None), ("f() { cd {D}/ex; }; g() { f; }; g; rm y", f"{d}/ex"),
+                       ("f() { g; }; g() { cd {D}/ex; }; f; rm y", f"{d}/ex"), ("f() { cd \"$1\"; }; f {D}/ex; rm y", f"{d}/ex"),
+                       ("f() { cd \"$1\"; }; f {D}/missing; rm y", None), ("f() { cd $1; }; f; rm y", None),
+                       ("f() { pushd {D}/ex >/dev/null; popd; }; f; rm y", None), ("f() { cd {D}/ex; }; \"f\"; rm y", f"{d}/ex"),
+                       ("f() { (cd {D}/ex && make); }; f; rm y", d), ("f() { cd {D}/ex | cat; }; f; rm y", d), ("f() { cd {D}/ex & }; f; rm y", d),
+                       ("cd {D}/ex; f() { cd ..; }; cd {D}; f; rm y", os.path.dirname(d)),   # 호출 시점 cwd 에서 상대 cd
+                       ("run() { \"$@\"; }; run cd {D}/ex; rm y", None), ("f() { \"$1\" \"$2\"; }; f cd {D}/ex; rm y", f"{d}/ex"),   # 인자가 명령 자리로
+                       ("run() { \"$@\"; }; cd {D}/ex; run ls; rm y", f"{d}/ex"), ("c=f; f() { cd {D}/ex; }; $c; rm y", f"{d}/ex"),
+                       ("g() { cd {D}/ex; }; c=g; f() { $c; }; f; rm y", f"{d}/ex"), ("f() { :; }; $u; rm y", None),
+                       ("cd() { :; }; cd {D}/ex; rm y", d), ("f() { cd {D}/ex; return; cd {D}; }; f; rm y", f"{d}/ex"),
+                       ("f() { cd {D}/ex || return 1; cd {D}; }; f; rm y", None), ("f() { exit 1; }; f; rm y", d),
+                       ("f() { cd {D}/ex; }; f 2>/dev/null; rm y", f"{d}/ex")):
             self.assertEqual(last(c).cwd, cwd, c)
         s = last("g=0; h=2; f() { g=1; echo $h; }; f; rm $g")
-        self.assertEqual((s.env.get("g"), s.env.get("h")), (None, "2"))
-        self.assertEqual(last("f=a; g() { export f=b; }; g; rm $f").env.get("f"), None)
-        self.assertEqual(last("f=a; g() { local f=b; }; g; rm $f").env.get("f"), None)   # 보수적(local 도 쓰기로 본다)
+        self.assertEqual((s.env.get("g"), s.env.get("h")), ("1", "2"))
+        self.assertEqual(last("f=a; g() { export f=b; }; g; rm $f").env.get("f"), "b")
+        self.assertEqual(last("f=a; g() { local f=b; rm $f; }; g; rm $f").env.get("f"), "a")   # local 은 호출 끝에 복원
+        self.assertEqual([x.env.get("f") for x in segs("f=a; g() { local f=b; rm $f; }; g; rm $f") if x.name == "rm"], ["b", "a"])   # 호출된 함수의 정의 시점 단위는 뺀다
         self.assertEqual(last("f=a; g() { read f; }; g; rm $f").env.get("f"), None)
         self.assertEqual(last("f=a; g() { h=1; }; g; rm $f").env.get("f"), "a")
-        self.assertEqual(names("f() { rm x; }; f; f"), ["rm", "f", "f"])   # 본문은 정의 시점에 한 번만 판정
+        self.assertEqual(last("d=/usr; f() { rm $d/x; }; d=/tmp; f").argv[1].literal(), "$d/x")
+        self.assertEqual([expand(x.argv[1], x) for x in segs("d=/usr; f() { rm $d/x; }; d=/tmp; f") if x.name == "rm"], [["/tmp/x"]])
+        self.assertEqual([expand(x.argv[1], x) for x in segs('f() { rm "$1" $2; }; f /a/b /c') if x.name == "rm"][-1], ["/a/b"])
+        self.assertEqual(last("f() { x=$#; }; f a b c; rm $x").env.get("x"), "3")
+        self.assertEqual(last("f() { x=$1; }; f a; f b; rm $x").env.get("x"), "b")
+        self.assertEqual(last("f() { x=$1; }; f a; rm $1").env.get("1"), None)   # 위치 매개변수는 호출 끝에 복원
+        self.assertEqual(names("f() { rm x; }; f; f"), ["rm", "rm"])   # 호출 2(정의 시점 판정은 호출되면 뺀다)
+        self.assertEqual(names("f() { rm x; }; g() { rm y; }; f"), ["rm", "rm"])   # 호출 안 된 g 의 본문은 남는다
+        for c in ("f() { :; }; f() { cd /; }; f", "f() { f; }; f", "f() { g; }; g() { f; }; f", "f() { h() { cd /; }; h; }; f",
+                  "f() { :; }; unset -f f; f", "f() { :; }; source x; f", "f() { :; }; eval 'f() { cd /; }'; f",
+                  "if t; then f() { :; }; fi; f", "f() { break; }; while true; do f; done"):   # 재정의·재귀·상호·중첩·unset -f·source·eval·갈래 정의
+            self.assertIsNotNone(parse(c, "/w", {}).error, c)
+        self.assertIsNotNone(parse("f() { " + "v=1; " * 30000 + "}; " + "f; " * 20, "/w", {}).error)   # 인라인 총량 상한
+
+
 
 
 def ex(word_src, cwd="/w", env=None):

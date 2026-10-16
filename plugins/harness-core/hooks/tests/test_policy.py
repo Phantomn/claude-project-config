@@ -479,11 +479,9 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("if !(git diff --quiet); then echo y > {HOME}/notes.md; fi"), [("덮어쓰기", PRESERVED)])
         self.assertFalse(w.judge_cmd("@(echo y > {HOME}/notes.md)").allow)   # 구문 오류 모양은 해석 실패(fail-closed)
 
-    def test_f4_function_definition(self):   # fix-brief-4 OS2: 정의만으로는 cwd·변수가 바뀌지 않고, 호출은 미확정
+    def test_f4_function_definition(self):   # fix-brief-4 OS2: 정의만으로는 cwd·변수가 바뀌지 않는다
         self.assertEqual(ev("f() { cd {SCRATCH}/s1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])
         self.assertEqual(ev("g() { cd {SCRATCH}/missing || return 1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])
-        self.assertEqual(ev("f=nothing; g() { f=..; }; g; rm -rf src/$f"), [("삭제", UNRESOLVED)])
-        self.assertEqual(ev("f() { cd {SCRATCH}/s1; }; f; rm -rf ./*"), [("삭제", UNRESOLVED)])
         self.assertEqual(ev("f() { local v=1 && cd {SCRATCH}/s1; }; rm -rf {SCRATCH}/s1"), [])
         self.assertEqual(ev("f() { rm src/main.py; }"), [("삭제", GIT_TRACKED)])   # 본문은 판정한다
 
@@ -496,23 +494,39 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "cd {SCRATCH}/s1 && while true; do rm -f x.txt; break; done", "while true; do cd {SCRATCH}/s1; break; done; rm -f x.txt"):
             self.assertEqual(ev(c), [], c)
 
-    def test_f4b_function_effect_summary(self):   # 4b: 호출은 본문 효과만큼만 미확정 — 적대 점검
-        for c in ("f() { echo x; }; f; rm -f {SCRATCH}/s1/x.txt", "log() { echo \"$@\"; }; cd {SCRATCH}/s1; log a; rm -f x.txt",
-                  "f() { x=1; }; f; rm -f {SCRATCH}/s1/x.txt", "f() { cd {SCRATCH}/s1; }; (f); rm -f {SCRATCH}/s1/x.txt",
-                  "f() { cd {SCRATCH}/s1; }; f; rm -f {SCRATCH}/s1/x.txt"):
-            self.assertEqual(ev(c), [], c)
-        self.assertEqual(ev("f() { rm -rf src; }; echo"), [("삭제", GIT_TRACKED)])   # 본문은 정의 시점에 판정
-        for c in ("f() { cd {SCRATCH}/s1; }; f; rm -rf ./*", "f() { cd \"$1\"; }; f {SCRATCH}/s1; rm -rf ./*",
-                  "f=nothing; g() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { f=..; }; if t; then g; fi; rm -rf src/$f",
-                  "f=nothing; g() { f=..; }; h() { g; }; h; rm -rf src/$f", "f=nothing; g() { :; }; g() { f=..; }; g; rm -rf src/$f",
-                  "f=nothing; g() { h; }; h() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { :; }; source ./lib.sh; g; rm -rf src/$f",
-                  "f() { cd {SCRATCH}/s1; }; cd {SCRATCH}/s1; f; rm -rf ./*", "f=nothing; g() { read f; }; g; rm -rf src/$f"):
+    def test_f5_function_inline(self):   # 5-6: 호출 지점 인라인 해석 — 적대(재검토 3 D01·D02·D04·D08·D09·D55·D126·D127)와 일상 20 패턴
+        (w.scratch / "s1/sub").mkdir()
+        for c in ("cd {SCRATCH}/s1; f() { rm -rf ./*; }; cd {REPO}; f", "d={SCRATCH}/s1; f() { rm -rf $d/*; }; d={REPO}; f",
+                  "cd {SCRATCH}/s1; f() { cd .. && rm -rf ./*; }; cd {REPO}/src; f", "cd {SCRATCH}/s1; g() { cd {REPO}; }; c=g; f() { $c; }; f; rm -rf ./*",
+                  "cd {SCRATCH}/s1; f() { cd {REPO}; }; c=f; $c; rm -rf ./*", "cd() { :; }; cd {SCRATCH}/s1; rm -rf ./*",
+                  "f=nothing; g() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { f=..; }; h() { g; }; h; rm -rf src/$f",
+                  "f=nothing; g() { h; }; h() { f=..; }; g; rm -rf src/$f", "cd {SCRATCH}/s1; f() { \"$1\" \"$2\"; }; f cd {REPO}; rm -rf ./*"):
+            self.assertFalse(w.judge_cmd(c).allow, c)
+        for c in ("cd {SCRATCH}/s1; run() { \"$@\"; }; run cd {REPO}; rm -rf ./*",
+                  "f=nothing; g() { f=..; }; if t; then g; fi; rm -rf src/$f", "f=nothing; g() { read f; }; g; rm -rf src/$f",
+                  "f() { cd \"$1\"; }; f {SCRATCH}/missing; rm -rf ./*", "f() { :; }; $u; rm -rf ./*"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
-        # 인자 흘림: 본문의 `$1` 은 정의 시점에 미확정이라 이미 거부 — 호출 재판정이 필요 없다(RED 확인)
-        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f {SCRATCH}/s1"), [("삭제", UNRESOLVED)])
-        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f src"), [("삭제", UNRESOLVED)])
-        self.assertEqual(ev("f() { echo x > \"$1\"; }; f {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])
-        self.assertEqual(ev("f() { rm -rf \"$@\"; }; f src"), [("삭제", UNRESOLVED)])
+        for c in ("f() { :; }; f() { cd /; }; f; rm -rf ./*", "f=nothing; g() { :; }; source ./lib.sh; g; rm -rf src/$f", "f() { f; }; f; rm -rf ./*"):
+            d = w.judge_cmd(c)
+            self.assertFalse(d.allow, c); self.assertIn("해석하지 못했다", d.reasons[0], c)
+        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f src"), [("삭제", GIT_TRACKED)])   # 호출 인라인(정의 시점 판정은 뺀다)
+        self.assertEqual(ev("f() { rm -rf \"$1\"; }; f {SCRATCH}/s1/sub"), [])
+        self.assertEqual(ev("f() { rm -rf \"$1\"; }"), [("삭제", UNRESOLVED)])   # 호출 안 된 함수는 정의 시점 판정
+        self.assertEqual(ev("f() { echo x > \"$1\"; }; f {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+        # 일상 20 패턴(모두 허용) — 로그·래퍼·정리·재시도·local·return·case·for·파이프·서브셸 헬퍼
+        S = "cd {SCRATCH}/s1 && "
+        for c in (S + "log() { echo \"$@\"; }; log hi; rm -f x.txt", S + "run() { echo \"$@\"; \"$@\"; }; run ls; rm -f x.txt",
+                  "cleanup() { rm -rf {SCRATCH}/s1/sub; }; cleanup", S + "cleanup() { rm -rf ./sub; }; cleanup",
+                  S + "build() { local d=sub; make -C \"$d\"; }; build; rm -f x.txt", S + "say() { echo \"$1\"; }; say a; say b; rm -f x.txt",
+                  S + "ok() { return 0; }; ok && rm -f x.txt", S + "chk() { if [ -f k ]; then return 0; fi; return 1; }; chk && rm -f x.txt",
+                  S + "inner() { (cd sub && make); }; inner; rm -f x.txt", S + "setv() { OUT=sub; }; setv; rm -f x.txt",
+                  S + "note() { printf '%s\\n' \"$*\"; }; note x y; rm -f x.txt", S + "act() { case \"$1\" in a) echo a;; *) echo o;; esac; }; act a; rm -f x.txt",
+                  S + "each() { for x in \"$@\"; do echo \"$x\"; done; }; each 1 2; rm -f x.txt", S + "cnt() { ls | wc -l; }; cnt; rm -f x.txt",
+                  S + "retry() { local n=0; until \"$@\"; do n=$((n+1)); [ $n -ge 3 ] && return 1; done; }; retry make; rm -f x.txt",
+                  S + "die() { echo \"$*\" >&2; exit 1; }; [ -f k ] || die no k; rm -f x.txt", S + "have() { command -v \"$1\" >/dev/null; }; have make && make; rm -f x.txt",
+                  S + "msg() { echo \"[$(date +%H:%M)] $*\"; }; msg start; rm -f x.txt", S + "clean() { rm -f ./x.txt; }; clean; clean",
+                  "f() { cd \"$1\" && rm -f x.txt; }; f {SCRATCH}/s1"):
+            self.assertTrue(w.judge_cmd(c).allow, c)
 
     def test_f4_assume_success_refinements(self):   # fix-brief-4 NB4–NB7: 성공 가정 집합이 실제 성공 조건을 더 반영한다
         s1 = w.scratch / "s1"

@@ -245,7 +245,7 @@ def lex(src: str) -> list[Token]:
         elif c == "\\" and s[i + 1 : i + 2] == "\n":
             i += 2
         elif c == "\n":
-            toks.append(Token("op", op="\n"))
+            toks.append(Token("op", op="\n", pos=i))
             i += 1
             for idx, delim, strip in pending:
                 start = i
@@ -278,7 +278,7 @@ def lex(src: str) -> list[Token]:
                 continue
             op = next((o for o in _OPS if s.startswith(o, i)), None)
             if op:
-                toks.append(Token("op", op=op))
+                toks.append(Token("op", op=op, pos=i))
                 i += len(op)
                 continue
             start, (w, i) = i, _read_word(s, i)
@@ -370,6 +370,9 @@ _FOR_CAP = 50   # for 목록 항목 상한 — 넘으면 루프 변수 미확정
 _FOR_TOTAL = 500   # 해석 한 번의 반복 총량 — 치환 안 루프 중첩이 곱으로 커지지 않게
 _FOR_CHARS = 200_000   # 해석 한 번에 본문을 다시 해석하는 글자 수 총량 — 반복 수만으로는 본문 길이 비용이 안 묶인다
 _last_log = [0]   # 최상위 해석의 쓰기 로그 길이(ParseResult.log_len)
+fn_stack: list[str] = []   # 인라인 해석 중인 함수 이름들(재귀·깊이 검출) — parse() 마다 비운다
+fn_called: set[str] = set()   # 인라인된 함수 이름 — 그 정의 시점 단위(미확정 인자로 판정)는 결과에서 뺀다
+fn_def_segs: list[tuple[str, int, int]] = []   # (이름, 정의 본문 단위의 segments 구간)
 _for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
 _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 지나면 루프를 묶지 않는다
 
@@ -552,11 +555,13 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
         return (env.get(SHELL_CWD) if body.strip() == "pwd" else _mktemp(body, env)), j
     if t.startswith("${", i):
         j = _skip_sub(t, i)
-        m = _NAME.fullmatch(t, i + 2, j - 1)
-        return (env.get(m.group()) if m else None), j
+        inner = t[i + 2 : j - 1]
+        return (env.get(inner) if _NAME.fullmatch(inner) or inner.isdigit() or inner in ("#", "@", "*") else None), j
     if (m := _NAME.match(t, i + 1)):
         return env.get(m.group()), m.end()
-    if t[i + 1 : i + 2] and t[i + 1] in "0123456789?#@*$!-":
+    if t[i + 1 : i + 2] and t[i + 1] in "123456789#@*":   # 위치 매개변수 — 함수 인라인이 묶는다(없으면 미확정)
+        return env.get(t[i + 1]), i + 2
+    if t[i + 1 : i + 2] and t[i + 1] in "0?$!-":
         return None, i + 2
     return "$", i + 1
 
@@ -950,15 +955,14 @@ def _mktemp_dir(w: Word) -> bool:
         for b in _word_subs(w))
 
 
-# env 안의 '이 해석에서 정의한 함수' 표시(OS2·4b). 값 = 정의 시점 본문의 효과 요약 "cwd=0|1;vars=a,b;calls=g,h"
-# (쓰기 로그에서 얻는다 — cwd 변경 여부·쓴 변수·본문이 부른 맨이름). None = 미확정(재정의·재귀·중첩 정의·unset -f·source·eval·
-# 갈래마다 다른 정의) — 호출하면 cwd·변수 전부 미확정. 갈래 합류를 따른다
+# env 안의 '이 해석에서 정의한 함수' 표시(OS2·5-6). 값 = 본문 소스 — 호출 지점에서 호출 시점 상태·인자로 다시 해석한다.
+# None = 모델링 불가(재정의·중첩 정의·unset -f·source·eval·갈래마다 다른 정의) — 호출하면 해석 실패(fail-closed). 갈래 합류를 따른다
 _FN = "\x00fn:"
-
-
-def _fn_effect(v: str) -> tuple[bool, list[str], list[str]]:
-    cwd, vars_, calls = v.split(";")
-    return cwd == "cwd=1", [x for x in vars_[5:].split(",") if x], [x for x in calls[6:].split(",") if x]
+_INFN = "\x00infn"   # 인라인 해석 중(local·return 이 함수 범위를 갖는다)
+_LOCALS = "\x00locals"   # 인라인 해석이 보고하는 local 이름들(쉼표) — 호출 끝에 복원
+_DEAD = "\x00dead"   # 인라인 해석이 보고하는 도달 불가(exit)
+_PARAMS = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "#", "@", "*")
+_FN_DEPTH = 4   # 함수 호출 깊이 상한
 _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
 
 
@@ -1322,12 +1326,16 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
         state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []
     _for_runs[:] = [0, 0]
+    fn_stack.clear()
+    fn_called.clear()
+    fn_def_segs.clear()
     _deadline[0] = deadline
     try:
         _parse(command, cwd, state_env, context, 0, segments)
     except LexError as e:
         return ParseResult([], str(e))
-    return ParseResult(segments, log_len=_last_log[0])
+    drop = {i for name, a, b in fn_def_segs if name in fn_called for i in range(a, b)}
+    return ParseResult([x for i, x in enumerate(segments) if i not in drop], log_len=_last_log[0])
 
 
 _POS = "\x00pos"   # 스냅샷이 찍힌 쓰기 로그 위치 — 그 뒤에 쓰인 키만 지금 상태와 다를 수 있다(NB9)
@@ -1366,8 +1374,8 @@ class _Env(dict):
         """상태를 e 로 바꾼다. 다시 적는 키 = e 가 이 로그의 스냅샷이면 그 뒤에 쓰인 키 중 **지금 값과 정말 다른 것**만
         (같은 키를 매번 다시 적으면 case 분기마다 로그가 두 배로 자란다 — 재검토 3 NB1). 스냅샷이 아니면 둘의 모든 키."""
         pos = e.get(_POS)
-        if pos is None:
-            changed = [*self, *e]
+        if pos is None:   # 다른 해석(for 본문·eval·인라인)의 상태 — 실제로 다른 키만
+            changed = [k for k in {*self, *e} if (k in self) != (k in e) or (k in e and self[k] != e[k])]
         else:
             changed = [k for k in dict.fromkeys(self.log[pos:]) if (k in self) != (k in e) or (k in e and self[k] != e[k])]
         super().clear()
@@ -1479,6 +1487,15 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
                 state_env[w[1].literal()] = None
             return None
+        if w and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts) and any(k.startswith(_FN) for k in state_env):
+            v = _text(w[0].parts, unit_env, split=True)   # 함수가 정의된 뒤 변수로 부르는 명령 — 확정되면 그 이름, 아니면 전부 미확정(fail-closed)
+            if v:
+                w = [Word((Part(v, ""),))] + w[1:]
+            else:
+                st["cwd"] = None
+                state_env.pop("PWD", None)
+                state_env.pop(SHELL_CWD, None)
+                _forget(state_env)
         unit_cwd = st["cwd"]
         name = _cmd_name(w)
         # 내장(cd·true·exit…)은 맨이름으로만 불린다 — `./true`·`/bin/true` 는 외부 프로그램, 래퍼 밑(command·builtin 제외)도 외부 검색
@@ -1488,20 +1505,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[n] = None
             else:
                 _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
-        if fn_cur and builtin and _NAME.fullmatch(w[0].literal()):
-            fn_cur[-1]["calls"].add(w[0].literal())   # 본문이 부른 이름 — 나중에 함수가 되면(상호 호출) 요약을 믿지 않는다
-        if w and not wrappers and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출(래퍼 뒤는 함수가 아니다)
-            eff = state_env[fx]
-            known = eff is not None and not any(_FN + c in state_env for c in _fn_effect(eff)[2])
-            if not known or _fn_effect(eff)[0]:
-                st["cwd"] = None
-                state_env.pop("PWD", None)
-                state_env.pop(SHELL_CWD, None)
-            if not known:
-                _forget(state_env)
-            else:
-                for v in _fn_effect(eff)[1]:
-                    state_env[v] = None
+        if w and not wrappers and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출(래퍼 뒤는 함수가 아니다) — 인라인 해석
+            inline_call(w[0].literal(), state_env[fx], w[1:], unit_env)
+            return None
+        if name == "return" and builtin and state_env.get(_INFN):   # 함수 범위의 return — 호출 끝으로 합류
+            returns.append(now())
+            elem["exit"] = True
+            return None
         if name == "unset" and any(x.literal().startswith("-") and "f" in x.literal() for x in w[1:]):
             for x in w[1:]:
                 if not x.literal().startswith("-"):
@@ -1534,7 +1544,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            elem["sure"] = name not in ("typeset", "local") and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
+            if name in ("local", "declare", "typeset") and state_env.get(_INFN):   # 함수 범위 — 호출 끝에 복원
+                names_ = [x.literal().partition("=")[0] for x in w[1:] if not x.literal().startswith("-")]
+                state_env[_LOCALS] = ",".join(filter(None, [state_env.get(_LOCALS), *names_]))
+            elem["sure"] = (name not in ("typeset", "local") or bool(state_env.get(_INFN))) and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
             return None
@@ -1665,10 +1678,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
         nonlocal snap, list_snap, in_pipe, andor
-        if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌리고 효과 요약을 남긴다
+        if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌리고 본문 소스를 남긴다
             isolated.add(len(stack))
             fn_cur[-1]["depth"] = len(stack)
-            fn_cur[-1]["pos"] = len(state_env.log)
             st["fn"] = False
         e = now()
         stack.append((kind, *e, in_pipe, andor, st["dead"], list_snap))
@@ -1681,12 +1693,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         nonlocal snap, list_snap, in_pipe, andor
         _, cwd0, env0, outer_pipe, andor, dead0, list_snap = stack.pop()
         summary = None
-        if fn_cur and fn_cur[-1].get("depth") == len(stack):   # 함수 본문 끝 — 로그에서 효과 요약
+        if fn_cur and fn_cur[-1].get("depth") == len(stack):   # 함수 본문 끝 — 본문 소스(여는 토큰부터 닫는 토큰까지)
             f = fn_cur.pop()
-            written = set(state_env.log[f["pos"]:])
+            fn_def_segs.append((f["name"], f["seg0"], len(segments)))
             if not f["unknown"]:
-                summary = (f["name"], f"cwd={int(bool(written & {'PWD', SHELL_CWD}))};vars="
-                           + ",".join(sorted(k for k in written if not k.startswith("\x00"))) + ";calls=" + ",".join(sorted(f["calls"])))
+                t_end = toks[st["idx"]]
+                summary = (f["name"], command[toks[f["start"]].pos : t_end.pos + len(t_end.word.literal() if t_end.kind == "word" else t_end.op)])
         if kind == "(" or outer_pipe or len(stack) in isolated:
             isolated.discard(len(stack))
             set_state((cwd0, env0))
@@ -1712,17 +1724,50 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     # 1 `|`·`)` 기대 / 2 `|` 뒤 단어 기대, ends = 분기 끝 상태들. stack 의 "case" 항목과 짝을 이룬다
     cases: list[dict] = []
     isolated: set[int] = set()   # 함수 본문인 stack 항목의 깊이
-    fn_cur: list[dict] = []   # 해석 중인 함수 본문(이름·로그 위치·부른 이름·미확정 여부)
+    fn_cur: list[dict] = []   # 해석 중인 함수 본문(이름·본문 시작 토큰·미확정 여부)
+    returns: list = []   # 인라인 해석 중 만난 return 시점 상태들 — 끝에서 합류
 
-    def define_fn(name: str | None) -> None:
+    def define_fn(name: str | None, start: int) -> None:
         if name is None or not _NAME.fullmatch(name):
             raise LexError("함수 이름을 해석할 수 없음")
-        unknown = (_FN + name) in state_env or bool(fn_cur)   # 재정의·함수 안 함수는 미확정
+        unknown = (_FN + name) in state_env or bool(fn_cur)   # 재정의·함수 안 함수는 모델링 불가
         for f in fn_cur:
             f["unknown"] = True
         state_env[_FN + name] = None   # 본문 안 재귀 호출은 자리표시자(None)를 본다
-        fn_cur.append({"name": name, "calls": set(), "unknown": unknown})
+        fn_cur.append({"name": name, "start": start, "unknown": unknown, "seg0": len(segments)})
         st["fn"] = True
+
+    def inline_call(fname: str, body: str | None, args: list[Word], env: Mapping[str, str | None]) -> None:
+        """정의된 함수 호출 — 본문을 호출 시점 상태에서 다시 해석한다. 위치 매개변수는 인자 단어(확정이면 값), local·위치
+        매개변수는 호출 끝에 복원, return 은 호출 끝으로 합류, exit 은 밖까지 도달 불가. 모델링 불가(None)·재귀·깊이·총량 초과는 해석 실패."""
+        if body is None or fname in fn_stack or len(fn_stack) >= _FN_DEPTH:
+            raise LexError(f"모델링할 수 없는 함수 호출 {fname}")
+        if _for_runs[1] + len(body) > _FOR_CHARS:
+            raise LexError("함수 인라인 총량 초과")
+        _for_runs[1] += len(body)
+        vals = [_text(x.parts, env, split=True) for x in args]
+        inner: dict[str, str | None] = {k: v for k, v in state_env.items() if k not in _PARAMS and k != _LOCALS}
+        inner.update({str(i): v for i, v in enumerate(vals, 1)})
+        inner["#"] = str(len(vals))
+        inner["@"] = inner["*"] = vals[0] if len(vals) == 1 else None   # 여러 인자는 단어 여럿이라 한 값으로 못 둔다
+        inner[_INFN] = "1"
+        fn_stack.append(fname)
+        fn_called.add(fname)
+        try:
+            after_cwd, after_env = _parse(body, st["cwd"], inner, context, depth + 1, segments, via_xargs)
+        finally:
+            fn_stack.pop()
+        dead = after_env.pop(_DEAD, None) is not None
+        for k in [*_PARAMS, *filter(None, (after_env.pop(_LOCALS, None) or "").split(","))]:
+            if k in state_env:
+                after_env[k] = state_env[k]
+            else:
+                after_env.pop(k, None)
+        after_env.pop(_INFN, None)
+        st["cwd"] = after_cwd
+        state_env.replace(after_env)
+        if dead:
+            elem["exit"] = True
 
     def at_start() -> bool:
         return st["start"]
@@ -1846,6 +1891,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if idx < skip:
             continue
         _check_deadline()
+        st["idx"] = idx
         cur = cases[-1] if stack and stack[-1][0] == "case" else None
         word = t.word.literal() if t.kind == "word" and not t.word.is_quoted() else None
         if cur is not None and cur["mode"] == "head":
@@ -1885,10 +1931,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if word not in ("fi", "done", "for", "select"):   # for·select 머리는 unit 이, fi·done 뒤 리다이렉트는 단위가 받는다
                 continue
         if word == "function" and not words and not redirects:   # `function f [()] 본문`
-            define_fn(bare(idx + 1))
             skip = idx + 2
             if skip + 1 < len(toks) and toks[skip].op == "(" and toks[skip + 1].op == ")":
                 skip += 2
+            define_fn(bare(idx + 1), skip)
             continue
         if t.kind == "word" and word in ("case", "esac") and at_start():
             if word == "case":
@@ -1962,7 +2008,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         elif t.op == "(":
             if len(words) == 1 and not redirects and idx + 1 < len(toks) and toks[idx + 1].op == ")" \
                     and not _is_assign(words[0]):   # `f() 본문` — `A=()` 는 빈 배열 대입
-                define_fn(None if words[0].is_quoted() else words[0].literal())
+                define_fn(None if words[0].is_quoted() else words[0].literal(), idx + 2)
                 words, skip, st["start"] = [], idx + 2, True
                 continue
             flush()
@@ -1973,6 +2019,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     end_list()
     if stack:
         raise LexError("닫히지 않은 그룹")
+    if returns:   # 함수 본문의 return 들 — 끝 상태와 합류(끝이 도달 불가면 return 들만)
+        set_state(_merge(returns + ([] if st["dead"] else [now()]), state_env.log))
+    if st["dead"] and state_env.get(_INFN):
+        state_env[_DEAD] = "1"
     if depth == 0:
         _last_log[0] = len(state_env.log)
     env = dict(state_env)
