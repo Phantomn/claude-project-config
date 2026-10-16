@@ -441,8 +441,14 @@ class SubstHeredocTest(unittest.TestCase):   # 재생 군집 P2: `$( )` 안 here
 
     def test_adversarial(self):
         # 구분자 비슷한 줄은 끝이 아니다 — 본문 안 ')' 가 치환을 닫지 않는다
-        self.assertEqual(names("echo \"$(cat <<EOF\nEOFX\n EOF\nEOF )\nEOF\n)\"; rm y"), ["echo", "cat", "rm"])
-        for s in ["echo \"$(cat <<EOF\nbody)\"", "echo $(cat <<EOF)", "echo \"$(cat <<EOF\nEOF\"", "echo $(cat <<)"]:
+        self.assertEqual(names("echo \"$(cat <<EOF\nEOFX\n EOF\n EOF)\nx)\nEOF\n)\"; rm y"), ["echo", "cat", "rm"])
+        # bash 5.2 는 구분자로 시작하고 `)` 가 든 줄에서 끝낸다(실측) — `EOF)` 만 따르고 나머지 모양은 해석 실패
+        self.assertEqual(names("echo \"$(cat <<EOF\nmsg\nEOF) tail\"; rm y"), ["echo", "cat", "rm"])
+        self.assertEqual(names("x=$(cat <<-EOF\n\tmsg\n\tEOF)\nrm y"), ["cat", "rm"])
+        hd = next(s for s in segs("echo \"$(cat <<EOF\nmsg\nEOF)\"") if s.name == "cat").redirects[0]
+        self.assertEqual(hd.body, "msg")
+        for s in ["echo \"$(cat <<EOF\nbody)\"", "echo $(cat <<EOF)", "echo \"$(cat <<EOF\nEOF\"", "echo $(cat <<)",
+                  "echo \"$(cat <<EOF\nmsg\nEOF )\nEOF\n)\"", "echo \"$(cat <<EOF\nmsg\nEOFX)\n\")", "echo \"$(cat <<A <<B\nA)\nB\n)\""]:
             self.assertIsNotNone(parse(s, "/w", {}).error, s)
         self.assertEqual(names("echo $((1<<2)); rm y"), ["echo", "rm"])   # 산술 시프트는 heredoc 이 아니다
         self.assertEqual(names("cat <<<$(echo x); rm y"), ["cat", "echo", "rm"])

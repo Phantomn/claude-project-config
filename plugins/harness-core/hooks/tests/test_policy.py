@@ -349,6 +349,14 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertTrue(w.judge_cmd(msg + " && git push origin feat").allow)
         self.assertEqual(ev(msg + " && rm src/main.py"), [("삭제", GIT_TRACKED)])
 
+    def test_d_heredoc_delimiter_shapes(self):   # 적대 리뷰 I7·M1·M2 — bash 5.2 실측 동작
+        self.assertTrue(w.judge_cmd("git commit -m \"$(cat <<'EOF'\nmsg\nEOF)\" && git push origin feat").allow)   # EOF) 로 닫힘
+        self.assertEqual(ev("X=\"$(cat <<'EOF'\nmsg\nEOF)\"; echo $X | tee {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("for f in a b; do cat <<EOF; done\nx\nEOF\necho y | tee {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("echo $((1<<y\n+0)); rm -f src/main.py\ny\n# ))"), [("삭제", GIT_TRACKED)])   # 산술 안 << 는 heredoc 이 아니다
+        d = w.judge_cmd("X=$(cat <<EOF\nmsg\nEOF )\nrm -rf src\nEOF\n)")   # bash 는 여기서 heredoc·치환을 끝내고 rm 을 실행한다
+        self.assertFalse(d.allow); self.assertIn("해석하지 못했다", d.reasons[0])
+
     def test_e_case_judges_every_branch(self):
         self.assertTrue(w.judge_cmd('case "$1" in\n  a|b) echo hi > /dev/null ;;\n  *) rm -f {SCRATCH}/s1/x.txt ;;\nesac').allow)
         self.assertEqual(ev('case "$1" in a) rm -rf {SCRATCH}/s1;; *) rm src/main.py;; esac'), [("삭제", GIT_TRACKED)])

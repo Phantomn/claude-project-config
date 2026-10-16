@@ -80,28 +80,36 @@ def _skip_sub(s: str, i: int) -> int:
                 j += 1
         raise LexError("닫히지 않은 백틱")
     nxt = s[i + 1 : i + 2]
-    if nxt == "(":
-        return _skip_to(s, i + 2, ")")
+    if nxt == "(":   # 산술 `$((…))` 안의 << 는 시프트다 — heredoc 으로 보면 뒤 명령을 본문으로 건너뛴다
+        return _skip_to(s, i + 2, ")", not s.startswith("$((", i))
     if nxt == "{":
         return _skip_to(s, i + 2, "}")
     return i + 1
 
 
-def _heredoc_end(s: str, i: int, delim: str, strip: bool) -> tuple[int, int]:
-    """i = 본문 첫 줄 시작. (본문 끝 인덱스, 구분자 줄 다음 인덱스). 구분자 줄이 없으면 LexError."""
+def _heredoc_end(s: str, i: int, delim: str, strip: bool, sub: bool = False) -> tuple[int, int]:
+    """i = 본문 첫 줄 시작. (본문 끝 인덱스, 구분자 줄 다음 인덱스). 구분자 줄이 없으면 LexError.
+
+    sub(`( )` 안): bash 5.2 는 구분자로 시작하고 `)` 가 든 줄에서 heredoc 을 끝낸다(경고만, 실측). `delim)` 은 그대로
+    따르고(다음 인덱스 = 그 `)`), 그 밖의 모양(`EOF )`·`EOFX)`)은 모델링하지 않아 해석 실패로 둔다."""
     n, start = len(s), i
     while i < n:
         j = s.find("\n", i)
         end = n if j < 0 else j
         line = s[i:end]
-        if (line.lstrip("\t") if strip else line) == delim:
+        body = line.lstrip("\t") if strip else line
+        if body == delim:
             return (i - 1 if i > start else start), (end + 1 if j >= 0 else n)
+        if sub and body.startswith(delim) and ")" in body[len(delim):]:
+            if body[len(delim)] != ")":
+                raise LexError(f"heredoc 끝 줄을 확정할 수 없음 {line!r}")
+            return (i - 1 if i > start else start), end - len(body) + len(delim)
         i = end + 1
     raise LexError(f"끝나지 않은 heredoc {delim!r}")
 
 
-def _skip_to(s: str, i: int, closer: str) -> int:
-    """중첩·따옴표를 세며 closer 다음 인덱스. i 는 여는 기호 다음. `( )` 안 heredoc 본문은 건너뛴다."""
+def _skip_to(s: str, i: int, closer: str, heredoc: bool = True) -> int:
+    """중첩·따옴표를 세며 closer 다음 인덱스. i 는 여는 기호 다음. `( )` 안 heredoc 본문은 건너뛴다(heredoc=False 면 산술)."""
     n = len(s)
     pending: list[tuple[str, bool]] = []
     while i < n:
@@ -111,10 +119,12 @@ def _skip_to(s: str, i: int, closer: str) -> int:
             return i + 1
         if c == "\n" and pending:
             i += 1
-            for delim, strip in pending:
-                i = _heredoc_end(s, i, delim, strip)[1]
+            for k, (delim, strip) in enumerate(pending):
+                i = _heredoc_end(s, i, delim, strip, True)[1]
+                if s[i : i + 1] == ")" and k < len(pending) - 1:
+                    raise LexError("`)` 로 닫힌 heredoc 뒤에 남은 heredoc")
             pending.clear()
-        elif c == "<" and closer == ")" and s.startswith("<<", i) and not s.startswith("<<<", i):
+        elif c == "<" and closer == ")" and heredoc and s.startswith("<<", i) and not s.startswith("<<<", i):
             strip = s.startswith("<<-", i)
             j = i + 2 + strip
             if (m := _BLANK.match(s, j)):
@@ -135,7 +145,7 @@ def _skip_to(s: str, i: int, closer: str) -> int:
         elif c == "`" or (c == "$" and s[i + 1 : i + 2] in ("(", "{")):
             i = _skip_sub(s, i)
         elif c == "(" and closer == ")":
-            i = _skip_to(s, i + 1, ")")
+            i = _skip_to(s, i + 1, ")", heredoc)
         else:
             i += 1
     raise LexError(f"닫히지 않은 {closer!r}")
@@ -1353,7 +1363,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                     open_loops -= 1
                 start = start and lit in _RESERVED
             j += 1
-        if nested:
+        # done 줄에서 시작한 heredoc 은 본문이 done 뒤에 있어 본문 원문만 잘라서는 해석할 수 없다 — 일반 처리
+        if nested or any(t.kind == "redir" and t.op in _HEREDOC and not any(x.op == "\n" for x in toks[h + 1 : j])
+                         for h, t in enumerate(toks[do + 1 : j], do + 1)):
             return None
         vals: list[str] = []
         for wd in items:
