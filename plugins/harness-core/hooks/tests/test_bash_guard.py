@@ -165,6 +165,11 @@ class MainTest(_WorldCase):
         out = json.loads(r.stdout.decode())["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny"); self.assertIn("판정기 오류", out["permissionDecisionReason"])
 
+    def test_lone_surrogate_in_command(self):   # 리뷰 라운드 3: 출력에 짝 없는 surrogate 가 들어도 rc 0 + 유효한 deny JSON
+        r = self.run_bytes(json.dumps(w.payload('rm -rf "$X\ud800"')).encode(), ON)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.decode("ascii"))["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
         p = state_dir(w.environ) / "bash-guard.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True); p.write_text(""); p.chmod(0o644)

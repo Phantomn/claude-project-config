@@ -142,7 +142,12 @@ def render(d: Decision) -> str:
     out: dict = {"hookEventName": "PreToolUse", "permissionDecision": "allow" if d.allow else "deny"}
     if not d.allow:
         out["permissionDecisionReason"] = "[bash-guard] " + "\n".join([*d.reasons, FOOTER])
-    return json.dumps({"hookSpecificOutput": out}, ensure_ascii=False)
+    # ensure_ascii: 명령에 든 짝 없는 surrogate 도 \uXXXX 로 표현돼 출력 인코딩이 실패하지 않는다
+    return json.dumps({"hookSpecificOutput": out})
+
+
+# 인코딩까지 실패할 때의 마지막 보루(ASCII 고정 바이트) — on 모드는 이것으로라도 allow/deny 를 낸다
+_SAFE = {ok: render(Decision(ok, [R_ERROR], "on")).encode("ascii") for ok in (True, False)}
 
 
 def final_output(d: Decision, old: str) -> str:
@@ -218,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             d = _fallback(payload, environ, raw.decode("utf-8", "replace"))
             d.error = f"{type(e).__name__}: {e}"
         out = final_output(d, old)
-        if not _emit(out):
+        if not _emit(out, _SAFE[d.allow] if d.mode == "on" else None):
             d.error = "; ".join(filter(None, [d.error, "출력 실패"]))
         out = ""
         old_dec = _old_decision(old)
@@ -240,12 +245,17 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _emit(out: str) -> bool:
+def _emit(out: str, safe: bytes | None = None) -> bool:
     """fd 1 에 바이트로 직접 쓴다 — stdout 인코딩과 무관하고(OLD 의 surrogateescape 바이트도 그대로),
     sys.stdout 버퍼를 거치지 않아 쓰기 실패 뒤 종료 시 다시 flush 하다 rc 120 이 되는 일이 없다."""
     if not out:
         return True
-    data = os.fsencode(out) + b"\n"
+    try:
+        data = os.fsencode(out) + b"\n"   # OLD 경로: argv 의 surrogateescape 바이트를 그대로 되돌린다
+    except UnicodeError:
+        if safe is None:
+            return False
+        data = safe + b"\n"
     try:
         while data:
             data = data[os.write(1, data):]
