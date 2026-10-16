@@ -1395,7 +1395,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if not r:
             if name in _SURE_CMDS or (name == "readonly" and _only_mktemp(w)):
                 elem["sure"] = True
-            elif name in ("exit", "return"):
+            elif name == "exit":   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
                 elem["exit"] = True
             elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env)) is not None:
                 state_env.update(dict.fromkeys([_MADE + x for x in mk], "1"))

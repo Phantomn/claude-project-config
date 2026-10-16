@@ -322,6 +322,20 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertEqual(last(c).cwd, cwd, c)
         self.assertEqual(names("exit; rm x; { exit; }; rm y"), ["exit", "rm", "exit", "rm"])   # 도달 못 해도 단위는 판정
 
+    def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
+        d, last = self._world()
+        for c in ("cd {D}/missing || return; rm y", "cd {D}/missing || return 1; rm y", "cd {D}/missing 2>/dev/null || return 0; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        self.assertEqual(last("cd {D}/ex || return; rm y").cwd, f"{d}/ex")
+
+    def test_background_list_is_isolated(self):   # OS3: `&` 는 목록 끝 — `A && cd X &` 전체가 배경 서브셸이라 cd 가 새지 않는다
+        d, last = self._world()
+        for c in ("cd {D}/ex && sleep 1 &\nrm y", "cd {D}/ex & rm y", "true && cd {D}/ex || false &\nrm y", "{ cd {D}/ex; } &\nrm y",
+                  "cd {D}/ex && cd {D}/missing &\nrm y", "exit &\nrm y", "f=1; cd {D}/ex &\nrm y"):
+            self.assertEqual(last(c).cwd, d, c)
+        self.assertEqual(last("f=a; f=b && cd {D}/ex &\nrm $f").env["f"], "a")
+        self.assertEqual([x.cwd for x in segs("cd /usr && rm x &\nrm y") if x.name == "rm"], ["/usr", "/w"])   # 배경 안 단위는 판정
+
 
 def ex(word_src, cwd="/w", env=None):
     s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]
