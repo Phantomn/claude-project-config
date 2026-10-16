@@ -1544,7 +1544,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            if name in ("local", "declare", "typeset") and state_env.get(_INFN):   # 함수 범위 — 호출 끝에 복원
+            if name in ("local", "declare", "typeset") and state_env.get(_INFN) \
+                    and not any(x.literal().startswith("-") and "g" in x.literal()[1:] for x in w[1:]):   # 함수 범위(-g 는 전역) — 호출 끝에 복원
                 names_ = [x.literal().partition("=")[0] for x in w[1:] if not x.literal().startswith("-")]
                 state_env[_LOCALS] = ",".join(filter(None, [state_env.get(_LOCALS), *names_]))
             elem["sure"] = (name not in ("typeset", "local") or bool(state_env.get(_INFN))) and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
