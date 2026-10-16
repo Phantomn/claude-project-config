@@ -400,6 +400,31 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "f=x; g[0]=1; : ${h:=1}; rm -f {SCRATCH}/s1/$f.txt"):   # 다른 변수·변수 안 쓰는 대상은 그대로
             self.assertEqual(ev(c), [], c)
 
+    def test_f_assume_success_honest_failures(self):   # fix-brief-3 항목 3: 실패 경로 없음으로 둔 명령이 정직하게 실패하는 경우
+        s1 = w.scratch / "s1"
+        (s1 / "ro").mkdir(); (s1 / "ro").chmod(0o555); self.addCleanup((s1 / "ro").chmod, 0o755)
+        (s1 / "nox").mkdir(); (s1 / "nox" / "k").touch(); (s1 / "nox").chmod(0o600); self.addCleanup((s1 / "nox").chmod, 0o755)
+        (s1 / "dangling").symlink_to(s1 / "gone")
+        rm = "; rm -rf ./*"
+        for c in ("mkdir {SCRATCH}/s1/x.txt && cd {SCRATCH}/s1/x.txt" + rm,          # 대상이 이미 파일
+                  "mkdir -p {SCRATCH}/s1/x.txt/d && cd {SCRATCH}/s1/x.txt/d" + rm,    # 상위가 파일
+                  "mkdir {SCRATCH}/s1 && cd {SCRATCH}/s1" + rm,                       # -p 없이 이미 있는 폴더
+                  "cd {SCRATCH}/s1/x.txt && true" + rm,                               # cd 대상이 파일
+                  "mkdir -p {SCRATCH}/s1/ro/n && cd {SCRATCH}/s1/ro/n" + rm,          # 상위에 쓰기 권한 없음
+                  "cd {SCRATCH}/s1/nox && true" + rm,                                 # 들어갈(x) 권한 없음
+                  "mkdir -p /proc/bgx && cd /proc/bgx" + rm,                          # 쓸 수 없는 파일 시스템
+                  "mkdir -p {SCRATCH}/s1/dangling && cd {SCRATCH}/s1/dangling" + rm,  # 끊긴 심볼릭 링크
+                  "T=$(mktemp) && cd $T" + rm,                                        # mktemp(파일)로 cd
+                  "TMPDIR=/nonexistent; T=$(mktemp -d) && cd $T" + rm,                # mktemp 실패
+                  "D=$(cat missing) && cd {SCRATCH}/s1" + rm,                         # 실패하는 치환을 담은 대입
+                  "echo x > /nonexistent/f && cd {SCRATCH}/s1" + rm,                  # 리다이렉트 실패
+                  "local v=1 && cd {SCRATCH}/s1" + rm,                                # 함수 밖 local 은 늘 실패
+                  "false && mkdir -p {SCRATCH}/s1/n; cd {SCRATCH}/s1/n && true" + rm):  # 돌지 않은 mkdir
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        # 정직한 실수 모델의 잔여 위험(LIMITS): 형식 오류 printf·readonly 재대입은 실패해도 성공으로 본다
+        for c in ("printf %d abc && cd {SCRATCH}/s1" + rm, "readonly R=1; readonly R=2 && cd {SCRATCH}/s1" + rm):
+            self.assertEqual(ev(c), [], c)
+
     def test_f_source_venv_activate(self):   # fix-brief-3 항목 2: 가상환경 activate 만 변수를 미확정으로 두지 않는다
         for c in ("f=main.py; source .venv/bin/activate; rm src/$f", "f=main.py; . venv/bin/activate.sh; rm src/$f",
                   "f=main.py; source {REPO}/.venv/bin/activate && rm src/$f"):

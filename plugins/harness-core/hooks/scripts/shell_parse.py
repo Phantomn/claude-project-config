@@ -907,12 +907,16 @@ def _mktemp_dir(w: Word) -> bool:
         for b in _word_subs(w))
 
 
-def _made(p: str, made: set[str]) -> bool:
-    """같은 해석 안에서 앞서 mkdir·mktemp -d 가 만든 폴더(또는 그 상위)."""
-    return any(m == p or m.startswith(p + "/") for m in made)
+_MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
 
 
-def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None], made: set[str]) -> list[str] | None:
+def _made(p: str, env: Mapping[str, str | None]) -> bool:
+    """같은 해석에서 앞서 (모든 경로가) 만든 폴더 또는 그 상위."""
+    n = len(_MADE)
+    return any(v and k.startswith(_MADE) and (k[n:] == p or k[n:].startswith(p + "/")) for k, v in env.items())
+
+
+def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None]) -> list[str] | None:
     """`mkdir` 이 실패할 수 없는 모양이면 만드는 경로들, 아니면 None(대상 미확정·이미 있음·상위가 폴더가 아님)."""
     parents, out, i, ops = False, [], 1, False
     while i < len(w):
@@ -938,9 +942,9 @@ def _mkdir_sure(w: list[Word], cwd: str | None, env: Mapping[str, str | None], m
                 return None
             continue
         q = os.path.dirname(p)
-        while parents and q != "/" and not os.path.lexists(q) and not _made(q, made):
+        while parents and q != "/" and not os.path.lexists(q) and not _made(q, env):
             q = os.path.dirname(q)
-        if not (_made(q, made) or os.path.isdir(q)):
+        if not (_made(q, env) or (os.path.isdir(q) and os.access(q, os.W_OK | os.X_OK))):   # 권한·읽기 전용 FS 는 실패
             return None
     return out or None
 
@@ -1278,7 +1282,6 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     words: list[Word] = []
     redirects: list[Redirect] = []
     pipe_prev: Segment | None = None
-    made: set[str] = set()   # 이 해석에서 mkdir·mktemp -d 가 만든 폴더 — 뒤 cd 의 실패 경로 판정
     # 진행 중인 `&&`·`||` 요소의 [단위 수(복합·파이프는 2 이상), 실패 경로 없음, 실패 끝 상태(cd 는 cd 전, 그 밖 None=끝 상태)]
     elem: list = [0, False, None]
 
@@ -1313,7 +1316,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 k, v = _assign_of(x, state_env)  # type: ignore[misc]
                 state_env[k] = v
                 if v is not None and _mktemp_dir(x):
-                    made.add(v)
+                    state_env[_MADE + v] = "1"
             elem[1] = not (neg or r) and _only_mktemp(w)
             if not r:
                 return None
@@ -1355,10 +1358,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 elif (a := _assign_of(x, state_env)) is not None:
                     state_env[a[0]] = a[1]
                     if a[1] is not None and _mktemp_dir(x):
-                        made.add(a[1])
+                        state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            elem[1] = name != "typeset" and not (neg or r) and _only_mktemp(w)
+            elem[1] = name not in ("typeset", "local") and not (neg or r) and _only_mktemp(w)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
             return None
@@ -1367,8 +1370,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 elem[1] = True
             elif name in ("exit", "return"):
                 elem[1] = "exit"
-            elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env, made)) is not None:
-                made.update(mk)
+            elif name == "mkdir" and (mk := _mkdir_sure(w, unit_cwd, unit_env)) is not None:
+                state_env.update(dict.fromkeys([_MADE + x for x in mk], "1"))
                 elem[1] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
         segments.append(seg)
@@ -1384,7 +1387,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if st["cwd"] is not None:
                 state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
                 # 있는 폴더·앞서 만든 폴더로의 cd 만 실패 경로가 없다 — 없는 폴더(`cd build && …`)는 실패 끝을 유지
-                elem[1] = not (neg or r) and (_made(st["cwd"], made) or os.path.isdir(st["cwd"]))
+                elem[1] = not (neg or r) and (_made(st["cwd"], state_env) or (
+                    os.path.isdir(st["cwd"]) and os.access(st["cwd"], os.X_OK)))
             else:
                 state_env.pop("PWD", None)
                 state_env.pop(SHELL_CWD, None)
