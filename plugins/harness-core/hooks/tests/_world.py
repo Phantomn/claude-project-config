@@ -170,6 +170,15 @@ class World:
                    "session_id": self.session_id if session_id is _DEFAULT else session_id}
         return make_ctx(payload, {**self.environ, **(environ_extra or {})}, budget)
 
+    def evaluate_all(self, command: str, cwd: str = "{REPO}", ctx: Ctx | None = None) -> list:
+        import policy  # 여기서만 — 다른 테스트가 _world 를 쓸 때 정책 모듈에 묶이지 않게
+        from shell_parse import parse
+        res = parse(self.fmt(command), self.fmt(cwd), self.environ)
+        if res.error:
+            raise ValueError(f"해석 실패: {res.error}")
+        c = ctx or self.ctx()
+        return [f for s in res.segments for f in policy.evaluate(s, c)]
+
     def sh(self, cmd: str, cwd: str = "{REPO}") -> str:
         return subprocess.run(self.fmt(cmd), shell=True, cwd=self.fmt(cwd), env=self.environ,
                               capture_output=True, text=True, check=True).stdout
