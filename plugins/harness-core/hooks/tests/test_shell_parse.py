@@ -452,5 +452,43 @@ class SubstHeredocTest(unittest.TestCase):   # 재생 군집 P2: `$( )` 안 here
         self.assertLess(time.perf_counter() - t0, 0.05)
 
 
+class CaseTest(unittest.TestCase):   # 재생 군집 P1: case 문 — 모든 분기를 판정
+    def rms(self, c):
+        return [[w.literal() for w in s.argv[1:]] for s in segs(c) if s.name == "rm"]
+
+    def test_all_branches(self):
+        self.assertEqual(self.rms("case $1 in a|b) rm x;; c) rm y;& *) rm z;;& esac; rm w"), [["x"], ["y"], ["z"], ["w"]])
+        self.assertEqual(self.rms("case x in (a) rm x;; esac"), [["x"]])
+        self.assertEqual(self.rms('case "$f" in\n  *.py)\n    rm a\n    ;;\n  *) echo;;\nesac\nrm b'), [["a"], ["b"]])
+        self.assertEqual(self.rms("case x in a) rm x; esac"), [["x"]])
+        self.assertEqual(self.rms("case x in a) rm x\nesac"), [["x"]])
+        self.assertEqual(self.rms("case x in esac; rm y"), [["y"]])
+        self.assertEqual(self.rms("case x in a) case y in b) rm q;; esac;; esac"), [["q"]])
+        self.assertEqual(self.rms("for f in a; do case $f in a) rm x;; esac; done"), [["x"]])
+        self.assertEqual(self.rms("if t; then case x in a) rm x;; esac; fi"), [["x"]])
+        self.assertEqual(self.rms("(case x in a) rm x;; esac); rm y"), [["x"], ["y"]])
+        self.assertEqual(self.rms("case $(rm -rf q) in *) :;; esac"), [["-rf", "q"]])   # 머리 단어의 치환도 실행된다
+
+    def test_redirect_and_pipe_after_esac(self):
+        s = [x for x in segs("case x in a) echo;; esac > out") if x.redirects]
+        self.assertEqual([r.target.literal() for r in s[0].redirects], ["out"])
+        self.assertEqual(names("case x in a) echo;; esac | cat"), ["echo", "cat"])
+
+    def test_state_merge(self):
+        self.assertIsNone(rm_cwd("case x in a) cd /a;; esac; rm y"))     # 어느 분기가 돌았는지 모른다
+        self.assertEqual(rm_cwd("case x in a) echo;; esac; rm y"), "/w")
+        self.assertEqual([x.cwd for x in segs("case x in a) cd /a; rm q;; b) rm r;; esac") if x.name == "rm"], ["/a", "/w"])
+        self.assertEqual([x.cwd for x in segs("case x in a) cd /a;& b) rm r;; esac") if x.name == "rm"], [None])
+        self.assertIsNone(segs("case x in a) X=/a;; esac; rm $X")[-1].env.get("X"))
+        self.assertEqual(rm_cwd("cd /a; case x in a) echo;; esac | cd /b; rm y"), "/a")
+
+    def test_adversarial(self):
+        self.assertEqual(names("case x in a) echo ';;' esac;; esac; rm y"), ["echo", "rm"])   # 따옴표 안 ;; 와 인자 esac
+        for s in ["case x in a) rm x;;", "esac", "echo a ;& echo b", "case x in $(rm y)) :;; esac", "case x in a) rm x;; esac )",
+                  "case x a) rm x;; esac", "case x in a rm) x;; esac", "case x in a) rm x;; b > f) y;; esac", "case x in a)) :;; esac",
+                  "(case x in a) rm x ) ;; esac", "case x in a) echo;; 'esac'"]:
+            self.assertIsNotNone(parse(s, "/w", {}).error, s)
+
+
 if __name__ == "__main__":
     unittest.main()

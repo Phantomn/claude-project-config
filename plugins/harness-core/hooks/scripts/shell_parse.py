@@ -47,7 +47,7 @@ _PLAIN = re.compile(r"[^\s;&|()<>'\"\\$`]+")
 _DQ_STOP = re.compile(r"[\"\\$`]")
 _BLANK = re.compile(r"[ \t]+")
 _REDIR_OPS = ("<<<", "<<-", "&>>", ">>", ">|", ">&", "&>", "<<", "<>", "<&", ">", "<")
-_OPS = (";;", "&&", "||", "|&", ";", "|", "&", "(", ")")
+_OPS = (";;&", ";;", ";&", "&&", "||", "|&", ";", "|", "&", "(", ")")
 
 
 def _skip_dq(s: str, i: int) -> int:
@@ -341,7 +341,7 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
 _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
-_RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done")
+_RESERVED = ("{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
 _LOOP_HEAD = ("for", "select")
 
 
@@ -943,6 +943,13 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     return ParseResult(segments)
 
 
+def _merge(states: list[tuple[str | None, dict[str, str | None]]]) -> tuple[str | None, dict[str, str | None]]:
+    """여러 갈래 끝 상태의 합: 모두 같은 값만 남기고 다르면 None(확정 불가)."""
+    cwd = states[0][0] if all(c == states[0][0] for c, _ in states) else None
+    keys = {k for _, e in states for k in e}
+    return cwd, {k: (vals.pop() if len(vals := {e.get(k) for _, e in states}) == 1 else None) for k in keys}
+
+
 def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], context: Context, depth: int,
            segments: list[Segment], via_xargs: bool = False) -> tuple[str | None, dict[str, str | None]]:
     """segments 에 단위를 덧붙이고 끝 상태(cwd, env)를 돌려준다. 오류는 LexError."""
@@ -1052,7 +1059,83 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         in_pipe = outer_pipe
         snap = (cwd0, env0)  # 그룹 뒤 `|`·`&` 가 오면 그룹 전체를 되돌리는 기준
 
+    # 열린 case 문(spec 밖 구문 — 재생 군집 P1): mode head(머리)·pat(패턴)·body(분기 본문), pat = 0 단어 기대 /
+    # 1 `|`·`)` 기대 / 2 `|` 뒤 단어 기대, ends = 분기 끝 상태들. stack 의 "case" 항목과 짝을 이룬다
+    cases: list[dict] = []
+
+    def at_start() -> bool:
+        return not redirects and all(not x.is_quoted() and x.literal() in _RESERVED for x in words)
+
+    def set_state(s: tuple[str | None, dict[str, str | None]]) -> None:
+        st["cwd"] = s[0]
+        state_env.clear()
+        state_env.update(s[1])
+
+    def close_case() -> None:
+        # 어느 분기가 돌았는지(또는 아무것도 안 돌았는지) 모르므로 상태는 시작과 모든 분기 끝이 같을 때만 유지
+        nonlocal snap, in_pipe
+        c = cases.pop()
+        _, cwd0, env0, outer_pipe = stack.pop()
+        if c["mode"] == "body":
+            c["ends"].append((st["cwd"], dict(state_env)))
+        set_state((cwd0, env0) if outer_pipe else _merge([(cwd0, env0), *c["ends"]]))
+        in_pipe = outer_pipe
+        snap = (cwd0, dict(env0))
+
     for t in toks:
+        cur = cases[-1] if stack and stack[-1][0] == "case" else None
+        word = t.word.literal() if t.kind == "word" and not t.word.is_quoted() else None
+        if cur is not None and cur["mode"] == "head":
+            if t.kind == "op" and t.op == "\n":
+                continue
+            if t.kind != "word" or (cur["n"] and word != "in"):
+                raise LexError("case 머리를 해석할 수 없음")
+            if cur["n"] == 0:
+                for code in _word_subs(t.word):
+                    _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
+            cur["n"] += 1
+            cur["mode"] = "pat" if cur["n"] == 2 else "head"
+            continue
+        if cur is not None and cur["mode"] == "pat":
+            if word == "esac" and cur["pat"] == 0 and not cur["paren"]:
+                close_case()
+                words.append(t.word)   # 예약어로 벗겨지고 뒤 리다이렉트는 case 전체에 붙는다
+            elif t.kind == "word" and cur["pat"] in (0, 2):
+                if _word_subs(t.word):
+                    raise LexError("case 패턴 안 치환은 지원하지 않음")
+                cur["pat"] = 1
+            elif t.kind == "op" and t.op == "|" and cur["pat"] == 1:
+                cur["pat"] = 2
+            elif t.kind == "op" and t.op in ("(", "\n") and cur["pat"] == 0 and not cur["paren"]:
+                cur["paren"] = t.op == "("
+            elif t.kind == "op" and t.op == ")" and cur["pat"] == 1:
+                cur.update(mode="body", pat=0, paren=False)
+            else:
+                raise LexError("case 패턴을 해석할 수 없음")
+            continue
+        if t.kind == "word" and word in ("case", "esac") and at_start():
+            if word == "case":
+                flush()
+                open_group("case")
+                cases.append({"mode": "head", "n": 0, "pat": 0, "paren": False, "ends": []})
+                continue
+            if cur is None:
+                raise LexError("짝 없는 esac")
+            close_case()
+        if t.kind == "op" and t.op in (";;", ";&", ";;&") and cur is not None:
+            flush()
+            if in_pipe:
+                restore()
+            in_pipe, pipe_prev = False, None
+            end = (st["cwd"], dict(state_env))
+            cur["ends"].append(end)
+            # ;& ·;;& 는 다음 분기 본문이 이 분기 끝 상태에서 이어질 수도 있다
+            set_state(stack[-1][1:3] if t.op == ";;" else _merge([stack[-1][1:3], end]))
+            snap = (st["cwd"], dict(state_env))
+            cur["mode"] = "pat"
+            continue
+        if t.kind == "op" and t.op in (";&", ";;&"):
+            raise LexError(f"case 밖의 {t.op}")
         if t.kind == "word":
             w = t.word
             if not words and not redirects and not w.is_quoted() and w.literal() in ("{", "}"):

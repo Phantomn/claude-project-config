@@ -341,6 +341,12 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertTrue(w.judge_cmd(msg + " && git push origin feat").allow)
         self.assertEqual(ev(msg + " && rm src/main.py"), [("삭제", GIT_TRACKED)])
 
+    def test_e_case_judges_every_branch(self):
+        self.assertTrue(w.judge_cmd('case "$1" in\n  a|b) echo hi > /dev/null ;;\n  *) rm -f {SCRATCH}/s1/x.txt ;;\nesac').allow)
+        self.assertEqual(ev('case "$1" in a) rm -rf {SCRATCH}/s1;; *) rm src/main.py;; esac'), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("case x in a) cd {HOME};; esac; rm -rf data"), [("삭제", UNRESOLVED)])   # 분기 뒤 cwd 미확정
+        self.assertEqual(ev("case x in a) echo;; esac > {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
+
 
 if __name__ == "__main__":
     unittest.main()
