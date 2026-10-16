@@ -583,6 +583,7 @@ class ForLoopTest(unittest.TestCase):   # 재생 군집 U6: 리터럴·글롭 �
                 Path(d, p).touch()
             for pat in ("*/*.py", "./*.py", "*/", f"{d}/*/*.py", "[[]q]/*", "*/.*", "?/zz"):
                 self.assertEqual(shell_parse._glob_list(pat, d), sorted(glob.glob(pat, root_dir=d)), pat)
+            self.assertEqual(shell_parse._glob_list("[t]mp", "/"), ["tmp"])   # cwd 가 / 여도 상대 패턴은 상대 결과
             for i in range(1001):
                 os.mkdir(f"{d}/m{i}")
             self.assertEqual(rm_targets('for f in m*/zz; do rm "$f"; done', d), [None])

@@ -712,7 +712,8 @@ _GLOB_DIRS = 1000   # for 목록 글롭이 펼치는 중간 경로 상한
 def _glob_list(pat: str, cwd: str | None) -> list[str] | None:
     """`glob.glob(pat, root_dir=cwd)` 를 구성요소마다 한 폴더씩 펼친다 — 폴더를 읽을 때마다 상한·마감을 봐서
     맞는 것 없는 깊은 글롭(`/mnt/c/*/*/*/x` 55초 실측)도 끊긴다. 넘으면 None."""
-    pre = "/" if pat.startswith("/") else (cwd or "").rstrip("/") + "/"
+    rel = not pat.startswith("/")
+    pre = (cwd or "").rstrip("/") + "/" if rel else "/"
     bases = [pre]
     for comp in [c for c in pat.split("/") if c]:
         nxt: list[str] = []
@@ -730,7 +731,7 @@ def _glob_list(pat: str, cwd: str | None) -> list[str] | None:
         bases = [b + "/" for b in bases if os.path.isdir(b)]
     if len(bases) > _FOR_CAP:
         return None
-    return sorted(b[len(pre):] if pre != "/" else b for b in bases)
+    return sorted(b[len(pre):] if rel else b for b in bases)
 
 
 def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str] | None:
