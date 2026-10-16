@@ -548,33 +548,42 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     return "$", i + 1
 
 
+HOLE = "\x00hole\x00"
+BASE_HOLE = "\x00base\x00"   # `$(basename …)` 자리
 _HOLE_VAR = re.compile(r"\$(?:\$|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 _HOLE_DATE = re.compile(r"\+(?:[A-Za-z0-9_.:-]|%[YmdHMSsNFTjyuwGVz%])+")   # 공백을 낼 수 없는 형식만(%c·%e 등 제외)
 
 
-def _hole_ok(x: str, quoted: bool) -> bool:
-    """미확정 확장 x 를 표식 하나로 채워도 되는가 — 한 단어로만 확장되는 형태. 배열·`$@`·연산자 확장은 여러 단어나 `..` 를 낸다.
-    따옴표 없는 `$NAME` 은 값에 공백이 없다고 가정한다(정직한 실수 모델 §1.5 의 잔여 위험)."""
+def _hole_mark(x: str, quoted: bool) -> str | None:
+    """미확정 확장 x 를 채울 표식 — 한 단어로만 확장되는 형태만(그 밖 None). 배열·`$@`·연산자 확장은 여러 단어나 `..` 를 낸다.
+    따옴표 없는 `$NAME` 은 값에 공백이 없다고 가정한다(정직한 실수 모델 §1.5 의 잔여 위험).
+    `$(basename …)`(operand 1~2개)는 BASE_HOLE — 한 줄·`/` 없음이라 값이 ""·.·..·/ 뿐이어도 접두의 부모 안에 머문다."""
     if _HOLE_VAR.fullmatch(x):
-        return x not in ("$_", "${_}")   # `$_` = 직전 명령의 마지막 인자 — 공백·`/` 가 들어갈 수 있다
+        return None if x in ("$_", "${_}") else HOLE   # `$_` = 직전 명령의 마지막 인자 — 공백·`/` 가 들어갈 수 있다
     if not x.startswith(("$(", "`")):
-        return False
-    if quoted:
-        return True
+        return None
     try:
         a = [t.word.literal() if t.word is not None else None for t in lex(x[2:-1] if x[0] == "$" else x[1:-1])]
     except LexError:
-        return False
+        return HOLE if quoted else None
+    if a[:1] == ["basename"]:   # -a·-s·-z·--multiple 은 여러 줄·이름 여럿
+        dd = a[1:2] == ["--"]
+        ops = a[1 + dd:]
+        if 1 <= len(ops) <= 2 and all(y is not None and (dd or not y.startswith("-")) for y in ops):
+            return BASE_HOLE
+    if quoted:
+        return HOLE
     if a[:1] == ["uuidgen"]:   # --help·-V 는 공백 든 여러 줄을 낸다
-        return all(y in ("-r", "-t", "-x") for y in a[1:])
-    return len(a) >= 2 and a[0] == "date" and all(y in ("-u", "--utc") for y in a[1:-1]) and \
+        return HOLE if all(y in ("-r", "-t", "-x") for y in a[1:]) else None
+    ok = len(a) >= 2 and a[0] == "date" and all(y in ("-u", "--utc") for y in a[1:-1]) and \
         a[-1] is not None and _HOLE_DATE.fullmatch(a[-1]) is not None
+    return HOLE if ok else None
 
 
 def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool = False,
-           hole: str | None = None) -> list[tuple[str, bool]] | None:
+           hole: bool = False) -> list[tuple[str, bool]] | None:
     """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None.
-    hole 을 주면 확정 못 한 변수·치환 자리를 None 대신 hole 글자로 채운다."""
+    hole 이면 확정 못 한 변수·치환 자리를 None 대신 표식(HOLE·BASE_HOLE)으로 채운다."""
     out: list[tuple[str, bool]] = []
     for k, p in enumerate(parts):
         if p.quote == "'":
@@ -594,10 +603,8 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
                 i = start = i + 2
             elif c in "$`":
                 val, j = _dollar(t, i, env)
-                if val is None:
-                    if hole is None or not _hole_ok(t[i:j], p.quote == '"'):
-                        return None
-                    val = hole
+                if val is None and (not hole or (val := _hole_mark(t[i:j], p.quote == '"')) is None):
+                    return None
                 if split and active and any(x.isspace() or x in "*?[" for x in val):
                     return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다
                 out += [(t[start:i], active), (val, False)]
@@ -770,16 +777,13 @@ def _values(w: Word, env: Mapping[str, str | None], cwd: str | None) -> list[str
         return None
 
 
-HOLE = "\x00hole\x00"
-
-
 def expand_hole(word: Word, seg: Segment) -> str | None:
-    """확정 못 한 변수·치환 자리를 HOLE 로 남긴 경로 하나(상대경로는 seg.cwd 기준). 중괄호 여러 갈래·글롭·~user 면 None."""
+    """확정 못 한 변수·치환 자리를 HOLE·BASE_HOLE 로 남긴 경로 하나(상대경로는 seg.cwd 기준). 중괄호 여러 갈래·글롭·~user 면 None."""
     try:
         words = _brace_words(word.parts)
         if words is None or len(words) != 1:
             return None
-        ch = _subst(words[0], seg.env, split=True, hole=HOLE)
+        ch = _subst(words[0], seg.env, split=True, hole=True)
     except LexError:
         return None
     if ch is None or any(a and any(x in t for x in "*?[") for t, a in ch) or _bad_glob(ch):

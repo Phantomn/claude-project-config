@@ -442,6 +442,26 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         for c in ("rm -f {SCRATCH}/s1/id-$(uuidgen -r)", "rm -f {SCRATCH}/s1/id-$(uuidgen -t)"):
             self.assertEqual(ev(c), [], c)
 
+    def test_h_basename_name(self):   # 재검토 점검 요청 (2): basename 은 한 줄·슬래시 없음 — 값 ""·.·..·/ 도 부모가 세션 폴더면 그 안
+        (w.scratch / "s1/sub").mkdir()
+        for c in ("for f in $(git ls-tree --name-only HEAD); do git show HEAD:$f > {SCRATCH}/s1/sub/$(basename $f); done",
+                  "rm -rf {SCRATCH}/s1/sub/$(basename $f)", 'rm -rf "{SCRATCH}/s1/sub/$(basename "$f")"',
+                  "rm -rf {SCRATCH}/s1/sub/$(basename -- $f .txt)", "rm -rf {SCRATCH}/s1/sub/a-$(basename $f)",
+                  "cd {SCRATCH}/s1/sub && rm -rf ./`basename $f`"):
+            self.assertEqual(ev(c), [], c)
+        for c in ("rm -rf {SCRATCH}/s1/$(basename $f)", "f=..; rm -rf {SCRATCH}/s1/$(basename $f)",   # 부모가 임시 루트
+                  "f=/; rm -rf {SCRATCH}/s1/$(basename $f)", "f=; rm -rf {SCRATCH}/s1/$(basename $f)",
+                  "cd {SCRATCH}/s1 && rm -rf ./$(basename $f)", "rm -rf {HOME}/data/$(basename $f)",
+                  "rm -rf {SCRATCH}/s1/sub/$(basename -a $f)", "rm -rf {SCRATCH}/s1/sub/a-$(basename -s .x $f)",
+                  "rm -rf {SCRATCH}/s1/sub/a-$(basename -z $f)", "rm -rf {SCRATCH}/s1/sub/a-$(basename --multiple $f)",
+                  "rm -rf {SCRATCH}/s1/sub/a-$(basename a b c)", "rm -rf {SCRATCH}/s1/sub/$(dirname $f)",
+                  "rm -rf {SCRATCH}/s1/sub/a-$(dirname $f)", "rm -rf {SCRATCH}/s1/sub/$(basename $f)/x",
+                  "rm -rf {SCRATCH}/s1/sub/$(basename $f)$(basename $g)"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        (w.scratch / "s1/.env").write_text("k\n", encoding="utf-8")   # 값이 .. 면 부모(s1) 전체 — 안의 보호 이름까지 지운다
+        self.assertEqual(ev("rm -rf {SCRATCH}/s1/sub/$(basename $f)"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("rm -rf {SCRATCH}/s1/sub/a-$(basename $f)"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

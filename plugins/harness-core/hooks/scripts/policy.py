@@ -11,6 +11,7 @@ from fnmatch import fnmatch
 from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
+    BASE_HOLE,
     HOLE,
     LexError,
     Mount,
@@ -235,15 +236,19 @@ def _scratch_hole(word: Word, seg: Segment, ctx: Ctx) -> list[str] | None:
     """확정 접두가 임시 루트 아래 세션 폴더(SCRATCH)이고 미확정 요소가 마지막 구성요소 안에만 있으면 [그 자리의 대표 경로].
     정직한 실수 모델(spec §1.5) — 임시 폴더 안 한 구성요소를 다루는 명령이다. 접두 폴더 안·대상 이름이 보호 이름이면 None."""
     p = expand_hole(word, seg)
-    if p is None or HOLE not in p:
+    if p is None or (HOLE not in p and BASE_HOLE not in p):
         return None
     d, _, name = p.rpartition("/")
-    # 값이 비거나 점이면 접두 폴더 자신·부모가 대상이 된다
-    if not d or HOLE in d or not name.replace(HOLE, "").strip("."):
+    whole = name == BASE_HOLE
+    name = name.replace(BASE_HOLE, HOLE)
+    # 값이 비거나 점이면 접두 폴더 자신·부모가 대상이 된다 — 이름 전체가 basename 이면 그 부모까지 세션 폴더일 때만(아래)
+    if not d or HOLE in d or BASE_HOLE in d or (not whole and not name.replace(HOLE, "").strip(".")):
         return None
     nd = normalize(d, True)
     target = os.path.join(nd, name.replace(HOLE, _HOLE_NAME))
     if not is_scratch(nd, ctx) or is_scratch_root(nd, ctx) or protected_name(target):
+        return None
+    if whole and classify(os.path.dirname(nd), ctx, True).kind != SCRATCH:   # 임시 루트 자체는 UNRESOLVED 로 분류된다
         return None
     return [target] if classify(d, ctx, True).kind == SCRATCH else None
 
