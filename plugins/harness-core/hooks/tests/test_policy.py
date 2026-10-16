@@ -471,6 +471,14 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "if ! cd {SCRATCH}/s1; then rm src/main.py; fi; rm -f x.txt"):
             self.assertEqual(ev(c), [], c)
 
+    def test_f4_function_definition(self):   # fix-brief-4 OS2: 정의만으로는 cwd·변수가 바뀌지 않고, 호출은 미확정
+        self.assertEqual(ev("f() { cd {SCRATCH}/s1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("g() { cd {SCRATCH}/missing || return 1; }; rm src/main.py"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("f=nothing; g() { f=..; }; g; rm -rf src/$f"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("f() { cd {SCRATCH}/s1; }; f; rm -rf ./*"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("f() { local v=1 && cd {SCRATCH}/s1; }; rm -rf {SCRATCH}/s1"), [])
+        self.assertEqual(ev("f() { rm src/main.py; }"), [("삭제", GIT_TRACKED)])   # 본문은 판정한다
+
     def test_bash_only_glob_is_unresolved(self):   # 적대 리뷰 I5: 파이썬 glob 이 bash 와 다르게 읽는 패턴은 0건이 아니라 확정 불가
         for c in ("rm -rf [^.]*", "rm -rf [[:alpha:]]*", "cd src && rm -rf [^.]*", "rm -f [!.]*", "rm -f src/[[:lower:]]*.py",
                   'for f in [^.]*; do rm -rf "$f"; done', 'for f in [[:alpha:]]*; do rm -rf "$f"; done'):

@@ -336,6 +336,23 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertEqual(last("f=a; f=b && cd {D}/ex &\nrm $f").env["f"], "a")
         self.assertEqual([x.cwd for x in segs("cd /usr && rm x &\nrm y") if x.name == "rm"], ["/usr", "/w"])   # 배경 안 단위는 판정
 
+    def test_function_definition_is_isolated(self):   # OS2: 정의는 상태를 바꾸지 않고, 정의된 이름의 호출은 상태를 미확정으로
+        d, last = self._world()
+        for c in ("f() { cd {D}/ex; }; rm y", "function g { cd {D}/ex; }; rm y", "function g() { cd {D}/ex; }\nrm y",
+                  "f()\n{\n cd {D}/ex\n}\nrm y", "f() ( cd {D}/ex ); rm y", "f() if true; then cd {D}/ex; fi; rm y",
+                  "g() { cd {D}/missing || return 1; }; rm y", "f() { local v=1 && cd {D}/ex; }; rm y", "f() { exit 1; }; rm y",
+                  "f() { cd {D}/ex; } && rm y"):
+            self.assertEqual(last(c).cwd, d, c)
+        self.assertEqual(last("f=a; g() { f=b; }; rm $f").env["f"], "a")
+        for c in ("f=a; g() { f=b; }; g; rm $f", "f=a; g() { :; }; if t; then g; fi; rm $f", "f=a; function g { :; }; g; rm $f",
+                  "f=a; if t; then g() { :; }; fi; g; rm $f"):
+            self.assertIsNone(last(c).env.get("f", "unset"), c)
+        for c in ("f() { cd {D}/ex; }; f; rm y", "f() { :; }; cd {D}/ex; f; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        self.assertEqual(names("f() { rm x; }; g"), ["rm", "g"])   # 본문 단위는 판정한다
+        self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
+        self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
+
 
 def ex(word_src, cwd="/w", env=None):
     s = parse("x " + word_src, cwd, env or {"HOME": "/h"}).segments[0]

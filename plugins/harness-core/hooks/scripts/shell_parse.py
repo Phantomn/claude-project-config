@@ -927,6 +927,7 @@ def _mktemp_dir(w: Word) -> bool:
         for b in _word_subs(w))
 
 
+_FN = "\x00fn:"   # env 안의 '이 해석에서 정의한 함수 이름' 표시 — 갈래 합류를 따르고, 호출되면 cwd·변수를 미확정으로 둔다(OS2)
 _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
 
 
@@ -1297,7 +1298,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     if depth > _MAX_DEPTH:
         raise LexError("재귀 깊이 초과")
     toks = lex(command)
-    st: dict = {"cwd": cwd, "dead": False}   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
+    st: dict = {"cwd": cwd, "dead": False, "fn": False}   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
     stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead, list_snap) — 열 때의 바깥 상태
     words: list[Word] = []
     redirects: list[Redirect] = []
@@ -1365,6 +1366,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 state_env[n] = None
             else:
                 _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
+        if w and _FN + w[0].literal() in state_env:   # 정의된 함수 호출 — 본문이 무엇을 바꿨는지 따라가지 않는다(fail-closed)
+            st["cwd"] = None
+            _forget(state_env)
+            state_env.pop("PWD", None)
+            state_env.pop(SHELL_CWD, None)
         if name in ("source", "."):
             a = w[1].literal() if len(w) > 1 else ""
             if "/" in a and a.rpartition("/")[2] in ("activate", "activate.sh"):   # 가상환경 activate 는 자기 변수만 바꾼다
@@ -1503,6 +1509,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
         nonlocal snap, list_snap, in_pipe, andor
+        if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌린다
+            isolated.add(len(stack))
+            st["fn"] = False
         stack.append((kind, st["cwd"], dict(state_env), in_pipe, andor, st["dead"], list_snap))
         in_pipe, andor = False, None
         snap = list_snap = (st["cwd"], dict(state_env))
@@ -1512,7 +1521,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         서브셸·파이프 구성원은 안쪽 변화가 밖으로 안 나간다."""
         nonlocal snap, list_snap, in_pipe, andor
         _, cwd0, env0, outer_pipe, andor, dead0, list_snap = stack.pop()
-        if kind == "(" or outer_pipe:
+        if kind == "(" or outer_pipe or len(stack) in isolated:
+            isolated.discard(len(stack))
             set_state((cwd0, env0))
             st["dead"] = dead0
         elif ends is not None:
@@ -1533,6 +1543,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     # 열린 case 문(spec 밖 구문 — 재생 군집 P1): mode head(머리)·pat(패턴)·body(분기 본문), pat = 0 단어 기대 /
     # 1 `|`·`)` 기대 / 2 `|` 뒤 단어 기대, ends = 분기 끝 상태들. stack 의 "case" 항목과 짝을 이룬다
     cases: list[dict] = []
+    isolated: set[int] = set()   # 함수 본문인 stack 항목의 깊이
+
+    def define_fn(name: str | None) -> None:
+        if name is None or not _NAME.fullmatch(name):
+            raise LexError("함수 이름을 해석할 수 없음")
+        state_env[_FN + name] = "1"
+        st["fn"] = True
 
     def at_start() -> bool:
         lits = [None if x.is_quoted() else x.literal() for x in words]
@@ -1687,6 +1704,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 continue
             if word not in ("fi", "done", "for", "select"):   # for·select 머리는 unit 이, fi·done 뒤 리다이렉트는 단위가 받는다
                 continue
+        if word == "function" and not words and not redirects:   # `function f [()] 본문`
+            define_fn(bare(idx + 1))
+            skip = idx + 2
+            if skip + 1 < len(toks) and toks[skip].op == "(" and toks[skip + 1].op == ")":
+                skip += 2
+            continue
         if t.kind == "word" and word in ("case", "esac") and at_start():
             if word == "case":
                 flush()
@@ -1722,6 +1745,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             else:
                 if at_start() and not _is_assign(w) and _cmd_extglob(w):
                     raise LexError(f"명령 자리의 확장 글롭 {w.literal()[:20]!r}")
+                if st["fn"]:
+                    raise LexError("함수 본문은 복합 명령이어야 함")
                 words.append(w)
         elif t.kind == "redir":
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
@@ -1745,6 +1770,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if not in_pipe and t.op not in ("&&", "||"):
                 list_snap = snap
         elif t.op == "(":
+            if len(words) == 1 and not redirects and idx + 1 < len(toks) and toks[idx + 1].op == ")":   # `f() 본문`
+                define_fn(None if words[0].is_quoted() else words[0].literal())
+                words, skip = [], idx + 2
+                continue
             flush()
             open_group("(")
         elif t.op == ")":
