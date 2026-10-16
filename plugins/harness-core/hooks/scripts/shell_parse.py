@@ -1000,6 +1000,7 @@ _INFN = "\x00infn"   # 인라인 해석 중(local·return 이 함수 범위를 �
 _DEAD = "\x00dead"   # 인라인 해석이 보고하는 도달 불가(exit)
 _PARAMS = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "#", "@", "*")
 _FN_DEPTH = 4   # 함수 호출 깊이 상한
+_EXP = "\x00exp:"   # export 된 셸 변수 표시 — 새 셸 프로세스(sh -c 등)는 이것과 접두 할당만 받는다
 _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
 
 
@@ -1353,6 +1354,17 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         _descend(inner, segments, pipe_prev, cenv)
 
 
+def _child_env(seg: Segment, run_env: Mapping[str, str | None]) -> dict[str, str | None]:
+    """새 셸 프로세스의 env: export 안 된 셸 변수는 없고(값 미확정 — fail-closed), PWD 는 작업 폴더로 다시 잡힌다(bash·dash 실측)."""
+    env = dict(run_env)
+    for k, v in run_env.items():
+        # 접두 할당(`X=1 sh -c`·env X=1)은 그 명령에 내보내진다 — 실행 env 값이 단어 확장 env 와 다르다
+        if not k.startswith("\x00") and not run_env.get(_EXP + k) and (k in seg.env and v == seg.env[k]):
+            env[k] = None
+    env["PWD"] = seg.cwd
+    return env
+
+
 def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
              run_env: dict[str, str | None]) -> tuple[str | None, dict[str, str | None]] | None:
     """seg 가 실행하는 안쪽 명령을 seg 바로 뒤에 depth+1 로 넣는다. eval 이면 그 뒤 상태(현재 셸에서 돌므로).
@@ -1362,7 +1374,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     d = seg.depth + 1
     if seg.name in SHELLS:
         if (code := _shell_code(seg, pipe_prev)) is not None:
-            _parse(code, seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)
+            _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
     elif seg.name == "eval":
         vals = [_text(w.parts, seg.env) for w in seg.argv[1:]]
         if None in vals:
@@ -1403,6 +1415,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
           deadline: float | None = None) -> ParseResult:
     state_env: dict[str, str | None] = {k: env[k] for k in ("HOME", "TMPDIR", "USER") if k in env}
     state_env[_TMPDIR0] = env.get("TMPDIR")
+    state_env.update({_EXP + k: "1" for k in ("HOME", "TMPDIR", "USER", "PWD") if k in env or k == "PWD"})   # 환경에서 받은 변수는 export 됨
     if cwd is not None:
         state_env["PWD"] = state_env[SHELL_CWD] = cwd
     segments: list[Segment] = []
@@ -1631,12 +1644,19 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)
                 w = [w[0]] + w[3:]
         if name in _VAR_DECL:
+            flags = "".join(x.literal()[1:] for x in w[1:] if x.literal().startswith("-"))
+            # export·declare -x 는 내보내고 export -n 은 해제 — local 은 가리는 변수의 export 속성을 잇는다(bash 실측)
+            exported = (name == "export" and "n" not in flags) or (name != "export" and "x" in flags)
+            unexported = name == "export" and "n" in flags
             for x in w[1:]:
                 lit = x.literal()
                 if lit.startswith("-"):
                     if name != "export" and "n" in lit[1:]:   # export -n 은 내보내기 해제
                         state_env[_NAMEREF] = "1"
-                elif (a := _assign_of(x, state_env)) is not None:
+                    continue
+                if exported or unexported:
+                    state_env[_EXP + lit.partition("=")[0]] = "1" if exported else None
+                if (a := _assign_of(x, state_env)) is not None:
                     state_env[a[0]] = a[1]
                     if a[1] is not None and _mktemp_dir(x):
                         state_env[_MADE + a[1]] = "1"

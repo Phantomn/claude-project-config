@@ -156,6 +156,21 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(inner("sudo -E sh -c 'rm $HOME/a'"), ["/h/a"])     # -E 는 환경을 보존
         self.assertEqual(inner("env -i rm $HOME/a"), ["/h/a"])              # 바깥 셸이 먼저 확장한 단어는 그대로
 
+    def test_child_shell_env(self):   # 항목 8(Task 3 parked): 새 셸 프로세스는 export 된 변수만 받고 PWD 를 작업 폴더로 다시 잡는다(bash·dash 실측)
+        def inner(cmd, name="rm"):
+            ss = [x for x in segs(cmd, env={"HOME": "/h"}) if x.name == name]
+            return expand(ss[-1].argv[-1], ss[-1])
+        self.assertEqual(inner("PWD=/ sh -c 'rm -rf \"$PWD\"/data'"), ["/w/data"])
+        self.assertEqual(inner("cd /tmp; PWD=/x bash -c 'rm $PWD/a'"), ["/tmp/a"])
+        for c in ("X=/s1; sh -c 'rm -rf /t$X'", "X=/s1; (sh -c 'rm $X')", "X=/s; echo a | xargs sh -c 'rm $X'",
+                  "X=/s1; bash <<'EOF'\nrm $X\nEOF", "export X=/s; export -n X; sh -c 'rm $X'", "f() { local X=/s; sh -c 'rm $X'; }; f"):
+            self.assertIsNone(inner(c), c)   # export 안 된 셸 변수 — 자식 셸에는 없다(값 미확정, fail-closed)
+        for c, want in (("export X=/s1; sh -c 'rm $X'", "/s1"), ("X=/s1; export X; sh -c 'rm $X'", "/s1"),
+                        ("X=/s1 sh -c 'rm $X'", "/s1"), ("X=/a; X=/b sh -c 'rm $X'", "/b"), ("HOME=/q; sh -c 'rm $HOME'", "/q"),
+                        ("declare -x X=/d; sh -c 'rm $X'", "/d"), ("X=/s1; eval 'rm $X'", "/s1"), ("X=/s1; (rm $X)", "/s1"),
+                        ("X=/s1; sh -c \"rm $X\"", "/s1")):
+            self.assertEqual(inner(c), [want], c)
+
     def test_prefix_assignment(self):
         a, b = segs('X=/a rm "$X"; rm "$X"')
         self.assertEqual(a.name, "rm")
