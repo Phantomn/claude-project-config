@@ -248,6 +248,12 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
         self.assertIsNone(rm.env["PATH"])
         self.assertIsNone(self.last_rm("f=a; source ./env; rm $f").env["f"])
 
+    def test_source_forgets_cwd(self):   # 5-5 OOS2: source 한 파일이 cd 할 수 있다
+        d, last = self._world()
+        for c in ("cd {D}/ex; source x; rm y", "cd {D}/ex; . ./lib.sh; rm y", "cd {D}/ex && source {D}/lib.sh && rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        self.assertEqual(last("cd {D}/ex; source v/bin/activate; rm y").cwd, f"{d}/ex")
+
     def test_unbalanced_is_parse_error(self):
         for c in ("fi", "if true; fi", "if true; then x", "then x", "done", "while t; done", "do x; done", "if t; then x; done",
                   "{ if t; then x; }; fi", "if t; then x; else y; elif z; then w; fi", "while t; do x; fi",

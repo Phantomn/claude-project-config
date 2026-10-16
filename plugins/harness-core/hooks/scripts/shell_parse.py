@@ -1510,8 +1510,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             a = w[1].literal() if len(w) > 1 else ""
             if "/" in a and a.rpartition("/")[2] in ("activate", "activate.sh"):   # 가상환경 activate 는 자기 변수만 바꾼다
                 state_env.update(dict.fromkeys(_VENV_VARS))
-            else:
+            else:   # 읽어 들인 파일은 변수·함수·작업 폴더를 모두 바꿀 수 있다(재검토 3 OOS2)
                 _forget(state_env)
+                st["cwd"] = None
+                state_env.pop("PWD", None)
+                state_env.pop(SHELL_CWD, None)
             for k in list(state_env):
                 if k.startswith(_FN):
                     state_env[k] = None   # source 가 함수를 다시 정의할 수 있다
