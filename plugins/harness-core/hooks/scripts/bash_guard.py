@@ -28,7 +28,7 @@ FAIL_WORDS = re.compile(r"(?<![\w.-])(?:rm|unlink|shred|truncate|dd|mkfs[\w.]*|r
 REASON_CAP = 20
 R_PARSE = "거부: 명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"
 R_TIMEOUT = "거부: 판정 시간 초과 — 범위를 좁혀라"
-R_MODEL = "거부: 해석 한계 — 모델링할 수 없는 구문(함수 재귀·재정의·갈래 정의·source/eval 정의·break 모양·상한 초과). 대안: 단순한 형태로 나눠 실행하라"
+R_MODEL = "거부: 해석 한계 — 모델링할 수 없는 구문(함수 재귀·재정의·갈래 정의·source/eval 정의·break 모양·env -S·-C·sudo -D·상한 초과). 대안: 단순한 형태로 나눠 실행하라"
 R_ERROR = "판정기 오류 — 단순한 형태로 나눠 실행하라"
 # 해석 오류·판정 대상·장부 기록이 생길 수 없는 모양: 판정 처리기·래퍼·제자리 수정이 없는 명령(git 은 표 밖 내장 하위명령)과
 # 확장·인용·리다이렉트·그룹이 없는 단어, 단순 연결자만. 판정 결과는 기본 모드의 허용과 같다(tests/test_bash_guard_fast.py 가 대조)

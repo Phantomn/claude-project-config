@@ -63,6 +63,8 @@ class JudgeTest(_WorldCase):
                   "if [ -d x ]; then f() { :; }; fi; f; cat {SCRATCH}/s1/x.txt | tee {HOME}/notes.md", "f() { :; }; unset -f f; f; cp a b"):
             d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn("해석 한계", d.reasons[0], c)
         self.assertTrue(judge(w.payload("@(true); cp {SCRATCH}/s1/x.txt {HOME}/notes.md"), {**w.environ, **ON}).allow)   # 구문 오류는 현행
+        for c in ("env -S 'cp a b'", "env -C {HOME} cp a b", "sudo -D {HOME} cp a b"):   # 사유가 실제 원인(래퍼)을 말한다
+            d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn("env -S·-C·sudo -D", d.reasons[0], c)
 
     def test_budget(self):
         self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
