@@ -502,13 +502,17 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
                   "f=nothing; g() { f=..; }; g; rm -rf src/$f", "f=nothing; g() { f=..; }; h() { g; }; h; rm -rf src/$f",
                   "f=nothing; g() { h; }; h() { f=..; }; g; rm -rf src/$f", "cd {SCRATCH}/s1; f() { \"$1\" \"$2\"; }; f cd {REPO}; rm -rf ./*"):
             self.assertFalse(w.judge_cmd(c).allow, c)
-        for c in ("cd {SCRATCH}/s1; run() { \"$@\"; }; run cd {REPO}; rm -rf ./*",
+        self.assertFalse(w.judge_cmd("cd {SCRATCH}/s1; run() { \"$@\"; }; run cd {REPO}; rm -rf ./*").allow)   # 인자가 명령 자리로
+        for c in ("cd {SCRATCH}/s1 && run() { \"$@\"; }; run make -j4; rm -f x.txt", "cd {SCRATCH}/s1 && q() { \"$@\" >/dev/null; }; q make all; rm -f x.txt",
+                  "cd {SCRATCH}/s1 && run() { echo \"$@\"; \"$@\"; }; run make clean; rm -f x.txt"):   # M03·M04·M19
+            self.assertTrue(w.judge_cmd(c).allow, c)
+        for c in (
                   "f=nothing; g() { f=..; }; if t; then g; fi; rm -rf src/$f", "f=nothing; g() { read f; }; g; rm -rf src/$f",
                   "f() { cd \"$1\"; }; f {SCRATCH}/missing; rm -rf ./*", "f() { :; }; $u; rm -rf ./*"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
         for c in ("f() { :; }; f() { cd /; }; f; rm -rf ./*", "f=nothing; g() { :; }; source ./lib.sh; g; rm -rf src/$f", "f() { f; }; f; rm -rf ./*"):
             d = w.judge_cmd(c)
-            self.assertFalse(d.allow, c); self.assertIn("해석하지 못했다", d.reasons[0], c)
+            self.assertFalse(d.allow, c); self.assertIn("해석 한계", d.reasons[0], c)   # 모델링 불가(위험 단어와 무관하게 거부)
         self.assertEqual(ev("f() { rm -rf \"$1\"; }; f src"), [("삭제", GIT_TRACKED)])   # 호출 인라인(정의 시점 판정은 뺀다)
         self.assertEqual(ev("f() { rm -rf \"$1\"; }; f {SCRATCH}/s1/sub"), [])
         self.assertEqual(ev("f() { rm -rf \"$1\"; }"), [("삭제", UNRESOLVED)])   # 호출 안 된 함수는 정의 시점 판정

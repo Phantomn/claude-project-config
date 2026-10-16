@@ -465,7 +465,16 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                        ("c=cd; $c {D}/ex; rm y", f"{d}/ex"), ("$u {D}/ex; rm y", None), ("c=f; $c; f() { cd {D}/ex; }; rm y", d),   # 정의 전 호출은 보통 명령(bash 도 not found)
                        ("f() { cd {D}/ex; }; command f; rm y", d)):   # `command f` 는 함수를 건너뛴다
             self.assertEqual(last(c).cwd, cwd, c)
-        self.assertIsNone(last("$u x; rm $f").env.get("f", "unset"))
+        self.assertIsNone(last("f=a; $u x; rm $f").env.get("f", "unset"))
+
+    def test_dollar_at_command_position(self):   # 6-4 NB11: `"$@"` 명령 자리는 호출 인자 단어들로
+        d, last = self._world()
+        for c, cwd in (("run() { \"$@\"; }; run make -j4; cd {D}/ex; rm y", f"{d}/ex"), ("run() { \"$@\"; }; run cd {D}/ex; rm y", f"{d}/ex"),
+                       ("run() { echo \"$@\"; \"$@\"; }; cd {D}/ex; run ls -la; rm y", f"{d}/ex"), ("run() { \"$@\"; }; run; cd {D}/ex; rm y", f"{d}/ex"),
+                       ("run() { \"$@\"; }; run cd {D}/missing; rm y", None), ("run() { $@; }; run cd {D}/ex; rm y", f"{d}/ex")):
+            self.assertEqual(last(c).cwd, cwd, c)
+        self.assertEqual(names("run() { \"$@\"; }; run rm -rf x"), ["rm"])
+        self.assertEqual([x.argv[1].literal() for x in segs("run() { \"$@\"; }; run rm -rf x") if x.name == "rm"], ["-rf"])
 
     def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
         d, last = self._world()
@@ -574,7 +583,7 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                        ("f() { pushd {D}/ex >/dev/null; popd; }; f; rm y", None), ("f() { cd {D}/ex; }; \"f\"; rm y", f"{d}/ex"),
                        ("f() { (cd {D}/ex && make); }; f; rm y", d), ("f() { cd {D}/ex | cat; }; f; rm y", d), ("f() { cd {D}/ex & }; f; rm y", d),
                        ("cd {D}/ex; f() { cd ..; }; cd {D}; f; rm y", os.path.dirname(d)),   # 호출 시점 cwd 에서 상대 cd
-                       ("run() { \"$@\"; }; run cd {D}/ex; rm y", None), ("f() { \"$1\" \"$2\"; }; f cd {D}/ex; rm y", f"{d}/ex"),   # 인자가 명령 자리로
+                       ("run() { \"$@\"; }; run cd {D}/ex; rm y", f"{d}/ex"), ("f() { \"$1\" \"$2\"; }; f cd {D}/ex; rm y", f"{d}/ex"),   # 인자가 명령 자리로
                        ("run() { \"$@\"; }; cd {D}/ex; run ls; rm y", f"{d}/ex"), ("c=f; f() { cd {D}/ex; }; $c; rm y", f"{d}/ex"),
                        ("g() { cd {D}/ex; }; c=g; f() { $c; }; f; rm y", f"{d}/ex"), ("f() { :; }; $u; rm y", None),
                        ("cd() { :; }; cd {D}/ex; rm y", d), ("f() { cd {D}/ex; return; cd {D}; }; f; rm y", f"{d}/ex"),

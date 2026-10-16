@@ -380,6 +380,7 @@ _FOR_CHARS = 200_000   # 해석 한 번에 본문을 다시 해석하는 글자 
 _last_log = [0]   # 최상위 해석의 쓰기 로그 길이(ParseResult.log_len)
 fn_stack: list[str] = []   # 인라인 해석 중인 함수 이름들(재귀·깊이 검출) — parse() 마다 비운다
 fn_locals: list[set[str]] = []   # 인라인 호출마다 본문이 선언한 local 이름 — 호출 끝에 복원(갈래 합류·중첩 호출과 무관)
+fn_args: list[list[Word]] = []   # 인라인 호출마다 인자 단어들 — 본문의 `"$@"` 명령 자리를 인자 단어들로 바꾼다
 fn_called: set[str] = set()   # 인라인된 함수 이름 — 그 정의 시점 단위(미확정 인자로 판정)는 결과에서 뺀다
 fn_def_segs: list[tuple[str, int, int]] = []   # (이름, 정의 본문 단위의 segments 구간)
 _for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
@@ -1336,6 +1337,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     _for_runs[:] = [0, 0]
     fn_stack.clear()
     fn_locals.clear()
+    fn_args.clear()
     fn_called.clear()
     fn_def_segs.clear()
     _deadline[0] = deadline
@@ -1490,6 +1492,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 run_env = dict(unit_env)
             run_env[a[0]] = a[1]
             w = w[1:]
+        if w and fn_args and len(w[0].parts) == 1 and w[0].parts[0].quote != "'" and w[0].parts[0].text in ("$@", "${@}"):
+            w = [*fn_args[-1], *w[1:]]   # `"$@"` 명령 자리 = 호출 인자 단어들(`run() { "$@"; }; run make -j4`)
         if w and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts):
             v = _text(w[0].parts, unit_env, split=True)   # 변수로 부르는 명령 — 확정되면 그 이름, 아니면 전부 미확정(간접 호출, fail-closed)
             if v:
@@ -1780,6 +1784,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         inner[_INFN] = "1"
         fn_stack.append(fname)
         fn_locals.append(set())
+        fn_args.append(list(args))
         fn_called.add(fname)
         try:
             after_cwd, after_env = _parse(body, st["cwd"], inner, context, depth + 1, segments, via_xargs)
@@ -1787,6 +1792,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             raise ModelError(f"함수 본문 재해석 실패 {fname}: {e}") from e
         finally:
             fn_stack.pop()
+            fn_args.pop()
             locals_ = fn_locals.pop()
         dead = after_env.pop(_DEAD, None) is not None
         for k in {*locals_, *prefix, *(k for k in [*state_env, *after_env] if k.isdigit() or k in ("#", "@", "*"))}:
