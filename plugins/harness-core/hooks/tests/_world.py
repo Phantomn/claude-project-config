@@ -34,10 +34,14 @@ def _retry_on_clock_step(fn):
                 return fn(self)
             except unittest.SkipTest:
                 raise
-            except Exception:
+            except Exception as e:
                 # 세계 생성 이후 벽시계가 계단 이동하지 않았으면 진짜 실패다
-                if attempt == 2 or abs(clock_offset() - self._clock0) < 0.01:
+                step = clock_offset() - self._clock0
+                if attempt == 2 or abs(step) < 0.01:
                     raise
+                # 재시도가 진짜 결함을 가리는지 나중에 볼 수 있게 남긴다
+                print(f"[World] {fn.__qualname__}: 벽시계 계단 이동 {step:+.2f}초 뒤 실패({type(e).__name__}) — "
+                      f"세계를 다시 만들어 재시도 {attempt + 2}/3", file=sys.stderr)
             self.doCleanups()
             self._new_world()
     return run
@@ -83,11 +87,13 @@ class DockerRes:
 class World:
     def __init__(self, worktree: bool = False, docker: bool = False) -> None:
         # 벽시계가 뒤로 가면(WSL2 실측 약 0.5초) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
-        for _ in range(3):
+        for attempt in range(3):
             self._create(worktree, docker)
             if self._order_ok(WORLD_CLOCK_MARGIN):
                 return
             self.close()
+            if attempt < 2:
+                print(f"[World] 세션 전/중 생성 시각 순서가 어긋남(벽시계 역행 추정) — 세계 재생성 {attempt + 2}/3", file=sys.stderr)
         raise RuntimeError("시계 불안정 — 세션 전/세션 중 파일의 생성 시각 순서가 3번 연속 어긋났다")
 
     def _order_ok(self, margin: float = 0.0) -> bool:

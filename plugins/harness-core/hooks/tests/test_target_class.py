@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import multiprocessing
 import os
 import stat
@@ -581,6 +583,25 @@ class ClockMarginTest(_WorldCase):
         self.assertEqual([f.kind for f in w.evaluate_all("git branch -D mine", ctx=big)], ["UNPUSHED"])
         self.assertEqual(w.evaluate_all("git stash drop stash@{0}", ctx=w.ctx()), [])
         self.assertEqual([f.kind for f in w.evaluate_all("git stash drop stash@{0}", ctx=big)], ["OLD_STASH"])
+
+
+class WorldRetryTest(unittest.TestCase):   # 시계 계단 이동 재시도는 조용히 넘어가지 않고 stderr 에 한 줄 남긴다
+    def test_retry_leaves_one_line(self):
+        calls = []
+
+        class Probe(WorldCase):
+            def test_x(self):
+                calls.append(1)
+                if len(calls) == 1:
+                    self._clock0 -= 1.0   # 세계 생성 뒤 벽시계가 1초 계단 이동한 것과 같은 상태(실제 역행은 기다려야 온다)
+                    raise AssertionError("first")
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            res = unittest.TextTestRunner(stream=io.StringIO()).run(Probe("test_x"))
+        self.assertTrue(res.wasSuccessful()); self.assertEqual(len(calls), 2)
+        lines = [x for x in err.getvalue().splitlines() if "재시도" in x]
+        self.assertEqual(len(lines), 1, err.getvalue()); self.assertIn("test_x", lines[0])
 
 
 class ClassifyBudgetTest(_WorldCase):   # 재생 최대 판정 시간: 경로 수백 개의 파일 조회도 예산을 본다
