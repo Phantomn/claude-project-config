@@ -93,9 +93,12 @@ class World:
         return {"GIT_COMMITTER_DATE": d, "GIT_AUTHOR_DATE": d}
 
     def _stash(self, msg: str, epoch: int) -> None:
-        # pathspec 으로 main.py 만 넣어, 세션 전 README 수정은 작업 트리에 남긴다
-        self._write(self.repo / "src/main.py", f"print('{msg}')\n")
-        self._git("stash", "push", "-q", "-m", msg, "--", "src/main.py", env=self._dates(epoch))
+        # stash push 는 파일을 지웠다 다시 만들어 생성 시각을 바꾼다 — stash 커밋을 직접 만들어 store 해 작업 트리를 건드리지 않는다
+        env = self._dates(epoch)
+        head = self._git("rev-parse", "HEAD", env=env)
+        index = self._git("commit-tree", f"{head}^{{tree}}", "-p", head, "-m", f"index on main: {msg}", env=env)
+        work = self._commit_file(head, "src/main.py", f"print('{msg}')\n", env, msg=f"On main: {msg}", parents=(head, index))
+        self._git("stash", "store", "-m", f"On main: {msg}", work, env=env)
 
     def _git(self, *args: str, cwd: str | Path | None = None, env: dict[str, str] | None = None,
              stdin: str | None = None) -> str:
@@ -160,7 +163,8 @@ class World:
     def make_worktree(self) -> None:
         self._git("worktree", "add", "-q", "-b", "wt-b", str(self.wt))
 
-    def _commit_file(self, parent: str, name: str, text: str, env: dict[str, str], msg: str = "") -> str:
+    def _commit_file(self, parent: str, name: str, text: str, env: dict[str, str], msg: str = "",
+                     parents: tuple[str, ...] = ()) -> str:
         # 작업 트리(세션 전 수정 포함)를 건드리지 않고 parent 위에 파일 하나를 바꾼 커밋을 만든다
         idx = str(Path(self.root) / f"index.{uuid.uuid4().hex}")
         e = {**env, "GIT_INDEX_FILE": idx}
@@ -171,7 +175,8 @@ class World:
             tree = self._git("write-tree", env=e)
         finally:
             Path(idx).unlink(missing_ok=True)
-        return self._git("commit-tree", tree, "-p", parent, "-m", msg or f"{name}: {text.strip()}", env=env)
+        ps = [x for q in (parents or (parent,)) for x in ("-p", q)]
+        return self._git("commit-tree", tree, *ps, "-m", msg or f"{name}: {text.strip()}", env=env)
 
     def local_branch(self, name: str, pushed: bool, before_session: bool, extra_unpushed: int = 0,
                      delete_remote: bool = False, squash_merged: bool = False) -> None:

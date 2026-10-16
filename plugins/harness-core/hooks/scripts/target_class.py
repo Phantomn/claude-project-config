@@ -91,11 +91,12 @@ def run(cmd: list[str], ctx: Ctx, cwd: str | None = None) -> subprocess.Complete
 
 
 def normalize(path: str, trailing_slash: bool) -> str:
-    p = os.path.normpath(path)
-    if p == "/" or trailing_slash:
-        return os.path.realpath(p)
+    # normpath 로 '..' 를 먼저 지우지 않는다 — 링크 뒤 '..' 는 링크 대상의 부모라서 realpath 로 함께 해소 (spec §3.4 정규화 4)
+    head, name = os.path.split(path)
+    if trailing_slash or name in ("", ".", ".."):
+        return os.path.realpath(path)
     # 대상 자체가 링크면 링크를 본다(rm 은 링크만 지움) — 부모만 해소
-    return os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+    return os.path.join(os.path.realpath(head or "/"), name)
 
 
 def scratch_roots(ctx: Ctx) -> list[str]:
@@ -132,7 +133,7 @@ def protected_name(path: str) -> bool:
 
 
 def repo_root(path: str, environ: Mapping[str, str]) -> str | None:
-    p = os.path.normpath(path)
+    p = os.path.abspath(path)
     while True:
         if os.path.lexists(os.path.join(p, ".git")):
             break

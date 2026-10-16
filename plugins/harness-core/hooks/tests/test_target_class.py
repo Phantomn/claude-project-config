@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ from target_class import (
     is_scratch_root,
     normalize,
     protected_name,
+    repo_root,
     run,
     session_start,
     switch_mode,
@@ -103,9 +105,21 @@ class LedgerTest(_WorldCase):
         L = Ledger(w.environ, compact_bytes=200); L.record("/new", KIND_CREATED, "s1")
         for p in ["/old", "/old0", "/old4", "/gone/x"]:
             self.assertEqual(L.entries(p), [], p)
-        self.assertEqual(list(f.parent.glob("*.tmp")), [])
         for p in ["/recent", alive, "/new"]:
             self.assertEqual(len(L.entries(p)), 1, p)
+        self.assertEqual(list(f.parent.glob("*.tmp")), [])
+        self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)          # 압축 뒤에도 권한 유지
+
+    def test_new_ledger_mode(self):
+        Ledger(w.environ).record("/a", KIND_CREATED, "s1")
+        self.assertEqual(stat.S_IMODE(self.ledger_file().stat().st_mode), 0o600)
+
+    def test_no_home_no_ledger(self):                                    # 상대 경로 장부를 만들지 않는다
+        cwd = os.getcwd(); os.chdir(w.fmt("{OUT}")); self.addCleanup(os.chdir, cwd)
+        for env in ({"PATH": "/usr/bin"}, {"HOME": "", "PATH": "/usr/bin"}, {"HOME": "", "XDG_STATE_HOME": "rel"}):
+            L = Ledger(env); L.record("/a", KIND_CREATED, "s1")
+            self.assertEqual(L.entries("/a"), []); self.assertIsNone(L.moved_in_near("/a"))
+        self.assertEqual(os.listdir(w.fmt("{OUT}")), [])
 
     def test_ledger_compaction_concurrent_append(self):  # Review Focus 4, 재감사 rootcause-r1-s1-006
         self.assertEqual(_run_two(w.environ, ("A", 300, 1), ("B", 300, 0)), [0, 0])
@@ -145,6 +159,12 @@ class BasicsTest(_WorldCase):
         self.assertEqual(normalize(f"{out}/lnk", False), f"{out}/lnk")         # 대상 자체가 링크, '/' 없음 → 링크
         self.assertEqual(normalize(f"{out}/lnk", True), f"{out}/real")         # '/' 있음 → 링크 대상
         self.assertEqual(normalize("/", False), "/")
+        os.symlink(w.fmt("{REPO}/src"), w.fmt("{SCRATCH}/lnk"))       # 링크 뒤 '..' 는 링크 대상의 부모
+        n = normalize(w.fmt("{SCRATCH}/lnk/../README.md"), False)
+        self.assertEqual(n, w.fmt("{REPO}/README.md")); self.assertFalse(is_scratch(n, w.ctx()))
+        self.assertEqual(normalize(w.fmt("{SCRATCH}/lnk/.."), False), w.fmt("{REPO}"))
+        self.assertEqual(normalize(w.fmt("{SCRATCH}/lnk/."), False), w.fmt("{REPO}/src"))
+        self.assertEqual(normalize(w.fmt("{SCRATCH}/lnk/"), False), w.fmt("{REPO}/src"))
 
     def test_scratch(self):
         ctx = w.ctx()
@@ -165,7 +185,8 @@ class BasicsTest(_WorldCase):
             self.assertFalse(protected_name(p), p)
 
     def test_world_layout(self):
-        self.assertLess(stat_birth(w.fmt("{REPO}/README.md")), w.session_start)
+        for rel in ["README.md", "src/main.py", ".gitignore", ".env", "local.sqlite", "build/out.o", "notes_presession.txt"]:
+            self.assertLess(stat_birth(w.fmt("{REPO}/" + rel)), w.session_start, rel)   # 세션 전 파일
         self.assertGreaterEqual(stat_birth(w.fmt("{REPO}/src/probe.ts")), w.session_start)
         self.assertGreaterEqual(stat_birth(w.fmt("{SCRATCH}/s1/x.txt")), w.session_start)
         st = w.sh("git status --porcelain=v1 --ignored=matching")
@@ -185,6 +206,11 @@ class BasicsTest(_WorldCase):
 
 
 class SwitchTest(_WorldCase):
+    def test_repo_root_relative(self):
+        cwd = os.getcwd(); os.chdir(w.fmt("{REPO}")); self.addCleanup(os.chdir, cwd)
+        self.assertEqual(repo_root("x/y", w.environ), w.fmt("{REPO}"))
+        os.chdir(w.fmt("{OUT}")); self.assertIsNone(repo_root("x/y", w.environ))
+
     def test_switch_mode(self):
         self.assertEqual(switch_mode(w.fmt("{REPO}/src/main.py"), w.environ), "off")
         w.set_repo_switch("shadow"); self.assertEqual(switch_mode(w.fmt("{REPO}/src/main.py"), w.environ), "shadow")

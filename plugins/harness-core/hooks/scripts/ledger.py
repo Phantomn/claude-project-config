@@ -30,7 +30,9 @@ class Entry:
 
 
 def state_dir(environ: Mapping[str, str]) -> Path:
-    base = environ.get("XDG_STATE_HOME") or os.path.join(environ.get("HOME", ""), ".local", "state")
+    # XDG 규약: 상대 경로 XDG_STATE_HOME 은 무시. HOME 도 없으면 상대 경로가 되고, Ledger 가 그때 기록을 생략한다
+    xdg = environ.get("XDG_STATE_HOME", "")
+    base = xdg if os.path.isabs(xdg) else os.path.join(environ.get("HOME", ""), ".local", "state")
     return Path(base) / "harness-core"
 
 
@@ -47,10 +49,14 @@ def _parse(line: str) -> tuple[str, Entry] | None:
 
 class Ledger:
     def __init__(self, environ: Mapping[str, str], compact_bytes: int = COMPACT_BYTES) -> None:
-        self.path = state_dir(environ) / "ledger.tsv"
+        d = state_dir(environ)
+        # 상대 경로 장부는 훅 cwd 마다 다른 파일이 되어 공유 장부가 아니다 — 만들지 않는다
+        self.path: Path | None = d / "ledger.tsv" if d.is_absolute() else None
         self.compact_bytes = compact_bytes
 
     def _read(self) -> str:
+        if self.path is None:
+            return ""
         try:
             return self.path.read_text(**_ENC)
         except FileNotFoundError:
@@ -83,7 +89,7 @@ class Ledger:
             os.close(fd)
 
     def record(self, path: str, kind: str, session_id: str | None) -> None:
-        if session_id is None:
+        if session_id is None or self.path is None:
             return
         # shortcut: 줄바꿈이 든 경로·세션은 한 줄 형식에 담을 수 없어 기록하지 않는다 — 그런 경로를 다룰 일이 생기면 이스케이프 형식으로
         if "\n" in path or "\t" in kind + session_id or "\n" in kind + session_id:
@@ -102,7 +108,9 @@ class Ledger:
             now = time.time()
             kept = [ln + "\n" for ln in text.splitlines() if _keep(ln, now)]
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
-            tmp.write_text("".join(kept) + line, **_ENC)
+            tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(tfd, "w", **_ENC) as f:
+                f.write("".join(kept) + line)
             os.replace(tmp, self.path)
         finally:
             os.close(fd)
