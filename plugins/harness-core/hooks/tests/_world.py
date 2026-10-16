@@ -1,6 +1,7 @@
 """bash-guard 테스트 세계: 실제 git·파일시스템으로 세션 전/세션 중 상태를 만든다 (대역 없음, spec D13)."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -8,13 +9,58 @@ import subprocess
 import sys
 import tempfile
 import time
+import unittest
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from target_class import Ctx, make_ctx
+from target_class import CLOCK_MARGIN_ENV, Ctx, make_ctx
 
 _DEFAULT = object()
+# 판정기 기본 여유(2초)를 쓰면 세계마다 2초를 기다려야 한다 — 세계의 세션 전/중 간격(0.02초)보다 작게
+WORLD_CLOCK_MARGIN = 0.01
+
+
+def clock_offset() -> float:
+    """벽시계 − 단조 시계. 이 값이 바뀌면 그 사이 벽시계가 계단 이동한 것이다."""
+    return time.time() - time.monotonic()
+
+
+def _retry_on_clock_step(fn):
+    @functools.wraps(fn)
+    def run(self):
+        for attempt in range(3):
+            try:
+                return fn(self)
+            except unittest.SkipTest:
+                raise
+            except Exception:
+                # 세계 생성 이후 벽시계가 계단 이동하지 않았으면 진짜 실패다
+                if attempt == 2 or abs(clock_offset() - self._clock0) < 0.01:
+                    raise
+            self.doCleanups()
+            self._new_world()
+    return run
+
+
+class WorldCase(unittest.TestCase):
+    """테스트마다 새 World 를 테스트 모듈의 전역 `w` 에 둔다. 벽시계 역행(WSL2 실측 약 30초마다 −1.28초)이
+    세계 생성 뒤에 끼어 시각 순서가 깨진 채 실패하면, 세계를 다시 만들어 최대 3번 돌린다."""
+
+    def setUp(self) -> None:
+        self._new_world()
+
+    def _new_world(self) -> None:
+        self._clock0 = clock_offset()
+        w = World()
+        self.addCleanup(w.close)
+        sys.modules[type(self).__module__].w = w
+
+    def __init_subclass__(cls, **kw) -> None:
+        super().__init_subclass__(**kw)
+        for name, fn in list(vars(cls).items()):
+            if name.startswith("test") and callable(fn):
+                setattr(cls, name, _retry_on_clock_step(fn))
 
 
 class DockerRes:
@@ -29,7 +75,7 @@ class DockerRes:
 
     def make_fresh_volume(self) -> None:
         # CreatedAt 은 초 단위라 세션 시작과 같은 초에 만들면 세션 전으로 읽힌다 — 다음 초 이후에 만든다
-        time.sleep(max(0.0, int(self._w.session_start) + 1 - time.time()))
+        time.sleep(max(0.0, int(self._w.session_start + WORLD_CLOCK_MARGIN) + 1 - time.time()))
         self._w._docker("volume", "create", f"{self.project}-fresh", check=True)
         self.fresh_volume = f"{self.project}-fresh"
 
@@ -39,7 +85,7 @@ class World:
         # 벽시계가 뒤로 가면(WSL2 실측 약 0.5초) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
         for _ in range(3):
             self._create(worktree, docker)
-            if self._order_ok():
+            if self._order_ok(WORLD_CLOCK_MARGIN):
                 return
             self.close()
         raise RuntimeError("시계 불안정 — 세션 전/세션 중 파일의 생성 시각 순서가 3번 연속 어긋났다")
@@ -73,6 +119,7 @@ class World:
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "World", "GIT_AUTHOR_EMAIL": "world@example.invalid",
             "GIT_COMMITTER_NAME": "World", "GIT_COMMITTER_EMAIL": "world@example.invalid",
+            CLOCK_MARGIN_ENV: str(WORLD_CLOCK_MARGIN),
         }
         self.session_id = str(uuid.uuid4())
         self.docker: DockerRes | None = None
@@ -128,8 +175,8 @@ class World:
         p.write_text(text, encoding="utf-8")
 
     def _in_session_second(self) -> int:
-        # reflog 시각은 초 단위라, 세션 시작과 같은 초에 찍히면 '>= 세션 시작' 비교가 깨진다 — 다음 초 이후로
-        return max(int(time.time()), int(self.session_start) + 1)
+        # reflog 시각은 초 단위라, 세션 시작(+여유)과 같은 초에 찍히면 '세션 중' 비교가 깨진다 — 다음 초 이후로
+        return max(int(time.time()), int(self.session_start + WORLD_CLOCK_MARGIN) + 1)
 
     @staticmethod
     def _dates(epoch: int) -> dict[str, str]:

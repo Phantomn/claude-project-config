@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -22,6 +23,11 @@ from ledger import (
 )
 from shell_parse import Mount
 
+# 벽시계가 뒤로 간다(WSL2 실측 약 30초마다 −0.6초·−0.68초 연속) — 세션 전 항목이 세션 시작 뒤로 찍혀
+# '세션이 만든 것'(저장소 통째 삭제 허용)이 되지 않게, 세션 시작 + 여유 안의 시각은 세션 전으로 본다
+CLOCK_MARGIN = 2.0
+CLOCK_MARGIN_ENV = "HARNESS_BASH_GUARD_CLOCK_MARGIN"
+
 
 @dataclass
 class Ctx:
@@ -30,9 +36,24 @@ class Ctx:
     session_start: float | None
     ledger: Ledger
     deadline: float  # time.monotonic() 기준
+    clock_margin: float = CLOCK_MARGIN
 
     def remaining(self) -> float:
         return self.deadline - time.monotonic()
+
+
+def before_session(t: float, ctx: Ctx) -> bool:
+    """t 가 세션 전(또는 세션 시작 근처라 확정 불가)인가. 세션 시작을 모르면 True(보호)."""
+    return ctx.session_start is None or t < ctx.session_start + ctx.clock_margin
+
+
+def _clock_margin(environ: Mapping[str, str]) -> float:
+    try:
+        v = float(environ.get(CLOCK_MARGIN_ENV, ""))
+    except ValueError:
+        return CLOCK_MARGIN
+    # nan 은 모든 비교가 거짓이라 '세션 전 아님'이 된다 — 유한한 0 이상만 받는다
+    return v if math.isfinite(v) and v >= 0 else CLOCK_MARGIN
 
 
 FIXED_SCRATCH_ROOTS: tuple[str, ...] = ("/tmp", "/var/tmp")
@@ -50,7 +71,7 @@ _TEXT = {"encoding": "utf-8", "errors": "surrogateescape"}
 def make_ctx(payload: dict, environ: Mapping[str, str], budget: float) -> Ctx:
     deadline = time.monotonic() + budget
     return Ctx(environ, payload.get("session_id") or None,
-               session_start(payload.get("transcript_path"), environ), Ledger(environ), deadline)
+               session_start(payload.get("transcript_path"), environ), Ledger(environ), deadline, _clock_margin(environ))
 
 
 def session_start(transcript_path: str | None, environ: Mapping[str, str]) -> float | None:
@@ -293,7 +314,7 @@ def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None
     if start is None or not paths:
         return set()
     b = births(paths, ctx)
-    cand = {p for p in paths if b.get(p, 0.0) >= start}
+    cand = {p for p in paths if p in b and not before_session(b[p], ctx)}
     if not cand:
         return set()
     # 장부는 묶음당 한 번만 읽는다 — entries() 를 항목마다 부르면 폴더 순회에서 항목 수만큼 파일 전체를 읽는다
@@ -449,8 +470,8 @@ def note_touch(path: str, ctx: Ctx, tool: str | None) -> None:
         if tool == "Write":
             L.record(p, KIND_CREATED, sid)
     else:
-        start, b = ctx.session_start, births([p], ctx).get(p)
-        if start is not None and b is not None and b < start:
+        b = births([p], ctx).get(p)
+        if ctx.session_start is not None and b is not None and before_session(b, ctx):
             L.record(p, KIND_PRE_SESSION, sid)
         if _nearest_git(p, {}) and not any(e.kind == KIND_TOUCHED and e.session_id == sid for e in L.entries(p)) \
                 and _pre_dirty(p, ctx):
@@ -514,10 +535,12 @@ def is_session_change(path: str, ctx: Ctx) -> bool:
         mtime = os.lstat(p).st_mtime
     except OSError:
         return False
-    if start is None or mtime < start:
+    if start is None or before_session(mtime, ctx):
         return False
+    # 다른 세션의 손길은 여유만큼 앞까지 '이번 세션 중'으로 본다(애매하면 내 변경 아님)
     return not any((e.kind == KIND_PRE_DIRTY and e.session_id == sid)
-                   or (e.kind == KIND_TOUCHED and e.session_id != sid and e.ts >= start) for e in ctx.ledger.entries(p))
+                   or (e.kind == KIND_TOUCHED and e.session_id != sid and e.ts >= start - ctx.clock_margin)
+                   for e in ctx.ledger.entries(p))
 
 
 def git_default_branch(repo: str, remote: str, ctx: Ctx) -> str | None:

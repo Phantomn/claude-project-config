@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import target_class
-from _world import World
+from _world import World, WorldCase
 from ledger import (
     KIND_CREATED,
     KIND_MOVED_IN,
@@ -56,6 +56,7 @@ from target_class import (
     is_scratch,
     is_scratch_root,
     is_session_change,
+    make_ctx,
     normalize,
     note_touch,
     protected_name,
@@ -65,7 +66,7 @@ from target_class import (
     switch_mode,
 )
 
-w: World
+w: World = None  # type: ignore[assignment]  # WorldCase.setUp 이 테스트마다 넣는다
 
 
 def stat_birth(p):  # 테스트 파일의 독립 구현(오라클)
@@ -90,11 +91,7 @@ def _run_two(env, a, b):
     return [p.exitcode for p in ps]
 
 
-class _WorldCase(unittest.TestCase):
-    def setUp(self):
-        global w
-        w = World()
-        self.addCleanup(w.close)
+_WorldCase = WorldCase   # 벽시계 계단 이동 시 세계 재생성·재시도 (_world.py)
 
 
 class LedgerTest(_WorldCase):
@@ -528,6 +525,52 @@ class QueryRegressionTest(_WorldCase):
         ctx = w.ctx(); r = w.fmt("{REPO}")
         self.assertEqual(git_remote_names(r, ctx), ["origin"])
         w.remove_remote("origin"); self.assertEqual(git_remote_names(r, ctx), [])
+
+
+MARGIN = "HARNESS_BASH_GUARD_CLOCK_MARGIN"
+
+
+class ClockMarginTest(_WorldCase):
+    """벽시계 역행(WSL2 실측 약 30초마다 −1.28초) 방어: 세션 시작 + 여유 안의 시각은 '세션 전'으로 본다."""
+
+    def mctx(self, margin, **kw):
+        return w.ctx(environ_extra={MARGIN: margin}, **kw)
+
+    def test_default_and_parse(self):
+        self.assertEqual(make_ctx({}, {}, 1.0).clock_margin, 2.0)
+        for bad in ("-1", "abc", "nan", "inf", ""):
+            self.assertEqual(make_ctx({}, {MARGIN: bad}, 1.0).clock_margin, 2.0, bad)
+        self.assertEqual(make_ctx({}, {MARGIN: "0.5"}, 1.0).clock_margin, 0.5)
+        self.assertEqual(make_ctx({}, {MARGIN: "0"}, 1.0).clock_margin, 0.0)
+
+    def test_ambiguous_session_file_is_preserved(self):     # (a) probe.ts 는 세션 시작 약 0.02초 뒤에 만든 파일
+        self.assertEqual(k("{REPO}/src/probe.ts", self.mctx("2.0")), PRESERVED)
+        self.assertEqual(k("{REPO}/src/probe.ts", self.mctx("0")), SESSION_NEW)
+
+    def test_presession_file_stamped_after_start(self):     # (b) 세션 전 파일이 세션 시작 뒤로 찍힌 모양(역행의 결과)
+        tr = w.fmt("{OUT}/t2.jsonl"); Path(tr).write_text(""); time.sleep(0.01)   # 같은 jiffy 면 birth 가 같다
+        f = w.fmt("{HOME}/pre.txt"); Path(f).write_text("x")
+        ctx = self.mctx("2.0", transcript=tr)
+        self.assertGreater(stat_birth(f), ctx.session_start)
+        self.assertEqual(k(f, ctx), PRESERVED)
+        note_touch(f, ctx, "Edit"); self.assertIn(KIND_PRE_SESSION, [e.kind for e in ctx.ledger.entries(f)])
+        t = ctx.session_start + 0.5; os.utime(f, (t, t))
+        self.assertFalse(is_session_change(f, ctx)); self.assertTrue(is_session_change(f, self.mctx("0", transcript=tr)))
+
+    def test_session_repo_needs_margin(self):               # (c) 분류 1b
+        tr = w.fmt("{OUT}/t3.jsonl"); Path(tr).write_text("")
+        repo = w.fmt("{OUT}/fresh"); subprocess.run(["git", "init", "-q", repo], env=w.environ, check=True)
+        f = f"{repo}/a.txt"; Path(f).write_text("x")
+        c = classify(f, self.mctx("2.0", transcript=tr)); self.assertEqual((c.kind, c.session_repo), (PRESERVED, False))
+        c = classify(f, self.mctx("0", transcript=tr)); self.assertEqual((c.kind, c.session_repo), (SCRATCH, True))
+
+    def test_policy_times_use_margin(self):                 # branch -D·stash 의 세션 전 판정(_old)도 같은 여유
+        w.local_branch("mine", pushed=False, before_session=False)
+        big = self.mctx("3600")
+        self.assertEqual(w.evaluate_all("git branch -D mine", ctx=w.ctx()), [])
+        self.assertEqual([f.kind for f in w.evaluate_all("git branch -D mine", ctx=big)], ["UNPUSHED"])
+        self.assertEqual(w.evaluate_all("git stash drop stash@{0}", ctx=w.ctx()), [])
+        self.assertEqual([f.kind for f in w.evaluate_all("git stash drop stash@{0}", ctx=big)], ["OLD_STASH"])
 
 
 if __name__ == "__main__":

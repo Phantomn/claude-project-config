@@ -9,20 +9,16 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _world import World
+from _world import World, WorldCase
 from bash_guard import FOOTER, Decision, judge, log_event, render
 from ledger import KIND_PRE_DIRTY, KIND_PRE_SESSION, Ledger, state_dir
 
 ON = {"HARNESS_BASH_GUARD": "on"}
 OLD_ASK = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"x"}}'
-w: World
+w: World = None  # type: ignore[assignment]  # WorldCase.setUp 이 테스트마다 넣는다
 
 
-class _WorldCase(unittest.TestCase):
-    def setUp(self):
-        global w
-        w = World()
-        self.addCleanup(w.close)
+_WorldCase = WorldCase   # 벽시계 계단 이동 시 세계 재생성·재시도 (_world.py)
 
 
 class JudgeTest(_WorldCase):

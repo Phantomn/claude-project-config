@@ -7,22 +7,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import policy
-from _world import World
+from _world import World, WorldCase
 from shell_parse import parse
 from target_class import GIT_TRACKED, PRESERVED, PROTECTED_NAME, UNRESOLVED
 
-w: World
+w: World = None  # type: ignore[assignment]  # WorldCase.setUp 이 테스트마다 넣는다
 
 
 def ev(cmd, cwd="{REPO}", ctx=None):
     return [(f.op, f.kind) for f in w.evaluate_all(w.fmt(cmd), cwd, ctx)]
 
 
-class _WorldCase(unittest.TestCase):
-    def setUp(self):
-        global w
-        w = World()
-        self.addCleanup(w.close)
+_WorldCase = WorldCase   # 벽시계 계단 이동 시 세계 재생성·재시도 (_world.py)
 
 
 class DeleteTest(_WorldCase):

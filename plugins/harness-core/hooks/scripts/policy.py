@@ -37,6 +37,7 @@ from target_class import (
     UNRESOLVED,
     Ctx,
     _git,
+    before_session,
     classify,
     compose_container_id,
     docker_container_info,
@@ -713,7 +714,7 @@ def _judge_path(j: Job, p: str, ctx: Ctx, host: bool = True) -> Finding | None:
 
 
 def _old(t: float, ctx: Ctx) -> bool:
-    return ctx.session_start is None or t < ctx.session_start
+    return before_session(t, ctx)
 
 
 # ---- 작업 단위 규칙 (git·docker 볼륨) ----
