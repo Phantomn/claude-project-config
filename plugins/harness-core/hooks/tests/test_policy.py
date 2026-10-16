@@ -323,6 +323,7 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [], c)
         self.assertEqual(ev("cat x > /dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
         self.assertEqual(ev("echo x > /dev/tcpx"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+        self.assertEqual(ev("cat x > /dev/tcp/../sda"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])   # 없는 /dev/tcp 아래 .. 는 /dev/sda
 
     def test_b_plain_push_needs_no_lookup(self):
         for c, cwd in (('git -C "$X" push origin feat', "{REPO}"), ("git push origin feat", "{OUT}"),

@@ -584,6 +584,16 @@ class ClassifyBudgetTest(_WorldCase):   # 재생 최대 판정 시간: 경로 �
         self.assertIn("시간 초과", str(e.exception))
         c = classify(d, w.ctx(budget=0)); self.assertEqual(c.kind, UNRESOLVED); self.assertIn("시간 초과", c.detail)
 
+    def test_loop_check_alone(self):   # 루프 안 검사가 없으면 저장소 조회가 먼저 실패해 사유가 'git 조회 실패'가 된다
+        with self.assertRaises(target_class._Unresolved) as e:
+            target_class._classify_many([w.fmt("{REPO}/src/main.py"), w.fmt("{REPO}/README.md")], w.ctx(budget=0))
+        self.assertIn("시간 초과", str(e.exception))
+
+    def test_births_check_alone(self):   # 루프를 돌지 않아도(경로 0개) births 앞 검사가 예산을 본다
+        with self.assertRaises(target_class._Unresolved) as e:
+            target_class._classify_many([], w.ctx(budget=0))
+        self.assertIn("시간 초과", str(e.exception))
+
     def test_judge_ends_near_budget(self):
         from bash_guard import judge
         for n in ("c1", "c2"):
