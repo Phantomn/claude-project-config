@@ -148,6 +148,13 @@ class LedgerTest(_WorldCase):
         self.assertEqual(list(f.parent.glob("*.tmp")), [])
         self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)          # 압축 뒤에도 권한 유지
 
+    def test_compaction_stale_tmp_mode(self):   # 항목 8(Task 4 deferred): 같은 pid 의 남은 임시 파일(0644)이 장부 권한을 바꾸지 않는다
+        f = self.ledger_file(); f.parent.mkdir(parents=True)
+        f.write_text("".join(f"/p{i}\t{KIND_CREATED}\ts0\t{time.time()}\n" for i in range(10)), encoding="utf-8"); f.chmod(0o600)
+        stale = f.with_name(f"{f.name}.{os.getpid()}.tmp"); stale.write_text("old\n"); stale.chmod(0o644)
+        Ledger(w.environ, compact_bytes=10).record("/new", KIND_CREATED, "s1")
+        self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600); self.assertFalse(stale.exists())
+
     def test_new_ledger_mode(self):
         Ledger(w.environ).record("/a", KIND_CREATED, "s1")
         self.assertEqual(stat.S_IMODE(self.ledger_file().stat().st_mode), 0o600)

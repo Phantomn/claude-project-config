@@ -143,6 +143,7 @@ class Ledger:
             kept = [ln + "\n" for ln in text.splitlines() if _keep(ln, now)]
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(tfd, 0o600)   # 같은 pid 로 남은 임시 파일이면 O_CREAT 의 모드가 적용되지 않는다
             with os.fdopen(tfd, "w", **_ENC) as f:
                 f.write("".join(kept) + line)
             os.replace(tmp, self.path)
