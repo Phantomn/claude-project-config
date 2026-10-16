@@ -138,6 +138,24 @@ class ParseTest(unittest.TestCase):
                   "builtin rm x", "ionice -c3 rm x", "chronic rm x", "X=1 rm -rf x", "timeout -s KILL 5 sudo nice rm x"]:
             self.assertEqual(names(c), ["rm"], c)
 
+    def test_wrapper_env_and_dir_options(self):   # 항목 8: busybox 애플릿, env -S·-C·sudo -D, env -i·-u·sudo env_reset
+        self.assertEqual(names("busybox rm -rf x"), ["rm"])
+        for c in ("env -S 'rm -rf x'", "env -S'rm x'", "env --split-string='rm x'", "env -iS 'rm x'", "env -C /tmp rm x",
+                  "env --chdir=/tmp rm x", "env -C/tmp rm x", "sudo -D /tmp rm x", "sudo --chdir=/tmp rm x"):
+            r = parse(c, "/w", {})
+            self.assertTrue(r.error and r.unmodeled, c)   # 단어 분리·작업 폴더를 바꾸는 래퍼 — bash 는 돌린다
+
+        def inner(cmd):
+            s = next(x for x in segs(cmd, env={"HOME": "/h", "X": "/x"}) if x.name == "rm")
+            return expand(s.argv[-1], s)
+        self.assertEqual(inner("sh -c 'rm -rf $HOME/a'"), ["/h/a"])
+        for c in ("env -i sh -c 'rm -rf $HOME/a'", "env -u HOME sh -c 'rm -rf $HOME/a'", "env --unset=HOME sh -c 'rm $HOME/a'",
+                  "env - sh -c 'rm $HOME/a'", "sudo sh -c 'rm $HOME/a'", "Y=/t sudo sh -c 'rm $Y/a'", "env -i bash -c 'rm $X/a'"):
+            self.assertIsNone(inner(c), c)   # 안쪽 셸이 물려받지 않는 변수 — 값을 모른다(fail-closed)
+        self.assertEqual(inner("env -i X=/n sh -c 'rm $X/a'"), ["/n/a"])   # -i 뒤 할당은 남는다
+        self.assertEqual(inner("sudo -E sh -c 'rm $HOME/a'"), ["/h/a"])     # -E 는 환경을 보존
+        self.assertEqual(inner("env -i rm $HOME/a"), ["/h/a"])              # 바깥 셸이 먼저 확장한 단어는 그대로
+
     def test_prefix_assignment(self):
         a, b = segs('X=/a rm "$X"; rm "$X"')
         self.assertEqual(a.name, "rm")

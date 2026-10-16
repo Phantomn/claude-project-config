@@ -393,7 +393,7 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
     "doas": ("-u", "-C"),
 }
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
-_SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic")
+_SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic", "busybox")   # busybox <애플릿> …
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
 # `time` 은 예약어라 뒤에 복합 명령(`time if …`)이 올 수 있다 — 래퍼로 벗기면 `if` 가 명령 자리로 보이지 않는다(NB8)
 _RESERVED = ("{", "}", "!", "time", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
@@ -1066,10 +1066,26 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
     if name == "env":
         while i < len(words):
             lit = words[i].literal()
+            nxt = words[i + 1].literal() if i + 1 < len(words) else ""
             if (a := _assign_of(words[i], env)) is not None:
                 run_env[a[0]] = a[1]
-            elif lit in ("-u", "-C"):
-                i += 1
+            elif lit in ("-", "--ignore-environment"):
+                _reset_env(run_env)
+            elif lit.startswith(("--chdir", "--split-string")):
+                raise ModelError(f"env {lit}")   # 작업 폴더·단어 분리를 바꾸는 env — bash 는 돌린다
+            elif lit.startswith("--unset"):
+                run_env[lit.partition("=")[2] if "=" in lit else nxt] = None
+                i += "=" not in lit
+            elif lit.startswith("-") and not lit.startswith("--"):
+                for n, c in enumerate(lit[1:], 2):   # 짧은 옵션 묶음(-iv·-uNAME·-u NAME)
+                    if c == "i":
+                        _reset_env(run_env)
+                    elif c in "uCS":
+                        if c != "u":
+                            raise ModelError(f"env {lit}")
+                        run_env[lit[n:] or nxt] = None
+                        i += not lit[n:]
+                        break
             elif not lit.startswith("-") or lit == "--":
                 if lit == "--":
                     i += 1
@@ -1087,11 +1103,36 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
                 return None
     if name not in _WRAPPER_VALUE_OPTS:
         return None
+    reset = name in ("sudo", "doas")   # 기본 env_reset — 안쪽 명령은 바깥 변수를 물려받지 않는다(sudo -E 는 보존)
     while i < len(words) and words[i].literal().startswith("-") and words[i].literal() != "--":
-        i += 2 if words[i].literal() in _WRAPPER_VALUE_OPTS[name] else 1
+        lit = words[i].literal()
+        if name == "sudo":
+            if lit.startswith("--chdir"):
+                raise ModelError(f"sudo {lit}")
+            reset &= not lit.startswith("--preserve-env")
+            for c in lit[1:] if not lit.startswith("--") else "":
+                reset &= c != "E"
+                if c == "D":
+                    raise ModelError(f"sudo {lit}")   # 작업 폴더를 바꾸는 sudo
+                if c in "ughpCrtU":   # 값을 받는 옵션 — 뒤 글자는 값
+                    break
+        i += 2 if lit in _WRAPPER_VALUE_OPTS[name] else 1
+    if reset:
+        _reset_env(run_env)
     if i < len(words) and words[i].literal() == "--":
         i += 1
     return words[i + _WRAPPER_TAIL.get(name, 0):]
+
+
+_RESET = "\x00reset"   # 래퍼가 환경을 비웠다 — 호출자가 바깥 변수(run_env)도 미확정으로 바꾼다
+
+
+def _reset_env(run_env: dict[str, str | None]) -> None:
+    """env -i·sudo·doas: 앞서 모은 래퍼 할당도 지운다(미확정). 바깥 변수는 _RESET 표시를 본 호출자가 미확정으로."""
+    for k in run_env:
+        if not k.startswith("\x00"):
+            run_env[k] = None
+    run_env[_RESET] = "1"
 
 
 def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, str | None],
@@ -1299,6 +1340,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
     # 컨테이너 안에서 실행되는 코드의 env 는 호스트 것을 물려받지 않는다(-w 만 셸 작업 폴더로 안다).
     cenv: dict[str, str | None] = {SHELL_CWD: cwd} if cwd else {}
     w = _strip_all(a[i + 1:], cenv, seg.env)
+    cenv.pop(_RESET, None)
     if not w:
         return
     stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
@@ -1346,7 +1388,9 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
         if repl:  # 치환 문자열 자리는 입력에서 오므로 표시로 바꿔 둔다(-c 문자열 안까지, 명령 이름은 GNU xargs 처럼 제외)
             cmd = cmd[:1] + [Word(tuple(Part(p.text.replace(repl, _XARGS_MARK), p.quote) for p in w.parts)) for w in cmd[1:]]
         env = dict(run_env)  # xargs 가 실행하는 명령의 env — 단어는 이미 seg.env 로 확장됐다
-        if (w := _strip_all(cmd, env, seg.env)):
+        w = _strip_all(cmd, env, seg.env)
+        env.pop(_RESET, None)   # 이 env 는 바깥 변수까지 담아 _reset_env 가 이미 비웠다
+        if w:
             inner = Segment(_cmd_name(w), w, [], seg.cwd, dict(seg.env), seg.context, d, via_xargs=True)
             segments.append(inner)
             _descend(inner, segments, None, env)
@@ -1539,6 +1583,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         wrappers: list[str] = []
         extra: dict[str, str | None] = {}
         w = _strip_all(w, extra, unit_env, wrappers)
+        if extra.pop(_RESET, None):   # env -i·sudo·doas: 바깥 변수는 안쪽 명령에 없다 — 값을 모른다(fail-closed)
+            run_env = {k: (v if k.startswith("\x00") else None) for k, v in run_env.items()}
         if extra:
             run_env = {**run_env, **extra}
         # 래퍼 밑의 명령은 성공 가정을 못 받는다(sudo 는 비밀번호·권한, env·nice 는 PATH 검색) — command·builtin 은 결과를 바꾸지 않는다(NB6)
