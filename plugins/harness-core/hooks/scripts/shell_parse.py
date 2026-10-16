@@ -322,7 +322,7 @@ class ParseResult:
     error: str | None = None
 
 
-_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _BOUNDARY = ("\n", ";", ";;", "&&", "||", "|", "|&", "&")
 _SUBSHELL_OPS = ("|", "|&", "&")  # 파이프 구성원·배경 명령은 서브셸이라 cd·변수가 밖으로 안 나간다
 _VAR_DECL = ("export", "declare", "typeset", "local")
@@ -761,11 +761,42 @@ def _is_assign(w: Word) -> bool:
 
 
 def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None] | None:
-    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가)."""
+    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값` 은 누적이라 미확정."""
     if not _is_assign(w):
         return None
     head, _, rest = w.parts[0].text.partition("=")
+    if head.endswith("+"):
+        return head[:-1], None
     return head, _text(((Part(rest, ""),) if rest else ()) + w.parts[1:], env)
+
+
+_READ_VALUE = {"read": "adinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}   # 값을 받는 한 글자 옵션
+
+
+def _clobbered(name: str, w: list[Word]) -> list[str]:
+    """변수를 바꾸는 내장 명령이 건드리는 변수 이름 — 새 값은 모델링하지 않는다(미확정으로 둔다)."""
+    a = [x.literal() for x in w[1:]]
+    if name == "unset":
+        return a
+    if name == "let":
+        return [m.group() for x in a if (m := _NAME.match(x))]
+    if name == "getopts":
+        return a[1:2]
+    if name == "printf":
+        return ([a[0][2:] or (a[1] if len(a) > 1 else "")] if a and a[0].startswith("-v") else [])
+    if name not in _READ_VALUE:
+        return []
+    out, i = [], 0
+    while i < len(a) and a[i].startswith("-") and a[i] != "--":
+        x, i = a[i], i + 1
+        k = next((n for n, ch in enumerate(x[1:], 1) if ch in _READ_VALUE[name]), None)
+        if k is not None:   # 묶음(-rp q)의 값 옵션은 나머지 글자나 다음 단어를 값으로 받는다
+            v = x[k + 1:] or (a[i] if i < len(a) else "")
+            i += 0 if x[k + 1:] else 1
+            if name == "read" and x[k] == "a":
+                out.append(v)
+    out += a[i + (i < len(a) and a[i] == "--"):] or ["REPLY" if name == "read" else "MAPFILE"]
+    return out
 
 
 def _resolve_dir(w: Word, cwd: str | None, env: Mapping[str, str | None]) -> str | None:
@@ -1131,9 +1162,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             w = w[1:]
         w = _strip_all(w, run_env, unit_env)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
+            if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
+                state_env[w[1].literal()] = None
             return None
         unit_cwd = st["cwd"]
         name = _cmd_name(w)
+        for k in _clobbered(name, w):
+            state_env[k] = None
         if name == "git":
             while len(w) > 2 and w[1].literal() == "-C":
                 unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)
@@ -1225,7 +1260,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def for_loop(k: int) -> int | None:
         """toks[k] = for. `for N in 목록; do …; done` 이고 목록이 확정되면 본문을 항목마다 해석하고 done 의 인덱스.
-        그 밖(목록 미확정·상한 초과·중첩 루프·in 없음)은 None — 일반 처리(루프 변수 미확정)."""
+        그 밖(목록 미확정·0개·상한 초과·중첩 루프·in 없음)은 None — 일반 처리(루프 변수 미확정, 본문 한 번)."""
         name = bare(k + 1)
         if name is None or not _NAME.fullmatch(name) or bare(k + 2) != "in":
             return None
@@ -1263,7 +1298,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if (v := _values(wd, state_env, st["cwd"])) is None:
                 return None
             vals += v
-        if len(vals) > _FOR_CAP or _for_runs[0] + len(vals) > _FOR_TOTAL:
+        # 0개 '확정'은 모델링 못 한 변수 변화일 수 있다 — 본문을 버리지 않고 일반 처리(루프 변수 미확정)로 한 번 본다
+        if not vals or len(vals) > _FOR_CAP or _for_runs[0] + len(vals) > _FOR_TOTAL:
             return None
         _for_runs[0] += len(vals)
         for wd in items:   # 머리 단어의 치환도 실행된다
@@ -1275,8 +1311,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         for v in vals:   # 반복은 앞 반복의 끝 상태에서 이어진다
             state = _parse(body, state[0], {**state[1], name: v}, context, depth, segments, via_xargs)
             ends.append(state)
-        if ends:   # break 등으로 어느 반복에서 끝났는지 모른다
-            set_state(_merge(ends))
+        set_state(_merge(ends))   # break 등으로 어느 반복에서 끝났는지 모른다
         return j
 
     skip = 0

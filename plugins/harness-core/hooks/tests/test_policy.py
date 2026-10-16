@@ -362,6 +362,20 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("for f in $(ls); do rm $f; done"), [("삭제", UNRESOLVED)])
         self.assertEqual(ev("for f in a; do echo $f; done > {HOME}/notes.md"), [("덮어쓰기", PRESERVED)])
 
+    def test_f_unmodeled_variable_changes(self):   # 적대 리뷰 C1·I4·I6: 모델링 못 한 변수 변화를 예전 확정값으로 믿지 않는다
+        for c in ('L=; L+=" main.py"; for f in $L; do rm -f src/$f; done', "L=; read L; for f in $L; do rm -rf src/$f; done",
+                  "for f in nothing; do unset f; rm -rf src/$f; done", "for f in nothing; do read -r f < list.txt; rm -rf src/$f; done",
+                  "for f in nothing; do printf -v f %s src; rm -rf src/$f; done", "f=nothing; unset f; rm -rf src/$f",
+                  "f=nothing; read -rp q f; rm -rf src/$f", "f=nothing; mapfile -t f < l; rm -rf src/$f", "f=x; f+=y; rm -rf src/$f",
+                  "f=nothing; getopts ab f; rm -rf src/$f", "f=nothing; let f=1; rm -rf src/$f", "f=nothing; export f+=/..; rm -rf src/$f",
+                  "f=nothing; for f in $(cat list); do rm -rf src/$f; done",
+                  "f=nothing; for f in " + " ".join(f"a{i}" for i in range(51)) + "; do rm -rf src/$f; done",
+                  "f=nothing; for f in a; do while t; do rm -rf src/$f; done; done"):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        for c in ('L=; L+=" x"; for f in $L; do rm -rf src; done', "E=; for f in $E; do rm -rf src; done"):   # 0개 확정이어도 본문을 본다
+            self.assertEqual(ev(c), [("삭제", GIT_TRACKED)], c)
+        self.assertEqual(ev("f=nothing; read -r g; rm -rf src/$f"), [])   # 바뀌지 않은 변수는 그대로
+
     def test_g_mktemp_result_is_scratch(self):
         for c in ("T=$(mktemp -d); echo x > $T/a; cp src/main.py $T/; rm -rf $T", "F=$(mktemp); git diff > $F; rm -f $F",
                   'D="$(mktemp -d -p {SCRATCH})"; cd "$D" && echo x > out.txt && cd - >/dev/null; rm -rf "$D"'):
