@@ -89,8 +89,8 @@ class DiskSystemTest(_WorldCase):
 class JudgedOpTest(_WorldCase):
     def test_is_judged_op(self):
         j = lambda c: [policy.is_judged_op(s) for s in parse(w.fmt(c), w.fmt("{REPO}"), w.environ).segments]
-        self.assertEqual(j("ls; git status; docker ps; git log"), [False, False, False, False])
-        self.assertEqual(j("rm x; echo a > f; git reset --hard; git push; docker volume rm v"), [True, True, True, True, True])
+        self.assertEqual(j("ls; git status; docker ps; git log; git push"), [False, False, False, False, False])   # 평범한 push 는 판정 생략
+        self.assertEqual(j("rm x; echo a > f; git reset --hard; git push -f; docker volume rm v"), [True, True, True, True, True])
 
 
 def judged(c):
@@ -323,6 +323,18 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [], c)
         self.assertEqual(ev("cat x > /dev/sdb"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
         self.assertEqual(ev("echo x > /dev/tcpx"), [("디스크 쓰기", "OUTSIDE_WORKSPACE")])
+
+    def test_b_plain_push_needs_no_lookup(self):
+        for c, cwd in (('git -C "$X" push origin feat', "{REPO}"), ("git push origin feat", "{OUT}"),
+                       ("GIT_DIR=/nonexistent git push -u origin feat", "{REPO}"), ("git push --all origin", "{OUT}"),
+                       ("git push --force-with-lease origin feat", "{OUT}"), ("git push origin a:b", "{OUT}")):
+            self.assertEqual(ev(c, cwd=cwd), [], c)
+        for c, cwd in (('git -C "$X" push -f origin main', "{REPO}"), ("git push --force origin main", "{OUT}"),
+                       ("git push origin +main", "{OUT}"), ("git push origin :main", "{OUT}"), ("git push --mirror", "{OUT}"),
+                       ("git push -d origin x", "{OUT}"), ("git push --all -f origin", "{OUT}")):
+            self.assertEqual([k for _, k in ev(c, cwd=cwd)], [UNRESOLVED], c)
+        self.assertEqual(ev("git push origin :main"), [("git push", "DEFAULT_BRANCH")])
+        self.assertEqual(ev("git push origin +main"), [("git push", "DEFAULT_BRANCH")])
 
 
 if __name__ == "__main__":

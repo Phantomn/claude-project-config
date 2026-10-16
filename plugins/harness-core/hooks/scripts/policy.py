@@ -570,7 +570,8 @@ def _git_handler(seg: Segment, ctx: Ctx | None, exists: Callable[[str], bool] = 
             or sub in ("prune", "filter-branch", "filter-repo"):
         return [replace(job(REFLOG), paths=[])]   # 저장소를 몰라도 거부 — 조회가 필요 없다
     if sub == "push":
-        return [] if "--dry-run" in r or "n" in s else [job(PUSH, args=tuple(r))]
+        # 평범한 push 는 기본 브랜치를 덮지 않는다 — 저장소·원격 조회 없이 판정 생략
+        return [job(PUSH, args=tuple(r))] if "--dry-run" not in r and "n" not in s and _push_rewrites(r) else []
     return []
 
 
@@ -793,10 +794,10 @@ def _j_reflog(j: Job, ctx: Ctx) -> list[Finding]:
 _PUSH_VALUES = ("--repo", "-o", "--push-option", "--receive-pack", "--exec")
 
 
-def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
-    repo = j.repo or ""
+def _push_opts(a: list[str]) -> tuple[bool, bool, bool, bool, bool, str | None, list[str]]:
+    """(force, delete, mirror, every, tags, --repo 값, 위치 인자)."""
     force = delete = mirror = every = tags = False
-    remote_opt, pos, a, i, opts = None, [], list(j.args), 0, True
+    remote_opt, pos, i, opts = None, [], 0, True
     while i < len(a):
         x = a[i]
         i += 1
@@ -818,7 +819,19 @@ def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
                     i += 0 if x[n + 1:] else 1
                     break
                 force, delete = force or ch == "f", delete or ch == "d"
-    cur = (_git(repo, ["symbolic-ref", "-q", "--short", "HEAD"], ctx) or "").strip() or None
+    return force, delete, mirror, every, tags, remote_opt, pos
+
+
+def _push_rewrites(a: list[str]) -> bool:
+    """원격 이력을 덮거나 지울 수 있는 push 인가 — 강제·삭제·미러·`+ref`·`:dst`."""
+    force, delete, mirror, _, _, _, pos = _push_opts(a)
+    return force or delete or mirror or any(p.startswith(("+", ":")) for p in pos[1:])
+
+
+def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
+    repo = j.repo or ""
+    force, delete, mirror, every, tags, remote_opt, pos = _push_opts(list(j.args))
+    cur =(_git(repo, ["symbolic-ref", "-q", "--short", "HEAD"], ctx) or "").strip() or None
     remote = pos[0] if pos else remote_opt or (
         cur and (_git(repo, ["config", f"branch.{cur}.remote"], ctx) or "").strip()) or "origin"
     names = git_remote_names(repo, ctx)
