@@ -12,12 +12,12 @@ FAILS=0
 ok()   { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; FAILS=$((FAILS+1)); }
 
-# /tmp 는 스크래치로 판정되므로 세계를 임시 루트 밖(이 폴더 아래)에 만든다.
-T="$(mktemp -d -p "$HERE")"
+# 세계는 git 저장소도 임시 루트(/tmp·TMPDIR = 스크래치로 판정)도 아닌 곳에 둔다. 저장소는 $T/repo 하나뿐.
+T="$(mktemp -d -p "${XDG_RUNTIME_DIR:-/dev/shm}")"
 trap 'chmod -R u+w "$T"; rm -rf "$T"' EXIT
 unset HARNESS_BASH_GUARD HARNESS_BASH_GUARD_CLOCK_MARGIN
-export HOME="$T/home" XDG_STATE_HOME="$T/state"
-mkdir -p "$HOME/data" "$T/repo"
+export HOME="$T/home" XDG_STATE_HOME="$T/state" TMPDIR="$T/scratch"
+mkdir -p "$HOME/data" "$T/repo" "$TMPDIR"
 echo k > "$HOME/data/keep.txt"
 ( cd "$T/repo" && git init -q && mkdir .claude && echo k > keep.txt \
     && printf '{"env":{"HARNESS_BASH_GUARD":"on"}}' > .claude/settings.json )
@@ -84,14 +84,25 @@ else fail "PYTHONHOME 파손 → OLD 와 다름 ($(decision < "$T/out.4"))"; fi
 
 echo
 echo "== 5. shadow =="
+run "$HOOK" 'rmdir d' > "$T/ref.5s"
 run "$HOOK" 'rmdir d' HARNESS_BASH_GUARD=shadow > "$T/out.5"
-cmp -s "$T/ref.5" "$T/out.5" && ok "shadow 출력 = OLD (ask)" || fail "shadow 출력이 OLD 와 다름"
+cmp -s "$T/ref.5s" "$T/out.5" && ok "shadow 출력 = OLD ($(decision < "$T/ref.5s"))" || fail "shadow 출력이 OLD 와 다름"
 n="$(python3 -c '
 import json,sys
 try: lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
 except FileNotFoundError: lines=[]
 print(sum(1 for l in lines if (r:=json.loads(l))["mode"]=="shadow" and r["old_decision"]=="ask"))' "$LOG")"
 [ "$n" = 1 ] && ok "기록: shadow·old_decision=ask 1줄" || fail "기록 shadow 줄 수 $n (1 이어야)"
+
+echo
+echo "== 6. OLD 가 비고 변경 전 본문이 비0 종료 =="
+# 서브셸에 감싼 재귀 삭제 모양: 변경 전 본문은 무출력·rc 1 (테스트 1의 마지막 경우와 같은 형태)
+c='(rm -rf ~/data)'
+out="$(run "$HOOK" "$c" HARNESS_BASH_GUARD=on)"; rc=$?
+d="$(printf '%s' "$out" | decision)"
+[ "$d" = deny ] && [ "$rc" = 0 ] && ok "on → 새 판정 deny, rc 0" || fail "on → $d, rc $rc (deny·0 이어야)"
+out="$(run "$HOOK" "$c" HARNESS_BASH_GUARD=off)"; rc=$?
+[ -z "$out" ] && [ "$rc" = 1 ] && ok "off → 무출력, rc 1 (변경 전과 같음)" || fail "off → [$out], rc $rc (무출력·1 이어야)"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "✓ bash-guard 입구 ALL PASS"; exit 0; fi
