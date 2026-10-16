@@ -133,10 +133,10 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
     reasons: list[str] = []
     errors: list[str] = []
     seen_judged = False
-    for seg in res.segments:
+    for i, seg in enumerate(res.segments):
         judged = policy.is_judged_op(seg) or seg.context.kind != "host"
-        if ctx.remaining() <= 0:   # spec §3.8 시간 예산
-            if seen_judged or judged:
+        if ctx.remaining() <= 0:   # spec §3.8 시간 예산 — 끊긴 자리 뒤에 남은 판정 대상도 '만난' 것으로 본다
+            if seen_judged or any(policy.is_judged_op(s) or s.context.kind != "host" for s in res.segments[i:]):
                 reasons.append(R_TIMEOUT)
             break
         findings, targets = policy.assess(seg, ctx)

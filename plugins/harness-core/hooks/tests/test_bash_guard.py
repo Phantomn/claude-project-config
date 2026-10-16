@@ -62,6 +62,9 @@ class JudgeTest(_WorldCase):
         self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
         self.assertIn("판정 시간 초과", judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).reasons[0])
         self.assertTrue(judge(w.payload("ls"), {**w.environ, **ON}, budget=0).allow)
+        for c in ("git push origin feat; rm -rf {HOME}/data", "ls; rm -rf {HOME}/data"):   # 끊긴 자리 뒤에 판정 대상이 남아 있다
+            d = judge(w.payload(c), {**w.environ, **ON}, budget=0)
+            self.assertFalse(d.allow, c); self.assertIn("판정 시간 초과", d.reasons[0])
 
     def test_inplace_edit_records_ledger(self):
         judge(w.payload("sed -i s/a/b/ {HOME}/notes.md", session_id=w.session_id), {**w.environ, **ON})
