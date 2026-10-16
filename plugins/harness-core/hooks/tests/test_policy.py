@@ -14,8 +14,8 @@ from target_class import GIT_TRACKED, PRESERVED, PROTECTED_NAME, UNRESOLVED
 w: World
 
 
-def ev(cmd, cwd="{REPO}"):
-    return [(f.op, f.kind) for f in w.evaluate_all(w.fmt(cmd), cwd)]
+def ev(cmd, cwd="{REPO}", ctx=None):
+    return [(f.op, f.kind) for f in w.evaluate_all(w.fmt(cmd), cwd, ctx)]
 
 
 class _WorldCase(unittest.TestCase):
@@ -108,6 +108,102 @@ class ReviewFixTest(_WorldCase):
         self.assertEqual(ev("cp --frobnicate a {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])   # 모르는 옵션
         self.assertEqual(ev("cp --no a {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])           # 모호한 접두
         self.assertEqual(ev("cp --backup=numbered src/probe.ts {HOME}/data/"), [])
+
+
+class GitPolicyTest(_WorldCase):
+    def test_discard_ops(self):
+        w.clean_tree(); self.assertEqual(ev("git reset --hard"), []); self.assertEqual(ev("git checkout -- ."), [])
+        w.touch_modify("{REPO}/src/main.py"); self.assertEqual(ev("git reset --hard HEAD"), [])          # 이번 세션 변경만
+        w.make_worktree(); w.dirty_before_session("{REPO}/README.md"); w.dirty_before_session("{WT}/README.md")
+        for c in ["git reset --hard", "git checkout .", "git checkout -- README.md", "git restore .", "git switch -f main",
+                  "git checkout -f main", "git rm -f README.md", "git worktree remove --force {WT}"]:
+            self.assertEqual([k for _, k in ev(c)], ["DIRTY"], c)
+        self.assertEqual(ev("git restore --staged README.md"), []); self.assertEqual(ev("git rm --cached README.md"), [])
+
+    def test_clean(self):
+        self.assertEqual(ev("git clean -n"), []); self.assertEqual(ev("git clean -fd"), [("git clean", PRESERVED)])
+        self.assertEqual(ev("git clean -fdX"), [("git clean", PROTECTED_NAME)])   # ignore 대상 .env — 재생성 아님
+        w.sh("rm .env local.sqlite"); self.assertEqual(ev("git clean -fdX"), [])  # 남은 ignore 는 build/ 뿐
+
+    def test_stash(self):
+        self.assertEqual(ev("git stash drop stash@{1}"), [("git stash", "OLD_STASH")]); self.assertEqual(ev("git stash drop"), [])
+        self.assertEqual(ev("git stash clear"), [("git stash", "OLD_STASH")])
+
+    def test_push(self):
+        for c in ["git push origin +main", "git push --force origin main", "git push -f origin HEAD:main", "git push origin :main",
+                  "git push origin --delete main", "git push --mirror", "git push --force --all origin",
+                  "git push origin '+refs/heads/*:refs/heads/*'"]:
+            self.assertEqual([k for _, k in ev(c)], ["DEFAULT_BRANCH"], c)
+        for c in ["git push -u origin feat/x", "git push --force origin feat/x", "git push --force-with-lease origin feat/x",
+                  "git push origin --delete feat/x", "git push -q origin --delete feat/x; git log -1 --format=%h", "git push --all origin"]:
+            self.assertEqual(ev(c), [], c)
+        w.checkout("feat/x", upstream="origin/feat/x"); self.assertEqual(ev("git push --force"), [])
+        w.checkout("main", upstream="origin/main"); self.assertEqual([k for _, k in ev("git push --force")], ["DEFAULT_BRANCH"])
+
+    def test_default_branch_fallback(self):            # Review Focus 3
+        w.drop_origin_head(); self.assertEqual([k for _, k in ev("git push --force origin main")], ["DEFAULT_BRANCH"])
+        w.remove_remote("origin"); self.assertEqual(ev("git push --force origin main"), [])
+
+    def test_branch_delete(self):                      # 감사 rootcause-s1-001·r2-002, 재감사 rootcause-r1-s1-003
+        w.local_branch("pushed", pushed=True, before_session=True); w.local_branch("lonely", pushed=False, before_session=True)
+        w.local_branch("mine", pushed=False, before_session=False); w.local_branch("ahead", pushed=True, before_session=True, extra_unpushed=1)
+        w.local_branch("merged", pushed=True, before_session=True, squash_merged=True, delete_remote=True)      # 스쿼시 병합 후 원격 삭제
+        w.local_branch("merged_more", pushed=True, before_session=True, squash_merged=True, delete_remote=True, extra_unpushed=1)
+        w.local_branch("gone", pushed=True, before_session=True, delete_remote=True)                            # 병합 안 됐는데 원격만 삭제
+        for b in ["pushed", "mine", "merged"]: self.assertEqual(ev(f"git branch -D {b}"), [], b)
+        for b in ["ahead", "lonely", "merged_more", "gone"]: self.assertEqual([k for _, k in ev(f"git branch -D {b}")], ["UNPUSHED"], b)
+        self.assertTrue(w.evaluate_all(w.fmt("git branch -D gone"), "{REPO}")[0].reason().endswith("병합된 브랜치면 `git fetch` 뒤 다시 실행하라"))
+        self.assertEqual(ev("git branch -d lonely"), [])
+
+    def test_reflog_destroyers(self):
+        for c in ["git reflog expire --expire=now --all", "git gc --prune=now", "git prune", "git filter-branch -- --all", "git filter-repo --force"]:
+            self.assertEqual([k for _, k in ev(c)], ["REFLOG"], c)
+
+    def test_allowed_history_ops(self):
+        for c in ["git rebase origin/main", "git commit --amend -m x", "git worktree add ../wt2 -b y", "git update-ref -d refs/heads/y", "git stash pop"]:
+            self.assertEqual(ev(c), [], c)
+        w.make_worktree(); self.assertEqual(ev("git worktree remove {WT}"), [])
+
+    def test_linked_worktree_rm(self):                  # 재감사 rootcause-r1-s1-002
+        WT_FORMS = ["rm -rf {WT}", "git worktree remove {WT}", "git worktree remove --force {WT}"]
+        w.make_worktree()
+        for c in WT_FORMS: self.assertEqual(ev(c), [], c)                                       # 세션 worktree, 깨끗함
+        w.dirty_before_session("{WT}/README.md"); self.assertEqual([k for _, k in ev("rm -rf {WT}")], ["DIRTY"])
+        w2 = World(worktree=True); self.addCleanup(w2.close)
+        e = lambda cmd: [f.kind for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+        for c in WT_FORMS: self.assertEqual(e(c), [PRESERVED], c)                               # 세션 전 ignore 유일본 local.sqlite
+        self.assertIn("worktree 안에 유일본이 있다", w2.evaluate_all(w2.fmt("rm -rf {WT}"), "{REPO}")[0].reason())
+        w2.sh("rm local.sqlite", cwd="{WT}"); self.assertEqual(e("rm -rf {WT}"), [])                # 남은 build/ 는 재생성 산출물
+
+
+class DockerPolicyTest(_WorldCase):
+    def test_container(self):
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd, cwd="{REPO}": [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), cwd)]
+        c = d.container
+        self.assertEqual(e(f"docker exec -u root {c} sh -c 'echo x >> /etc/hosts && rm -rf /var/lib/x'"), [])
+        self.assertEqual(e(f"docker exec {c} rm -rf /app/src"), [("삭제", GIT_TRACKED)])                 # main.py 추적 + probe.ts 세션
+        self.assertEqual(e(f"docker exec {c} rm -rf src"), [("삭제", GIT_TRACKED)])                      # WorkingDir /app
+        self.assertIn(e(f"docker exec {c} sh -c 'rm -rf /app'")[0][1], (PROTECTED_NAME, PRESERVED))         # Destination 자체 = {REPO} 전체
+        self.assertEqual(e(f"docker exec {c} rm -rf /data/x"), [("삭제", "OLD_VOLUME")])
+        self.assertEqual(e(f'docker run --rm -v "$(pwd)":/app {d.image} rm -f /app/notes_presession.txt'), [("삭제", PRESERVED)])
+        if d.compose: self.assertEqual(e(f"docker compose -p {d.project} exec web rm -rf /app/src/probe.ts", cwd="{OUT}"), [])
+
+    def test_volume_ops(self):
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd: [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+        d.make_fresh_volume()
+        self.assertEqual(e(f"docker volume rm {d.volume}"), [("docker 볼륨 삭제", "OLD_VOLUME")])
+        self.assertEqual(e(f"docker volume rm {d.fresh_volume}"), [])
+        self.assertEqual([k for _, k in e(f"docker compose -p {d.project} down -v")], ["OLD_VOLUME"])
+        self.assertEqual(e(f"docker rm -f {d.container}; docker compose -p {d.project} down"), [])
+
+    def test_docker_unavailable_policy(self):
+        ctx = w.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})
+        self.assertEqual([k for _, k in ev("docker volume rm db", ctx=ctx)], [UNRESOLVED])
+        self.assertEqual(ev("docker exec c sh -c 'rm -rf /var/lib/x'", ctx=ctx), [])
 
 
 if __name__ == "__main__":

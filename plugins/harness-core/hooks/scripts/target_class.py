@@ -531,8 +531,10 @@ def git_default_branch(repo: str, remote: str, ctx: Ctx) -> str | None:
     return next((n for n in names if "refs/heads/" + n in have or pre + n in have), None)
 
 
-def git_remote_names(repo: str, ctx: Ctx) -> list[str]:
-    return (_git(repo, ["remote"], ctx) or "").split()
+def git_remote_names(repo: str, ctx: Ctx) -> list[str] | None:
+    # 실패(None)와 원격 없음([])을 구분한다 — 원격 없음만 push 판정 대상이 아니다
+    out = _git(repo, ["remote"], ctx)
+    return None if out is None else out.split()
 
 
 def git_upstream_branch(repo: str, ctx: Ctx) -> str | None:

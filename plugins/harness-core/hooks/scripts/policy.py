@@ -1,20 +1,25 @@
-"""bash-guard 정책: 명령 단위마다 거부 사유(Finding)를 낸다 (spec §3.5). 1부 — 삭제·덮어쓰기·디스크·시스템·권한."""
+"""bash-guard 정책: 명령 단위마다 거부 사유(Finding)를 낸다 (spec §3.5·§3.6). 삭제·덮어쓰기·디스크·시스템·권한·git·Docker."""
 from __future__ import annotations
 
+import glob
 import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from fnmatch import fnmatch
 
 from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
     LexError,
+    Mount,
     Segment,
     Word,
     _cmd_name,
     _drop,
+    _expand,
     _opts,
+    _resolve_dir,
     _strip_all,
     expand,
     literal_args,
@@ -27,12 +32,26 @@ from target_class import (
     PROTECTED_NAME,
     SCRATCH,
     SESSION_NEW,
+    SEVERITY,
     UNRESOLVED,
     Ctx,
+    _git,
     classify,
+    compose_container_id,
+    docker_container_info,
+    docker_volume_created,
+    docker_volumes,
     find_preview,
+    git_branch_info,
+    git_clean_preview,
+    git_default_branch,
     git_dirty,
+    git_extra_items,
+    git_remote_names,
+    git_stash_created,
+    git_upstream_branch,
     in_workspace,
+    is_linked_worktree_root,
     is_scratch_root,
     is_session_change,
     normalize,
@@ -67,9 +86,22 @@ ADV_DIRTY = "먼저 커밋하거나 `git stash` 하라"
 ADV_SYSTEM = "호스트 시스템 경로다. 필요하면 사용자에게 요청하라"
 ADV_DISK = "장치에 쓰지 말고 작업 영역 안의 이미지 파일을 써라. 필요하면 사용자에게 요청하라"
 ADV_WORKSPACE = "작업 영역(프로젝트·임시 폴더) 안으로 범위를 좁혀라"
+ADV_GIT_DIRTY = "먼저 `git stash push -u` 하거나 커밋하라"
+ADV_WORKTREE = "worktree 안에 유일본이 있다. 옮기거나 사용자에게 요청하라"
+ADV_DEFAULT_BRANCH = "기능 브랜치로 push 하고 PR 을 열어라"
+ADV_UNPUSHED = "먼저 push 하거나 태그를 남겨라. 병합된 브랜치면 `git fetch` 뒤 다시 실행하라"
+ADV_VOLUME = "기존 볼륨(데이터)이다. 사용자에게 요청하라"
+# spec §3.5 git 표의 stash·reflog 행에는 대안 문구가 없다 — 아래 둘은 이 구현의 문구
+ADV_STASH = "세션 전 보관본이다. 지워야 하면 사용자에게 요청하라"
+ADV_REFLOG = "reflog 는 실수 복구 경로다. 필요하면 사용자에게 요청하라"
 
 OP_DELETE, OP_OVERWRITE, OP_DISK, OP_SYSTEM, OP_RPERM = "삭제", "덮어쓰기", "디스크 쓰기", "시스템 경로 쓰기", "재귀 권한 변경"
+OP_VOLUME = "docker 볼륨 삭제"
 DELETE, OVERWRITE, MKFS, PERM, RPERM = "delete", "overwrite", "mkfs", "perm", "rperm"
+_PATH_RULES = (DELETE, OVERWRITE, MKFS, PERM, RPERM)
+# 경로별 분류가 아니라 작업 단위로 판정하는 규칙(paths: None = 확정 불가, [] = 저장소 전체·경로 없음)
+GIT_DIRTY, WORKTREE, CLEAN, STASH, BRANCH, PUSH, REFLOG, VOLUMES = (
+    "git-dirty", "worktree", "clean", "stash", "branch", "push", "reflog", "volumes")
 _ALLOWED = {MISSING, SCRATCH, SESSION_NEW, IGNORED_ARTIFACT}
 _XARGS_LABEL = "(xargs 입력)"
 
@@ -94,6 +126,8 @@ class Job:
     paths: list[str] | None
     trailing: bool = False     # 원문 끝 '/' — 링크면 링크 대상 폴더(spec §3.4 정규화 4)
     advice: str = ADV_UNRESOLVED
+    repo: str | None = None    # git 규칙: 명령이 도는 폴더(-C 반영)
+    args: tuple[str, ...] = ()  # git·docker 규칙: 판정에 쓰는 인자
 
 
 # ---- 인자 해석 ----
@@ -345,6 +379,139 @@ def _perm(seg: Segment, ctx: Ctx | None) -> list[Job]:
     return [replace(j, paths=s) for j in jobs if (s := [p for p in j.paths or () if _system(p, True)])]
 
 
+_GIT_GLOBAL_VALUES = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env")
+
+
+def _short(r: list[str]) -> str:
+    return "".join(x[1:] for x in r if x.startswith("-") and not x.startswith("--"))
+
+
+def _git_cmd(seg: Segment) -> tuple[str | None, str, list[Word]] | None:
+    """(명령이 도는 폴더 | None=확정 불가, 하위명령, 하위명령 뒤 인자)."""
+    a, i, repo = seg.argv, 1, seg.cwd
+    while i < len(a) and a[i].literal().startswith("-"):
+        x = a[i].literal()
+        if x == "-C" and i + 1 < len(a):
+            r = _expand(a[i + 1], seg.env, repo)
+            repo = os.path.normpath(r[0]) if r and len(r) == 1 else None
+        elif x.startswith(("--git-dir", "--work-tree")):
+            repo = None   # 작업 트리를 따로 가리키면 판정할 저장소를 확정할 수 없다
+        i += 2 if x in _GIT_GLOBAL_VALUES else 1
+    if i >= len(a):
+        return None
+    return repo, a[i].literal(), a[i + 1:]
+
+
+def _git_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
+    """spec §3.5 git 표의 판정 행. 표 밖의 하위명령(rebase·amend·update-ref·stash pop 등)은 작업 없음 = 허용."""
+    parsed = _git_cmd(seg)
+    if parsed is None:
+        return []
+    repo, sub, rest = parsed
+    r = [w.literal() for w in rest]
+    s = _short(r)
+    k = r.index("--") if "--" in r else len(r)
+    pre, post = rest[:k], rest[k + 1:]
+    words = [w for w in pre if not w.literal().startswith("-")]
+    first = words[0].literal() if words else ""
+    label = " ".join(["git", *literal_args(seg)])
+
+    def job(rule: str, paths: list[str] | tuple[()] | None = (), args: tuple[str, ...] = (), op: str = f"git {sub}") -> Job:
+        return Job(op, rule, repo or label, None if repo is None or paths is None else list(paths), repo=repo, args=args)
+
+    def specs(ws: list[Word]) -> list[str] | None:
+        # pathspec 은 -C 폴더 기준이고, 하나라도 확정할 수 없으면 범위 전체를 모른다
+        out: list[str] = []
+        for w in ws:
+            e = _expand(w, seg.env, repo) if repo else None
+            if e is None:
+                return None
+            out += e
+        return out
+
+    def dirty(ws: list[Word] | None) -> list[Job]:   # ws None = 저장소 전체
+        return [Job(f"git {sub}", GIT_DIRTY, repo or label, None if repo is None else specs(ws or []), repo=repo)]
+
+    force = "--force" in r or "f" in s
+    if sub == "reset":
+        return dirty(None) if "--hard" in r else []
+    if sub == "checkout":
+        paths = post or [w for w in words if repo and os.path.lexists(os.path.join(repo, w.literal()))]
+        return dirty(paths) if paths else dirty(None) if force else []
+    if sub == "switch":
+        return dirty(None) if force or "--discard-changes" in r else []
+    if sub == "restore":
+        if ("--staged" in r or "S" in s) and not ("--worktree" in r or "W" in s):
+            return []
+        paths = post + [w for n, w in enumerate(pre) if not w.literal().startswith("-")
+                        and not (n and pre[n - 1].literal() in ("-s", "--source"))]
+        return dirty(paths) if paths else []
+    if sub == "rm":
+        return dirty(post + words) if force and "--cached" not in r and (post or words) else []
+    if sub == "worktree":
+        return [job(WORKTREE, specs((words[1:] + post)[:1]), op="git worktree")] if first == "remove" else []
+    if sub == "clean":
+        return [] if "--dry-run" in r or "n" in s else [job(CLEAN, args=tuple(r))]
+    if sub == "stash" and first in ("drop", "clear"):
+        ref = words[1].literal() if first == "drop" and len(words) > 1 else "stash@{0}"
+        return [job(STASH, args=(first, f"stash@{{{ref}}}" if ref.isdigit() else ref))]
+    if sub == "branch":
+        delete = "D" in s or (("--delete" in r or "d" in s) and force)
+        if not delete or "--remotes" in r or "r" in s:
+            return []
+        return [replace(job(BRANCH, args=(w.literal(),), op="git branch -D"), label=w.literal()) for w in words]
+    if (sub == "reflog" and first in ("expire", "delete")) or (sub == "gc" and {"--prune=now", "--prune=all"} & set(r)) \
+            or sub in ("prune", "filter-branch", "filter-repo"):
+        return [replace(job(REFLOG), paths=[])]   # 저장소를 몰라도 거부 — 조회가 필요 없다
+    if sub == "push":
+        return [] if "--dry-run" in r or "n" in s else [job(PUSH, args=tuple(r))]
+    return []
+
+
+def _compose_project(g: list[tuple[str, Word]], seg: Segment) -> str:
+    """compose 프로젝트명: -p, 없으면 프로젝트 폴더 이름(compose 정규화: 소문자, [a-z0-9_-] 만). 모르면 ''."""
+    proj = [w.literal() for k, w in g if k in ("-p", "--project-name")]
+    if proj:
+        return proj[-1]
+    pdir = [w for k, w in g if k == "--project-directory"]
+    files = [w for k, w in g if k in ("-f", "--file")]
+    if pdir:
+        d = _resolve_dir(pdir[-1], seg.cwd, seg.env)
+    elif files:
+        f = _expand(files[0], seg.env, seg.cwd)
+        d = os.path.dirname(os.path.normpath(f[0])) if f and len(f) == 1 else None
+    else:
+        d = seg.cwd
+    return re.sub(r"[^a-z0-9_-]", "", os.path.basename(d).lower()) if d else ""
+
+
+def _docker_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
+    """spec §3.5 Docker 표의 볼륨 삭제 행. args = (목록 종류, 값…): names / dangling / compose-project."""
+    a, compose, i = seg.argv, seg.name == "docker-compose", 1
+    g: list[tuple[str, Word]] = []
+    label = " ".join([seg.name, *literal_args(seg)])
+    try:
+        if not compose:
+            i, _ = _opts(a, 1, _DOCKER_GLOBAL)
+            if i < len(a) and a[i].literal() == "compose":
+                compose, i = True, i + 1
+        if compose:
+            i, g = _opts(a, i, _COMPOSE_GLOBAL)
+    except LexError:
+        return [Job(OP_VOLUME, VOLUMES, label, None, advice=ADV_VOLUME)]   # 모르는 전역 옵션 — 보수적으로
+    w = [x.literal() for x in a[i:]]
+    if compose:
+        if w[:1] == ["down"] and any(x == "--volumes" or (x.startswith("-") and not x.startswith("--") and "v" in x)
+                                     for x in w[1:]):
+            return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("compose-project", _compose_project(g, seg)))]
+        return []
+    if w[:1] == ["volume"] and w[1:2] in (["rm"], ["remove"]):
+        return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("names", *[x for x in w[2:] if not x.startswith("-")]))]
+    if w[:2] == ["volume", "prune"] or (w[:2] == ["system", "prune"] and "--volumes" in w):
+        return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("dangling",))]
+    return []
+
+
 HANDLERS: dict[str, Callable[[Segment, Ctx | None], list[Job]]] = {
     "rm": _delete(), "unlink": _delete(),
     "shred": _delete(frozenset({"-n", "--iterations", "-s", "--size", "--random-source"})),
@@ -352,6 +519,7 @@ HANDLERS: dict[str, Callable[[Segment, Ctx | None], list[Job]]] = {
     "cp": _copy, "mv": _copy, "install": _copy, "rsync": _rsync,
     "tee": _tee, "truncate": _truncate, "dd": _dd, "mkfs": _mkfs,
     "chmod": _perm, "chown": _perm, "chgrp": _perm,
+    "git": _git_handler, "docker": _docker_handler, "podman": _docker_handler, "docker-compose": _docker_handler,
 }
 
 
@@ -400,8 +568,36 @@ def _unresolved_advice(detail: str, default: str) -> str:
     return detail.partition(" — ")[2] or default
 
 
-def _judge_path(j: Job, p: str, ctx: Ctx) -> Finding | None:
-    if _system(p, j.rule != DELETE, j.trailing):
+def _dirty(op: str, repo: str, pathspecs: list[str], ctx: Ctx) -> Finding | None:
+    """영향 범위(pathspecs, [] = 저장소 전체)에 이번 세션 것이 아닌 커밋 안 된 변경이 있으면 DIRTY."""
+    dirty = git_dirty(repo, pathspecs, ctx)
+    if dirty is None:   # 조회 실패는 허용이 아니라 확정 불가
+        return Finding(op, repo, UNRESOLVED, ADV_UNRESOLVED)
+    left = [d for d in dirty if not is_session_change(d, ctx)]
+    if not left:
+        return None
+    return Finding(op, left[0] + (f" 외 {len(left) - 1}개" if len(left) > 1 else ""), "DIRTY", ADV_GIT_DIRTY)
+
+
+def _worktree(op: str, wt: str, ctx: Ctx) -> Finding | None:
+    """spec §3.4 워크트리 최상위 규칙: ① 커밋 안 된 변경 ② 미추적·ignore 항목 중 보호 분류."""
+    f = _dirty(op, wt, [], ctx)
+    if f is not None:
+        return f
+    items = git_extra_items(wt, ctx)
+    if items is None:
+        return Finding(op, wt, UNRESOLVED, ADV_UNRESOLVED)
+    for p in items:
+        c = classify(p, ctx)
+        if SEVERITY[c.kind] > 0:
+            advice = _unresolved_advice(c.detail, ADV_UNRESOLVED) if c.kind == UNRESOLVED else ADV_WORKTREE
+            return Finding(op, c.path or p, c.kind, advice)
+    return None
+
+
+def _judge_path(j: Job, p: str, ctx: Ctx, host: bool = True) -> Finding | None:
+    # host False = 컨테이너 바인드 마운트를 호스트 경로로 바꾼 대상 — 시스템 경로 규칙은 호스트 문맥에만(spec §3.6)
+    if host and _system(p, j.rule != DELETE, j.trailing):
         return Finding(OP_SYSTEM, p, "SYSTEM", ADV_SYSTEM)
     if j.rule == PERM:
         return None
@@ -411,6 +607,8 @@ def _judge_path(j: Job, p: str, ctx: Ctx) -> Finding | None:
         return None if j.rule == MKFS and in_workspace(p, ctx) else Finding(OP_DISK, p, "OUTSIDE_WORKSPACE", ADV_DISK)
     c = classify(p, ctx, j.trailing)
     target = c.path or p
+    if c.worktree_root and j.rule == DELETE:
+        return _worktree(j.op, c.worktree_root, ctx)
     if c.kind in _ALLOWED:
         return None
     if c.kind == UNRESOLVED:
@@ -429,91 +627,228 @@ def _judge_path(j: Job, p: str, ctx: Ctx) -> Finding | None:
     return Finding(j.op, target, "DIRTY", ADV_DIRTY)
 
 
-def _judge(jobs: list[Job], ctx: Ctx) -> list[Finding]:
+def _old(t: float, ctx: Ctx) -> bool:
+    return ctx.session_start is None or t < ctx.session_start
+
+
+# ---- 작업 단위 규칙 (git·docker 볼륨) ----
+
+def _j_dirty(j: Job, ctx: Ctx) -> list[Finding]:
+    f = _dirty(j.op, j.repo or j.label, j.paths or [], ctx)
+    return [f] if f else []
+
+
+def _j_worktree(j: Job, ctx: Ctx) -> list[Finding]:
+    wt = normalize(j.paths[0], True) if j.paths else None
+    # worktree 가 아닌 경로·없는 경로는 git 이 스스로 거부한다
+    f = _worktree(j.op, wt, ctx) if wt and is_linked_worktree_root(wt) else None
+    return [f] if f else []
+
+
+def _j_clean(j: Job, ctx: Ctx) -> list[Finding]:
+    items = git_clean_preview(j.repo or "", list(j.args), ctx)
+    if items is None:
+        return [Finding(j.op, j.label, UNRESOLVED, ADV_UNRESOLVED)]
+    d = Job(j.op, DELETE, j.label, items)
+    return next(([f] for p in items if (f := _judge_path(d, p, ctx)) is not None), [])   # 보호 분류인 첫 항목
+
+
+def _j_stash(j: Job, ctx: Ctx) -> list[Finding]:
+    repo, what = j.repo or "", j.args[0]
+    if what == "clear":
+        out = _git(repo, ["stash", "list", "--format=%ct"], ctx)
+        times = None if out is None else [float(x) for x in out.split() if x.isdigit()]
+        target = "refs/stash"
+    else:
+        t = git_stash_created(repo, j.args[1], ctx)
+        times, target = (None if t is None else [t]), j.args[1]
+    if times is None:
+        return [Finding(j.op, target, UNRESOLVED, ADV_UNRESOLVED)]
+    return [Finding(j.op, target, "OLD_STASH", ADV_STASH)] if any(_old(t, ctx) for t in times) else []
+
+
+def _j_branch(j: Job, ctx: Ctx) -> list[Finding]:
+    b = j.args[0]
+    info = git_branch_info(j.repo or "", b, ctx)
+    if info is None:
+        return [Finding(j.op, b, UNRESOLVED, ADV_UNRESOLVED)]
+    if (info.upstream_ref_exists and info.ahead == 0) or info.merged_into_default or info.reachable_elsewhere or (
+            info.created_at is not None and not _old(info.created_at, ctx)):
+        return []
+    return [Finding(j.op, b, "UNPUSHED", ADV_UNPUSHED)]
+
+
+def _j_reflog(j: Job, ctx: Ctx) -> list[Finding]:
+    return [Finding(j.op, j.label, "REFLOG", ADV_REFLOG)]
+
+
+_PUSH_VALUES = ("--repo", "-o", "--push-option", "--receive-pack", "--exec")
+
+
+def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
+    repo = j.repo or ""
+    force = delete = mirror = every = tags = False
+    remote_opt, pos, a, i, opts = None, [], list(j.args), 0, True
+    while i < len(a):
+        x = a[i]
+        i += 1
+        if not opts or not x.startswith("-") or x == "-":
+            pos.append(x)
+        elif x == "--":
+            opts = False
+        elif x.startswith("--"):
+            k, eq, v = x.partition("=")
+            if k in _PUSH_VALUES and not eq and i < len(a):
+                v, i = a[i], i + 1
+            # --force-with-lease·--force-if-includes 는 강제가 아니다(원격이 예상과 같을 때만 덮는다)
+            force, delete, mirror = force or k == "--force", delete or k == "--delete", mirror or k == "--mirror"
+            every, tags = every or k in ("--all", "--branches"), tags or k == "--tags"
+            remote_opt = v if k == "--repo" else remote_opt
+        else:
+            for n, ch in enumerate(x[1:], 1):
+                if "-" + ch in _PUSH_VALUES:
+                    i += 0 if x[n + 1:] else 1
+                    break
+                force, delete = force or ch == "f", delete or ch == "d"
+    cur = (_git(repo, ["symbolic-ref", "-q", "--short", "HEAD"], ctx) or "").strip() or None
+    remote = pos[0] if pos else remote_opt or (
+        cur and (_git(repo, ["config", f"branch.{cur}.remote"], ctx) or "").strip()) or "origin"
+    names = git_remote_names(repo, ctx)
+    if names is None:
+        return [Finding(j.op, j.label, UNRESOLVED, ADV_UNRESOLVED)]
+    if remote not in names:
+        return []   # URL·경로로 push — 원격 저장소 판정 대상 아님(spec §3.5)
+    # 덮어쓰기·삭제가 걸린 목적지들. 글롭은 'refs/heads/' 를 붙인 패턴으로 기본 브랜치와 맞춘다
+    dsts: list[str] = []
+    for spec in pos[1:]:
+        plus = spec.startswith("+")
+        src, colon, dst = spec[plus:].partition(":")
+        if not colon:
+            dst = src
+        if force or plus or delete or (colon and not src):
+            dsts.append((cur or "") if dst == "HEAD" else dst)
+    if not pos[1:] and not mirror and not tags and (force or delete):
+        dsts += ["\0all"] if every else [x for x in (cur, git_upstream_branch(repo, ctx)) if x]
+    if not mirror and not dsts:
+        return []
+    default = git_default_branch(repo, remote, ctx)
+    if default is None:   # 기본 브랜치를 모르면 덮어쓰기 대상이 기본 브랜치인지 확정할 수 없다
+        return [Finding(j.op, j.label, UNRESOLVED, ADV_UNRESOLVED)]
+    full = "refs/heads/" + default
+
+    def hits(d: str) -> bool:
+        if d == "\0all":   # --all·--branches: 로컬에 기본 브랜치가 있으면 그것도 대상
+            return _git(repo, ["rev-parse", "--verify", "-q", full], ctx) is not None
+        pat = d if d.startswith("refs/") else "refs/heads/" + d
+        return fnmatch(full, pat) if "*" in d else pat == full
+
+    if mirror or any(hits(d) for d in dsts):
+        return [Finding(j.op, f"{remote}/{default}", "DEFAULT_BRANCH", ADV_DEFAULT_BRANCH)]
+    return []
+
+
+def _volume(op: str, name: str, target: str, ctx: Ctx) -> Finding | None:
+    t = docker_volume_created(name, ctx)
+    if t is None:   # 데몬 없음 등 — 볼륨 삭제는 확정 불가(spec §3.5 Docker)
+        return Finding(op, target, UNRESOLVED, ADV_VOLUME)
+    return Finding(op, target, "OLD_VOLUME", ADV_VOLUME) if _old(t, ctx) else None
+
+
+def _j_volumes(j: Job, ctx: Ctx) -> list[Finding]:
+    kind, *rest = j.args
+    names = rest if kind == "names" else docker_volumes(kind, rest[0] if rest else None, ctx)
+    if names is None:
+        return [Finding(j.op, j.label, UNRESOLVED, ADV_VOLUME)]
+    return [f for n in names if (f := _volume(j.op, n, n, ctx)) is not None]
+
+
+_RULE_JUDGES: dict[str, Callable[[Job, Ctx], list[Finding]]] = {
+    GIT_DIRTY: _j_dirty, WORKTREE: _j_worktree, CLEAN: _j_clean, STASH: _j_stash, BRANCH: _j_branch,
+    PUSH: _j_push, REFLOG: _j_reflog, VOLUMES: _j_volumes,
+}
+
+
+def _judge(jobs: list[Job], ctx: Ctx, host: bool = True) -> list[Finding]:
     out: list[Finding] = []
     for j in jobs:
         if j.paths is None:
             out.append(Finding(j.op, j.label, UNRESOLVED, j.advice))
-            continue
-        out += [f for p in j.paths if (f := _judge_path(j, p, ctx)) is not None]
+        elif j.rule in _RULE_JUDGES:
+            out += _RULE_JUDGES[j.rule](j, ctx)
+        else:
+            out += [f for p in j.paths if (f := _judge_path(j, p, ctx, host)) is not None]
     return out
+
+
+# ---- 컨테이너 문맥 (spec §3.6) ----
+
+def _mount_of(p: str, mounts: tuple[Mount, ...]) -> Mount | None:
+    best = None
+    for m in mounts:
+        d = m.destination.rstrip("/")
+        # Destination 자체도 대상 — `rm -rf /app` 은 Source 폴더 내용 전체를 지운다
+        if (p == (d or "/") or p.startswith(d + "/")) and (best is None or len(d) > len(best.destination.rstrip("/"))):
+            best = m
+    return best
+
+
+def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
+    """(호스트 경로로 바꾼 바인드 마운트 대상 작업들, 볼륨·확정 불가 판정들). 마운트 밖 = 컨테이너 내부 경로 → 판정 없음."""
+    cx = seg.context
+    workdir: str | None = None
+    if cx.launcher == "run":
+        mounts = cx.mounts
+    elif cx.launcher in ("exec", "compose-exec"):
+        cid = cx.container
+        if cx.launcher == "compose-exec":
+            cid = compose_container_id(cx.container, cx.project_dir, cx.project, ctx) if cx.container and cx.project_dir else None
+        info = docker_container_info(cid, ctx) if cid else None
+        if info is None:
+            return [], []   # 조회 실패 = 컨테이너 안 경로 허용(spec §3.5 Docker)
+        mounts, workdir = info
+    else:
+        # shortcut: compose run 의 마운트는 compose 파일에 있어 인자로 알 수 없다 — 조회 수단이 생기면 run 처럼 사상
+        return [], []
+    cseg = replace(seg, cwd=seg.cwd or workdir or None)   # -w 가 없으면 컨테이너 WorkingDir 기준
+    out: list[Job] = []
+    found: list[Finding] = []
+    for j in _host_jobs(cseg, None):   # ctx None: 호스트 임시 루트·find 미리보기는 컨테이너 경로에 맞지 않다
+        if j.rule not in _PATH_RULES:
+            continue
+        if j.paths is None or mounts is None:   # mounts None = run 의 -v 출발지를 확정할 수 없음
+            if mounts is None or mounts:
+                found.append(Finding(j.op, j.label, UNRESOLVED, j.advice))
+            continue
+        host: list[str] = []
+        for p in j.paths:
+            q = os.path.normpath(p)
+            m = _mount_of(q, mounts)
+            if m is None:
+                continue
+            if m.kind == "volume":
+                if m.source and (f := _volume(j.op, m.source, q, ctx)) is not None:   # source '' = run 의 새 익명 볼륨
+                    found.append(f)
+                continue
+            h = m.source.rstrip("/") + q[len(m.destination.rstrip("/")):]
+            # 와일드카드는 호스트 셸이 컨테이너 경로로 펼치지 못해 글자 그대로 왔다 — 호스트 쪽에서 펼친다
+            host += (sorted(glob.glob(h)) or [h]) if any(c in h for c in "*?[") else [h]
+        if host:
+            out.append(replace(j, paths=host))
+    return out, found
 
 
 def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:
     if seg.context.kind != "host":
-        return []   # 컨테이너 문맥(spec §3.6) — Task 8
+        jobs, found = _container_jobs(seg, ctx)
+        return found + _judge(jobs, ctx, host=False)
     return _judge(_host_jobs(seg, ctx), ctx)
 
 
 def judged_targets(seg: Segment, ctx: Ctx) -> list[str]:
-    if seg.context.kind != "host":
-        return []   # 바인드 마운트의 호스트 경로 — Task 8
-    return [p for j in _host_jobs(seg, ctx) for p in j.paths or ()]
-
-
-# ---- 판정 대상 여부 (spec §3.8 시간 예산 — 조회 없이 명령 모양만) ----
-
-_GIT_GLOBAL_VALUES = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env")
-
-
-def _short(r: list[str]) -> str:
-    return "".join(x[1:] for x in r if x.startswith("-") and not x.startswith("--"))
-
-
-def _git_judged(seg: Segment) -> bool:
-    a, i = literal_args(seg), 0
-    while i < len(a) and a[i].startswith("-"):
-        i += 2 if a[i] in _GIT_GLOBAL_VALUES else 1
-    if i >= len(a):
-        return False
-    sub, r = a[i], a[i + 1:]
-    words = [x for x in r if not x.startswith("-")]
-    first = words[0] if words else ""
-    if sub == "reset":
-        return "--hard" in r
-    if sub == "checkout":
-        return bool({"-f", "--force", "--", "."} & set(r)) or (
-            seg.cwd is not None and any(os.path.lexists(os.path.join(seg.cwd, x)) for x in words))
-    if sub == "switch":
-        return bool({"--force", "--discard-changes"} & set(r)) or "f" in _short(r)
-    if sub == "restore":
-        return not (bool({"--staged", "-S"} & set(r)) and not {"--worktree", "-W"} & set(r))
-    if sub == "rm":
-        return "--force" in r or "f" in _short(r)
-    if sub == "worktree":
-        return first == "remove"
-    if sub == "stash":
-        return first in ("drop", "clear")
-    if sub == "branch":
-        s = _short(r)
-        return "D" in s or (("--delete" in r or "d" in s) and ("--force" in r or "f" in s))
-    if sub == "reflog":
-        return first in ("expire", "delete")
-    if sub == "gc":
-        return any(x.startswith("--prune") for x in r)
-    return sub in ("clean", "push", "prune", "filter-branch", "filter-repo")
-
-
-def _docker_judged(seg: Segment) -> bool:
-    a, compose, i = seg.argv, seg.name == "docker-compose", 1
-    try:
-        if not compose:
-            i, _ = _opts(a, 1, _DOCKER_GLOBAL)
-            if i < len(a) and a[i].literal() == "compose":
-                compose, i = True, i + 1
-        if compose:
-            i, _ = _opts(a, i, _COMPOSE_GLOBAL)
-    except LexError:
-        return True   # 모르는 전역 옵션 — 판정 대상으로(보수적)
-    w = [x.literal() for x in a[i:]]
-    if compose:
-        return w[:1] == ["down"] and any(x == "--volumes" or (x.startswith("-") and not x.startswith("--") and "v" in x)
-                                         for x in w[1:])
-    if w[:1] == ["volume"]:
-        return w[1:2] in (["rm"], ["remove"], ["prune"])
-    return w[:2] == ["system", "prune"] and "--volumes" in w
+    jobs = _container_jobs(seg, ctx)[0] if seg.context.kind != "host" else _host_jobs(seg, ctx)
+    return [p for j in jobs for p in j.paths or ()] + [j.repo for j in jobs if j.repo]
 
 
 def is_judged_op(seg: Segment) -> bool:
-    return bool(_host_jobs(seg, None)) or (seg.name == "git" and _git_judged(seg)) or (
-        seg.name in ("docker", "podman", "docker-compose") and _docker_judged(seg))
+    # 판정 대상 여부(spec §3.8 시간 예산)도 판정과 같은 처리기 표를 본다 — 조회 없이 명령 모양만
+    return bool(_host_jobs(seg, None))
