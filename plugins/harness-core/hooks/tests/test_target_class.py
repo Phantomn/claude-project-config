@@ -46,9 +46,11 @@ from target_class import (
     git_dirty,
     git_extra_items,
     git_ignored,
+    git_remote_names,
     git_stash_created,
     git_toplevel,
     git_tracked,
+    git_upstream_branch,
     in_workspace,
     is_linked_worktree_root,
     is_scratch,
@@ -463,6 +465,52 @@ class DockerTest(_WorldCase):
     def test_docker_unavailable(self):
         ctx = w.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})
         self.assertIsNone(docker_container_info("c", ctx)); self.assertIsNone(docker_volume_created("v", ctx))
+
+
+class QueryRegressionTest(_WorldCase):
+    """Task 6 리뷰 라운드 1 회귀."""
+
+    def test_clean_preview_quiet_is_dropped(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        base = sorted(git_clean_preview(r, ["-fd"], ctx))
+        self.assertIn(w.fmt("{REPO}/notes_presession.txt"), base)
+        for args in (["-fdq"], ["-fd", "--quiet"], ["-q", "-f", "-d"]):
+            self.assertEqual(sorted(git_clean_preview(r, args, ctx)), base, args)
+
+    def test_clean_preview_ff_keeps_nested_repo(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        w.sh("git init -q nested")
+        self.assertIn("Would remove nested/", w.sh("git clean -n -ffd"))
+        self.assertIn(w.fmt("{REPO}/nested"), git_clean_preview(r, ["-ffd"], ctx))
+        self.assertIn(w.fmt("{REPO}/nested"), git_clean_preview(r, ["-f", "-f", "-d"], ctx))
+        self.assertNotIn(w.fmt("{REPO}/nested"), git_clean_preview(r, ["-fd"], ctx))   # -f 하나는 중첩 저장소를 건너뜀
+
+    def test_clean_preview_exclude_value_kept(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        for args in (["-fdx", "-e", "build"], ["-xfebuild", "-d"], ["-fdx", "--exclude", "build"], ["-fdx", "--exclude=build"]):
+            got = git_clean_preview(r, args, ctx)
+            self.assertNotIn(w.fmt("{REPO}/build"), got, args); self.assertIn(w.fmt("{REPO}/local.sqlite"), got, args)
+
+    def test_find_preview_keeps_dotdot_for_normalize(self):
+        ctx = w.ctx(); work = w.fmt("{OUT}/work"); os.makedirs(work)
+        os.symlink(w.fmt("{REPO}/src"), os.path.join(work, "lnk"))
+        got = find_preview(["lnk/..", "-maxdepth", "1", "-name", "README.md", "-delete"], work, ctx)
+        self.assertEqual(got, [os.path.join(work, "lnk/../README.md")])
+        c = classify(got[0], ctx); self.assertEqual((c.kind, c.path), (GIT_TRACKED, w.fmt("{REPO}/README.md")))
+
+    def test_docker_volumes_needs_value(self):
+        self.assertIsNone(docker_volumes("compose-project", None, w.ctx()))
+
+    def test_upstream_branch(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        self.assertEqual(git_upstream_branch(r, ctx), "main")               # push -u 로 설정됨
+        w.checkout("plain"); self.assertIsNone(git_upstream_branch(r, ctx))  # 설정 없음
+        w.checkout("feat", upstream="origin/nothere"); self.assertEqual(git_upstream_branch(r, ctx), "nothere")  # 추적 ref 없음
+
+    def test_remote_names(self):
+        ctx = w.ctx(); r = w.fmt("{REPO}")
+        self.assertEqual(git_remote_names(r, ctx), ["origin"])
+        w.remove_remote("origin"); self.assertEqual(git_remote_names(r, ctx), [])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import os
 import re
@@ -560,18 +561,19 @@ def git_clean_preview(repo: str, clean_args: list[str], ctx: Ctx) -> list[str] |
             value_next = False
         elif a == "--":
             opts = False
-        elif a == "--force":
+        elif a == "--quiet":
             continue
         elif a == "--interactive":
             return None
         elif a == "--exclude":
             value_next = True
         elif not a.startswith("--"):
-            flags, e, val = a[1:].partition("e")   # -e 뒤는 패턴 값이라 f 를 빼면 안 된다
+            flags, e, val = a[1:].partition("e")   # -e 뒤는 패턴 값이라 q 를 빼면 안 된다
             if "i" in flags:
                 return None
             value_next = bool(e) and not val
-            a = "-" + flags.replace("f", "") + e + val
+            # -q 는 목록 출력을 막는다(빈 목록 = 허용 오판). -f·-ff 는 그대로 — -n 이 함께면 지우지 않고, -ff 라야 중첩 저장소가 목록에 든다
+            a = "-" + flags.replace("q", "") + e + val
             if a == "-":
                 continue
         args.append(a)
@@ -707,23 +709,64 @@ def find_preview(args: list[str], cwd: str, ctx: Ctx) -> list[str] | None:
     r = run(["find", *paths, *(["-depth"] if action == "-delete" else []), *expr], ctx, cwd=cwd)
     if r is None or r.returncode != 0:
         return None
-    return [os.path.normpath(os.path.join(cwd, p)) for p in r.stdout.split("\0") if p]
+    # normpath 금지 — 링크 뒤 '..' 를 글자로 지우면 다른 경로가 된다. 해소는 classify 의 normalize(realpath) 가 한다
+    return [os.path.join(cwd, p) for p in r.stdout.split("\0") if p]
+
+
+_DESKTOP_BIND = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/"
+
+
+def _desktop_bind_source(src: str) -> str | None:
+    """Docker Desktop(WSL) 변환 경로 → 원본 경로. 해시는 원본 경로의 sha256 이고, 이 배포판의
+    /mnt/wsl/docker-desktop-bind-mounts/<배포판>/<해시> 에 원본 폴더가 바인드 마운트돼 있다(실측 2026-10-16)."""
+    local = "/mnt/wsl/docker-desktop-bind-mounts/" + src[len(_DESKTOP_BIND):]
+    digest = src.rsplit("/", 1)[1]
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape") as f:
+            rows = [[re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), x) for x in line.split()[2:5]] for line in f]
+    except OSError:
+        return None
+    mine = next((r for r in rows if len(r) == 3 and r[2] == local), None)
+    if mine is None:
+        return None
+    for dev, root, point in rows:
+        # 같은 장치의 다른 마운트에서 원본 위치를 계산하고, sha256 이 맞는 것만 믿는다
+        if dev == mine[0] and point != local and (mine[1] + "/").startswith(root.rstrip("/") + "/"):
+            cand = os.path.join(point, mine[1][len(root.rstrip("/")):].lstrip("/")).rstrip("/") or "/"
+            if hashlib.sha256(cand.encode("utf-8", "surrogateescape")).hexdigest() == digest:
+                return cand
+    return None
 
 
 def docker_container_info(container: str, ctx: Ctx) -> tuple[tuple[Mount, ...], str] | None:
-    r = run(["docker", "inspect", "--type", "container", "--format", "{{json .Mounts}}|{{.Config.WorkingDir}}", container], ctx)
+    r = run(["docker", "inspect", "--type", "container", "--format", "{{json .}}", container], ctx)
     if r is None or r.returncode != 0:
         return None
-    text = r.stdout.rstrip("\n")
     try:
-        raw, end = json.JSONDecoder().raw_decode(text)   # 경로에 '|' 가 있어도 JSON 끝에서 자른다
-    except ValueError:
+        info = json.loads(r.stdout)
+        host = info.get("HostConfig") or {}
+        # 요청한 원본 바인드 경로(목적지별). Docker Desktop(WSL)은 .Mounts 의 Source 를 가끔
+        # /run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/… 로 바꿔 보고한다(실측 간헐) — 그 경로로 사상하면 MISSING 으로 읽힌다
+        asked = {m["Target"]: m["Source"] for m in host.get("Mounts") or () if m.get("Type") == "bind"}
+        for b in host.get("Binds") or ():
+            src, _, rest = b.partition(":")
+            if src.startswith("/"):
+                asked[rest.split(":")[0]] = src
+        mounts = []
+        for m in info.get("Mounts") or ():
+            kind, dst = m.get("Type"), m.get("Destination")
+            if kind == "volume":
+                mounts.append(Mount(m["Name"], dst, kind))
+            elif kind == "bind":
+                src = asked.get(dst, m["Source"])
+                if src.startswith(_DESKTOP_BIND):
+                    src = _desktop_bind_source(src)
+                    if src is None:
+                        return None   # 호스트 경로를 확정할 수 없다
+                mounts.append(Mount(src, dst, kind))
+        return tuple(mounts), info["Config"]["WorkingDir"]
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
-    if text[end:end + 1] != "|" or not isinstance(raw, (list, type(None))):
-        return None
-    mounts = tuple(Mount(m.get("Source") if m.get("Type") == "bind" else m.get("Name"), m.get("Destination"), m.get("Type"))
-                   for m in raw or () if isinstance(m, dict) and m.get("Type") in ("bind", "volume"))
-    return mounts, text[end + 1:]
 
 
 def compose_container_id(service: str, project_dir: str, project: str | None, ctx: Ctx) -> str | None:
@@ -751,6 +794,8 @@ def docker_volume_created(name: str, ctx: Ctx) -> float | None:
 
 
 def docker_volumes(selector: str, value: str | None, ctx: Ctx) -> list[str] | None:
+    if selector == "compose-project" and not value:
+        return None   # 프로젝트를 모르면 목록을 확정할 수 없다 — 빈 목록은 허용으로 읽힌다
     flt = {"dangling": "dangling=true", "compose-project": f"label=com.docker.compose.project={value}"}[selector]
     r = run(["docker", "volume", "ls", "-q", "-f", flt], ctx)
     if r is None or r.returncode != 0:

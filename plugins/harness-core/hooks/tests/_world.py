@@ -283,7 +283,7 @@ class World:
                                "-v", f"{d.volume}:/data", "-w", "/app", "--entrypoint", "sh", img, "-c", "sleep 300")):
                 d.image = img
                 break
-            self._docker("rm", "-f", d.container)
+            self._docker("rm", "-f", "-v", d.container)
         else:
             return None
         spec = {"services": {"web": {"image": img, "pull_policy": "never", "entrypoint": ["sh", "-c", "sleep 300"],
@@ -296,8 +296,9 @@ class World:
     def close(self) -> None:
         name = getattr(self, "_docker_name", None)
         if name:
-            self._docker("compose", "-p", name, "down", "--remove-orphans", cwd=self.out)
-            self._docker("rm", "-f", f"{name}-c")
+            # -v: 이미지가 VOLUME 을 선언하면 익명 볼륨이 생긴다(이름 볼륨·external 은 지우지 않음)
+            self._docker("compose", "-p", name, "down", "-v", "--remove-orphans", cwd=self.out)
+            self._docker("rm", "-f", "-v", f"{name}-c")
             self._docker("volume", "rm", "-f", f"{name}-db", f"{name}-fresh")
             self._docker_name = None
         shutil.rmtree(self.root, ignore_errors=True)
