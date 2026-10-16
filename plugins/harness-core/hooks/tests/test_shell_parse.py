@@ -261,6 +261,21 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertIsNone(parse(c, "/w", {}).error)
             self.assertLess(time.perf_counter() - t0, 1.0, c[:30])
 
+    def test_log_is_bounded_by_writes(self):   # 5-1 NB1: 복원·합류가 "이미 있는 변경"을 다시 적지 않는다 — 로그 길이는 쓰기 수에 선형
+        for n in (30, 250, 1000):
+            for c in ("case a in " + "".join(f"p{i}) v{i}=1;; " for i in range(n)) + "esac; x",
+                      "case a in " + "".join(f"p{i}) v{i}=1;& " for i in range(n)) + "esac; x",
+                      "case a in " + "".join(f"p{i}) cd /usr;; " for i in range(n)) + "esac; x",
+                      "if a; then v=1; " + "".join(f"elif b{i}; then v{i}=1; " for i in range(n)) + "fi; x",
+                      "".join("case a in p) " for _ in range(min(n, 60))) + "v=1" + ";; esac" * min(n, 60) + "; x",
+                      "".join(f"f{i}() {{ v{i}=1; }}; f{i}; " for i in range(n)) + "x",
+                      "".join(f"(v{i}=1); " for i in range(n)) + "x", "".join(f"v{i}=1 | cat; " for i in range(n)) + "x"):
+                t0 = time.perf_counter()
+                r = parse(c, "/w", {"HOME": "/h"})
+                self.assertIsNone(r.error, c[:40])
+                self.assertLessEqual(r.log_len, 6 * n + 20, c[:40])
+                self.assertLess(time.perf_counter() - t0, 2.0, c[:40])
+
     def test_merge_cost_is_not_quadratic_in_variables(self):   # NB9: 합류는 스냅샷 뒤에 바뀐 키만 비교한다
         for c in ("".join(f"while a && b{i}=1; do c || d{i}=2; done\n" for i in range(4000)),
                   "".join(f"t && if a; then f{i}=1; fi || u\n" for i in range(4000)),

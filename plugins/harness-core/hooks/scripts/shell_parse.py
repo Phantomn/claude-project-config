@@ -335,6 +335,7 @@ class Segment:
 class ParseResult:
     segments: list[Segment] = field(default_factory=list)
     error: str | None = None
+    log_len: int = 0   # 최상위 해석의 쓰기 로그 길이(비용 상한 테스트용)
 
 
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
@@ -368,6 +369,7 @@ _CTL = {"then": ("if", ("cond",)), "elif": ("if", ("body",)), "else": ("if", ("b
 _FOR_CAP = 50   # for 목록 항목 상한 — 넘으면 루프 변수 미확정(본문을 항목마다 해석하는 비용)
 _FOR_TOTAL = 500   # 해석 한 번의 반복 총량 — 치환 안 루프 중첩이 곱으로 커지지 않게
 _FOR_CHARS = 200_000   # 해석 한 번에 본문을 다시 해석하는 글자 수 총량 — 반복 수만으로는 본문 길이 비용이 안 묶인다
+_last_log = [0]   # 최상위 해석의 쓰기 로그 길이(ParseResult.log_len)
 _for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
 _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 지나면 루프를 묶지 않는다
 
@@ -1316,7 +1318,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
         _parse(command, cwd, state_env, context, 0, segments)
     except LexError as e:
         return ParseResult([], str(e))
-    return ParseResult(segments)
+    return ParseResult(segments, log_len=_last_log[0])
 
 
 _POS = "\x00pos"   # 스냅샷이 찍힌 쓰기 로그 위치 — 그 뒤에 쓰인 키만 지금 상태와 다를 수 있다(NB9)
@@ -1352,9 +1354,13 @@ class _Env(dict):
         return self._snap
 
     def replace(self, e: Mapping[str, str | None]) -> None:
-        """상태를 e 로 바꾼다. e 가 이 로그의 스냅샷이면 그 뒤에 쓰인 키만 다시 로그에 적는다(차이는 그 안에 있다)."""
+        """상태를 e 로 바꾼다. 다시 적는 키 = e 가 이 로그의 스냅샷이면 그 뒤에 쓰인 키 중 **지금 값과 정말 다른 것**만
+        (같은 키를 매번 다시 적으면 case 분기마다 로그가 두 배로 자란다 — 재검토 3 NB1). 스냅샷이 아니면 둘의 모든 키."""
         pos = e.get(_POS)
-        changed = self.log[pos:] if pos is not None else [*self, *e]
+        if pos is None:
+            changed = [*self, *e]
+        else:
+            changed = [k for k in dict.fromkeys(self.log[pos:]) if (k in self) != (k in e) or (k in e and self[k] != e[k])]
         super().clear()
         super().update(e)
         self.log.extend(changed)
@@ -1936,6 +1942,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     end_list()
     if stack:
         raise LexError("닫히지 않은 그룹")
+    if depth == 0:
+        _last_log[0] = len(state_env.log)
     env = dict(state_env)
     env.pop(_POS, None)   # 다른 해석의 로그 위치는 의미가 없다
     return st["cwd"], env
