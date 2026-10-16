@@ -50,6 +50,12 @@ if printf '%s' "$INPUT" | grep -qE '(grep|rg|ug|ag|ack|awk|sed|cat|head|tail|nl|
     fi
 fi  # HARNESS_CODEREAD_GUARD
 
+# --- 현행 판정 OLD (bash-guard spec §3.9) ---------------------------------------
+# 아래 본문은 변경 전 그대로다. $(old_logic) 서브셸 안에서 돌므로 본문의 exit 는 서브셸만 끝낸다.
+# ★set -e 를 다시 켠다 — bash 는 명령 치환 서브셸에서 -e 를 끄는데, 변경 전에는 본문 실패(예: rm_targets
+#   의 grep 무매치 + pipefail)가 무출력 종료였다. 끄면 그 경우 아래 allow 로 흘러 출력이 달라진다.
+old_logic() {
+set -e
 # --- 재귀 삭제: **경로**로 판정한다 (2026-08-05) ------------------------------
 # ★왜 명령 형태가 아니라 경로인가.
 #   이전 판은 `rm -fr` 리터럴 하나만 막았다 — 즉 `rm -rf <무엇이든>` 은 블랙리스트를 통과해
@@ -177,3 +183,17 @@ done
 # --- 블랙리스트에 없으면 자동 승인 ---
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'
 exit 0
+}
+
+# --- bash-guard: 모드(off|shadow|on)·새 판정은 bash_guard.py 가 정한다 -----------------
+# off·shadow 는 OLD 를 바이트 그대로 낸다. 파이썬이 안 뜨거나 출력이 비면 OLD — 스위치가 없을 때 변경 전과 같다.
+# `|| …` 로 받으면 bash 가 그 안 전체에서 -e 를 무시해 old_logic 의 set -e 가 죽는다 — set +e 로 받는다.
+set +e
+OLD=$(old_logic)
+OLD_RC=$?
+set -e
+OUT=$(printf '%s' "$INPUT" | python3 "$(dirname "$0")/bash_guard.py" --old "$OLD" 2>/dev/null) || OUT=""
+if [ -n "$OUT" ]; then printf '%s\n' "$OUT"; exit 0; fi
+if [ -n "$OLD" ]; then printf '%s\n' "$OLD"; fi
+# 변경 전 본문이 실패로 끝났으면(무출력) 그 종료 코드도 그대로 돌려준다.
+exit "$OLD_RC"
