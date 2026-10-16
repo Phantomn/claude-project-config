@@ -408,10 +408,28 @@ _GIT_LONGS: dict[str, frozenset[str]] = {k: frozenset(v.split() + ["help"]) for 
 }.items()}
 _GIT_JUDGED_SUBS = {"reset", "checkout", "switch", "restore", "rm", "worktree", "clean", "stash", "branch", "reflog", "gc",
                     "prune", "filter-branch", "filter-repo", "push"}
-# git 은 내장 명령과 같은 이름의 alias 를 무시한다 — 흔한 내장 명령은 alias 조회를 건너뛴다
-_GIT_BUILTINS = {"status", "log", "diff", "show", "add", "commit", "fetch", "pull", "rev-parse", "ls-files", "config", "remote",
-                 "tag", "merge", "rebase", "cherry-pick", "describe", "blame", "grep", "init", "clone", "rev-list",
-                 "for-each-ref", "symbolic-ref", "update-ref", "cat-file", "apply", "am", "bisect", "revert", "shortlog"}
+# git 은 내장 명령과 같은 이름의 alias 를 무시한다 — 내장 명령은 alias 조회를 건너뛴다.
+# 출처: `git --list-cmds=builtins`(git 2.43, 2026-10-16 실측)
+_GIT_BUILTINS = frozenset((
+    "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bugreport", "bundle", "cat-file",
+    "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout--worker",
+    "checkout-index", "cherry", "cherry-pick", "clean", "clone", "column", "commit", "commit-graph", "commit-tree",
+    "config", "count-objects", "credential", "credential-cache", "credential-cache--daemon", "credential-store",
+    "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-tree", "difftool", "fast-export",
+    "fast-import", "fetch", "fetch-pack", "fmt-merge-msg", "for-each-ref", "for-each-repo", "format-patch", "fsck",
+    "fsck-objects", "fsmonitor--daemon", "gc", "get-tar-commit-id", "grep", "hash-object", "help", "hook",
+    "index-pack", "init", "init-db", "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo",
+    "mailsplit", "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-ours", "merge-recursive",
+    "merge-recursive-ours", "merge-recursive-theirs", "merge-subtree", "merge-tree", "mktag", "mktree",
+    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-redundant", "pack-refs", "patch-id",
+    "pickaxe", "prune", "prune-packed", "pull", "push", "range-diff", "read-tree", "rebase", "receive-pack",
+    "reflog", "remote", "remote-ext", "remote-fd", "repack", "replace", "rerere", "reset", "restore", "rev-list",
+    "rev-parse", "revert", "rm", "send-pack", "shortlog", "show", "show-branch", "show-index", "show-ref",
+    "sparse-checkout", "stage", "stash", "status", "stripspace", "submodule--helper", "switch", "symbolic-ref",
+    "tag", "unpack-file", "unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive",
+    "upload-archive--writer", "upload-pack", "var", "verify-commit", "verify-pack", "verify-tag", "version",
+    "whatchanged", "worktree", "write-tree",
+))
 
 
 def _short(r: list[str]) -> str:
@@ -878,18 +896,29 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
         return [], []
     may_mount = mounts is None or partial or bool(mounts)
 
-    def place(p: str) -> tuple[str, str]:
-        """('out'|'unknown'|'volume'|'bind', 볼륨 이름 | 호스트 경로)."""
+    def place(p: str, deep: bool = False) -> list[tuple[str, str, str]]:
+        """[('out'|'unknown'|'volume'|'bind', 볼륨 이름 | 호스트 경로, 컨테이너 경로)].
+
+        deep: 아래를 모두 훑는 작업(find·재귀 삭제·재귀 권한)이라 p 아래에 있는 마운트 Destination 도 대상 —
+        `find /`·`rm -rf /srv`(마운트 /srv/w)는 마운트 지점 안으로 내려가 호스트 원본을 지운다."""
         q = os.path.normpath(p)
         m = _mount_of(q, mounts or ())
-        if m is None:
-            return ("unknown" if mounts is None or partial else "out"), q
-        if m.kind == "volume":
-            return "volume", m.source
-        return "bind", m.source.rstrip("/") + q[len(m.destination.rstrip("/")):]
+        res: list[tuple[str, str, str]] = []
+        if m is not None:
+            res.append(("volume", m.source, q) if m.kind == "volume" else
+                       ("bind", m.source.rstrip("/") + q[len(m.destination.rstrip("/")):], q))
+        elif mounts is None or partial:
+            res.append(("unknown", q, q))
+        if deep:
+            pre = q.rstrip("/") + "/"
+            for n in mounts or ():
+                d = n.destination.rstrip("/")
+                if d.startswith(pre):
+                    res.append(("volume" if n.kind == "volume" else "bind", n.source, d))
+        return res or [("out", q, q)]
 
     def bind_exists(p: str) -> bool:
-        k, h = place(p)
+        k, h, _ = place(p)[0]
         return k == "bind" and os.path.lexists(h)
 
     cseg = replace(seg, cwd=seg.cwd or workdir or None)   # -w 가 없으면 컨테이너 WorkingDir 기준
@@ -897,21 +926,22 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
     if seg.name == "git":
         jobs = _git_handler(cseg, None, bind_exists)   # ctx None: 사용자 alias 조회는 컨테이너 설정이라 하지 않는다
     elif seg.name == "find":
-        jobs, out = _container_find(cseg, ctx, place)
+        jobs, out, found = _container_find(cseg, ctx, place)
     else:   # ctx None: 호스트 임시 루트 규칙은 컨테이너 경로에 맞지 않다
         jobs = [j for j in _host_jobs(cseg, None) if j.rule in _PATH_RULES]
-    found: list[Finding] = []
+    if seg.name != "find":
+        found = []
     for j in jobs:
         unresolved = Finding(j.op, j.label, UNRESOLVED, j.advice)
         if j.rule not in _PATH_RULES:   # git: 저장소가 바인드 마운트 아래면 호스트 저장소로 같은 규칙(spec §3.5 Docker)
-            kind, host_repo = place(j.repo) if j.repo else ("unknown", "")
+            kind, host_repo, _ = place(j.repo)[0] if j.repo else ("unknown", "", "")
             if kind == "unknown" and may_mount:
                 found.append(unresolved)
             if kind != "bind":
                 continue   # 마운트 밖·볼륨 안 저장소는 판정 없음
             paths = j.paths
             if paths:
-                paths = [h for k, h in map(place, paths) if k == "bind"]
+                paths = [h for k, h, _ in (place(x)[0] for x in paths) if k == "bind"]
                 if not paths:
                     continue   # 경로가 모두 마운트 밖 — [] 로 두면 저장소 전체로 읽힌다
             out.append(replace(j, repo=host_repo, paths=paths, label=host_repo if j.label == j.repo else j.label))
@@ -921,12 +951,12 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
                 found.append(unresolved)
             continue
         host: list[str] = []
-        for p in j.paths:
-            kind, v = place(p)
+        deep = _recursive(cseg, j)
+        for kind, v, t in (x for p in j.paths for x in place(p, deep)):
             if kind == "unknown":
                 found.append(replace(unresolved, target=v))
             elif kind == "volume":
-                if v and (f := _volume(j.op, v, os.path.normpath(p), ctx)) is not None:   # '' = run 의 새 익명 볼륨
+                if v and (f := _volume(j.op, v, t, ctx)) is not None:   # '' = run 의 새 익명 볼륨
                     found.append(f)
             elif kind == "bind":
                 # 와일드카드는 호스트 셸이 컨테이너 경로로 펼치지 못해 글자 그대로 왔다 — 호스트 쪽에서 펼친다
@@ -936,29 +966,45 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
     return out, found
 
 
-def _container_find(cseg: Segment, ctx: Ctx, place: Callable[[str], tuple[str, str]]) -> tuple[list[Job], list[Job]]:
-    """컨테이너 안 find 삭제: 시작 경로를 사상해 바인드 마운트 아래만 호스트에서 미리보기(spec §3.6).
-    (컨테이너 경로 작업들, 호스트 경로 작업들)."""
+def _recursive(seg: Segment, j: Job) -> bool:
+    """폴더 아래를 모두 훑는 작업인가 — 재귀 권한, rm -r, rsync --delete*."""
+    if j.rule == RPERM:
+        return True
+    if j.rule != DELETE or seg.name not in ("rm", "rsync"):
+        return False
+    try:
+        return seg.name == "rsync" or bool(_args(seg)[0] & {"-r", "-R", "--recursive"})
+    except _BadOption:
+        return True
+
+
+def _container_find(cseg: Segment, ctx: Ctx, place: Callable[..., list[tuple[str, str, str]]]
+                    ) -> tuple[list[Job], list[Job], list[Finding]]:
+    """컨테이너 안 find 삭제: 시작 경로(와 그 아래 마운트)를 사상해 바인드 원본은 호스트에서 미리보기(spec §3.6).
+    (확정 불가 작업들, 호스트 경로 작업들, 볼륨·모름 판정들)."""
     jobs = _find(cseg, None)
     if not jobs:
-        return [], []
+        return [], [], []
     a = literal_args(cseg)
     n = next((i for i, x in enumerate(a) if x.startswith("-") or x in ("!", "(", ")")), len(a))
     starts = [expand(w, cseg) for w in cseg.argv[1:1 + n]] if n else [[cseg.cwd] if cseg.cwd else None]
     if None in starts:
-        return jobs, []   # 시작 경로를 확정할 수 없다 — paths None 그대로(마운트가 있으면 확정 불가)
-    out: list[Job] = []
+        return jobs, [], []   # 시작 경로를 확정할 수 없다 — paths None 그대로(마운트가 있으면 확정 불가)
+    j = jobs[0]
     hosts: list[str] = []
-    for p in (x for s in starts for x in s):   # type: ignore[union-attr]
-        kind, v = place(p)
+    found: list[Finding] = []
+    for kind, v, t in (x for s in starts for p in s for x in place(p, True)):   # type: ignore[union-attr]
         if kind == "bind":
             hosts.append(v)
-        elif kind != "out":   # 볼륨·모름은 시작 경로 자체를 경로 작업으로 넘겨 같은 규칙을 받게 한다
-            out.append(replace(jobs[0], paths=[p], trailing=True))
-    if hosts:
-        hseg = replace(cseg, argv=[cseg.argv[0], *[Word((Part(h, "'"),)) for h in hosts], *cseg.argv[1 + n:]], cwd="/")
-        return out, _find(hseg, ctx)
-    return out, []
+        elif kind == "volume":
+            if v and (f := _volume(j.op, v, t, ctx)) is not None:
+                found.append(f)
+        elif kind == "unknown":
+            found.append(Finding(j.op, t, UNRESOLVED, j.advice))
+    if not hosts:
+        return [], [], found
+    hseg = replace(cseg, argv=[cseg.argv[0], *[Word((Part(h, "'"),)) for h in hosts], *cseg.argv[1 + n:]], cwd="/")
+    return [], _find(hseg, ctx), found
 
 
 def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:

@@ -196,6 +196,8 @@ class GitReviewFixTest(_WorldCase):
         self.assertEqual([k for _, k in ev("git discard .")], ["DIRTY"])
         self.assertEqual([k for _, k in ev("git -c alias.x='!sh -c true' x")], [UNRESOLVED])
         self.assertEqual(ev("git -c alias.st=status st; git status"), [])
+        w._git("config", "alias.mv", "reset --hard")                         # 리뷰 8-2(라운드 2): 내장 명령은 alias 로 가려지지 않는다
+        self.assertEqual(ev("git mv a b"), [])
 
     def test_default_branch_guess(self):               # 리뷰 8-5: 기본 브랜치를 모르면 main·master 로 추정
         w.drop_origin_head(); w._git("branch", "-m", "main", "trunk"); w._git("update-ref", "-d", "refs/remotes/origin/main")
@@ -230,6 +232,25 @@ class DockerPolicyTest(_WorldCase):
         self.assertEqual(e(f"docker exec {c} find /app -name '*.py' -delete"), [("삭제", GIT_TRACKED)])
         self.assertEqual(e(f"docker exec {c} find . -name '*.o' -delete"), [])
         self.assertEqual(e(f"docker exec {c} find /data -delete"), [("삭제", "OLD_VOLUME")])
+
+    def test_container_mount_ancestor(self):           # 리뷰 8-1(라운드 2): 마운트 Destination 의 조상을 훑는 재귀 작업
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd: [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+        k = lambda cmd: sorted({f.kind for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")})
+        c = d.container
+        for cmd in [f"docker exec {c} find / -name '*.py' -delete", f"docker exec -w / {c} find . -name '*.py' -delete",
+                    f"docker exec {c} find /tmp/.. -name '*.py' -delete"]:
+            self.assertEqual(k(cmd), [GIT_TRACKED, "OLD_VOLUME"], cmd)                        # /app 바인드 = {REPO}, /data 볼륨
+        run = f"docker run --rm -v {{REPO}}:/srv/w {d.image}"
+        self.assertEqual(e(f"{run} find /srv -name '*.py' -delete"), [("삭제", GIT_TRACKED)])
+        self.assertIn(e(f"{run} rm -rf /srv")[0][1], (PROTECTED_NAME, PRESERVED))
+        self.assertEqual(e(f"{run} chmod -R 777 /srv"), [])                                       # {REPO} 는 작업 영역 안
+        self.assertEqual(e(f"docker run --rm -v {{HOME}}/data:/srv/w {d.image} chmod -R 777 /srv"), [("재귀 권한 변경", "OUTSIDE_WORKSPACE")])
+        self.assertEqual(e(f"{run} rm -rf /tmp /srv2; {run} find /srv2 -delete; {run} rm /srv"), [])
+        self.assertEqual(e(f"{run} find /tmp -name '*.py' -delete"), [])
+        self.assertIn("OLD_VOLUME", k(f"docker exec {c} rm -rf /"))                                # /data 볼륨도 포함
+        self.assertIn(PROTECTED_NAME, k(f"docker exec {c} rm -rf /"))
 
     def test_compose_project_env(self):                # 리뷰 8-7
         w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
