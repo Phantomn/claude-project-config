@@ -13,6 +13,7 @@ from shell_parse import (
     _DOCKER_GLOBAL,
     LexError,
     Mount,
+    Part,
     Segment,
     Word,
     _cmd_name,
@@ -91,9 +92,10 @@ ADV_WORKTREE = "worktree 안에 유일본이 있다. 옮기거나 사용자에�
 ADV_DEFAULT_BRANCH = "기능 브랜치로 push 하고 PR 을 열어라"
 ADV_UNPUSHED = "먼저 push 하거나 태그를 남겨라. 병합된 브랜치면 `git fetch` 뒤 다시 실행하라"
 ADV_VOLUME = "기존 볼륨(데이터)이다. 사용자에게 요청하라"
-# spec §3.5 git 표의 stash·reflog 행에는 대안 문구가 없다 — 아래 둘은 이 구현의 문구
+# spec §3.5 git 표의 stash·reflog 행과 기본 브랜치 추정에는 대안 문구가 없다 — 아래 셋은 이 구현의 문구
 ADV_STASH = "세션 전 보관본이다. 지워야 하면 사용자에게 요청하라"
 ADV_REFLOG = "reflog 는 실수 복구 경로다. 필요하면 사용자에게 요청하라"
+ADV_DEFAULT_GUESS = "기본 브랜치(main·master 로 추정)에 강제·삭제 push 는 거부된다. 정말 필요하면 사용자에게 요청하라"
 
 OP_DELETE, OP_OVERWRITE, OP_DISK, OP_SYSTEM, OP_RPERM = "삭제", "덮어쓰기", "디스크 쓰기", "시스템 경로 쓰기", "재귀 권한 변경"
 OP_VOLUME = "docker 볼륨 삭제"
@@ -381,40 +383,104 @@ def _perm(seg: Segment, ctx: Ctx | None) -> list[Job]:
 
 _GIT_GLOBAL_VALUES = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env")
 
+# 판정 행 하위명령의 긴 옵션 전부(`git <sub> -h`, git 2.43 실측). git 은 모호하지 않은 접두와 `--no-` 부정을 받으므로
+# 이 표로 정식 이름으로 풀고, 모호하거나 표에 없으면 판정할 수 없다(git 도 모르는 옵션은 거부한다)
+_GIT_LONGS: dict[str, frozenset[str]] = {k: frozenset(v.split() + ["help"]) for k, v in {
+    "push": "all atomic branches delete dry-run exec follow-tags force force-if-includes force-with-lease mirror porcelain "
+            "progress prune push-option quiet receive-pack recurse-submodules repo set-upstream signed tags thin verbose "
+            "ipv4 ipv6 no-verify verify",
+    "branch": "abbrev color column copy create-reflog delete edit-description force format ignore-case list move omit-empty "
+              "points-at quiet recurse-submodules set-upstream-to show-current sort track unset-upstream verbose all "
+              "contains merged no-contains no-merged remotes",
+    "reset": "intent-to-add patch pathspec-file-nul pathspec-from-file quiet recurse-submodules hard keep merge mixed "
+             "no-refresh refresh soft",
+    "checkout": "conflict detach force guess ignore-other-worktrees ignore-skip-worktree-bits merge orphan overlay "
+                "overwrite-ignore patch pathspec-file-nul pathspec-from-file progress quiet recurse-submodules track ours theirs",
+    "switch": "conflict create detach discard-changes force force-create guess ignore-other-worktrees merge orphan "
+              "overwrite-ignore progress quiet recurse-submodules track",
+    "restore": "conflict ignore-skip-worktree-bits ignore-unmerged merge overlay patch pathspec-file-nul pathspec-from-file "
+               "progress quiet recurse-submodules source staged worktree ours theirs",
+    "rm": "cached dry-run force ignore-unmatch pathspec-file-nul pathspec-from-file quiet sparse",
+    "clean": "dry-run force interactive quiet exclude",
+    "gc": "aggressive auto cruft force keep-largest-pack prune quiet max-cruft-size",
+    "worktree remove": "force",
+    "stash drop": "quiet", "stash clear": "quiet",
+}.items()}
+_GIT_JUDGED_SUBS = {"reset", "checkout", "switch", "restore", "rm", "worktree", "clean", "stash", "branch", "reflog", "gc",
+                    "prune", "filter-branch", "filter-repo", "push"}
+# git 은 내장 명령과 같은 이름의 alias 를 무시한다 — 흔한 내장 명령은 alias 조회를 건너뛴다
+_GIT_BUILTINS = {"status", "log", "diff", "show", "add", "commit", "fetch", "pull", "rev-parse", "ls-files", "config", "remote",
+                 "tag", "merge", "rebase", "cherry-pick", "describe", "blame", "grep", "init", "clone", "rev-list",
+                 "for-each-ref", "symbolic-ref", "update-ref", "cat-file", "apply", "am", "bisect", "revert", "shortlog"}
+
 
 def _short(r: list[str]) -> str:
     return "".join(x[1:] for x in r if x.startswith("-") and not x.startswith("--"))
 
 
-def _git_cmd(seg: Segment) -> tuple[str | None, str, list[Word]] | None:
-    """(명령이 도는 폴더 | None=확정 불가, 하위명령, 하위명령 뒤 인자)."""
+def _git_long(x: str, names: frozenset[str]) -> str:
+    k, eq, v = x[2:].partition("=")
+    cand = names | {"no-" + n for n in names}
+    if k not in cand:   # 정확한 이름이 접두보다 우선(`--force` ≠ `--force-with-lease`)
+        hit = [c for c in cand if c.startswith(k)] if k else []
+        if len(hit) != 1:
+            raise _BadOption(x)
+        k = hit[0]
+    return "--" + k + eq + v
+
+
+def _git_cmd(seg: Segment) -> tuple[str | None, str, list[Word], dict[str, str]] | None:
+    """(명령이 도는 폴더 | None=확정 불가, 하위명령, 하위명령 뒤 인자, 같은 줄 `-c alias.X=값`)."""
     a, i, repo = seg.argv, 1, seg.cwd
+    aliases: dict[str, str] = {}
     while i < len(a) and a[i].literal().startswith("-"):
         x = a[i].literal()
         if x == "-C" and i + 1 < len(a):
             r = _expand(a[i + 1], seg.env, repo)
             repo = os.path.normpath(r[0]) if r and len(r) == 1 else None
+        elif x == "-c" and i + 1 < len(a):
+            key, _, val = a[i + 1].literal().partition("=")
+            if key.lower().startswith("alias."):
+                aliases[key[6:].lower()] = val
         elif x.startswith(("--git-dir", "--work-tree")):
             repo = None   # 작업 트리를 따로 가리키면 판정할 저장소를 확정할 수 없다
         i += 2 if x in _GIT_GLOBAL_VALUES else 1
     if i >= len(a):
         return None
-    return repo, a[i].literal(), a[i + 1:]
+    return repo, a[i].literal(), a[i + 1:], aliases
 
 
-def _git_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
-    """spec §3.5 git 표의 판정 행. 표 밖의 하위명령(rebase·amend·update-ref·stash pop 등)은 작업 없음 = 허용."""
+def _git_handler(seg: Segment, ctx: Ctx | None, exists: Callable[[str], bool] = os.path.lexists) -> list[Job]:
+    """spec §3.5 git 표의 판정 행. 표 밖의 하위명령(rebase·amend·update-ref·stash pop 등)은 작업 없음 = 허용.
+
+    exists: 경로 인자가 실재하는지(checkout 의 경로/브랜치 구분) — 컨테이너 문맥은 호스트로 사상해 본다."""
     parsed = _git_cmd(seg)
     if parsed is None:
         return []
-    repo, sub, rest = parsed
+    repo, sub, rest, aliases = parsed
+    label = " ".join(["git", *literal_args(seg)])
+    if sub not in _GIT_JUDGED_SUBS and sub not in _GIT_BUILTINS:
+        val = aliases.get(sub.lower())
+        if val is None and ctx is not None and repo:
+            val = (_git(repo, ["config", "--get", f"alias.{sub}"], ctx) or "").strip() or None
+        if val is not None:
+            if val.startswith("!"):   # 셸 alias — 무엇을 실행할지 해석하지 않는다
+                return [Job(f"git {sub}", GIT_DIRTY, label, None, repo=repo)]
+            head = val.split()
+            # 한 단계만 펼친다(alias 의 alias 는 git 도 따로 푼다 — 여기서는 표 밖이면 허용)
+            sub, rest = (head[0] if head else ""), [Word((Part(x, "'"),)) for x in head[1:]] + rest
     r = [w.literal() for w in rest]
-    s = _short(r)
     k = r.index("--") if "--" in r else len(r)
     pre, post = rest[:k], rest[k + 1:]
     words = [w for w in pre if not w.literal().startswith("-")]
     first = words[0].literal() if words else ""
-    label = " ".join(["git", *literal_args(seg)])
+    names = _GIT_LONGS.get(f"{sub} {first}", _GIT_LONGS.get(sub))
+    if names is not None:
+        try:
+            r = [_git_long(x, names) if n < k and x.startswith("--") and x != "--" else x for n, x in enumerate(r)]
+        except _BadOption:
+            return [Job(f"git {sub}", GIT_DIRTY, label, None, repo=repo)]
+    s = _short(r[:k])
 
     def job(rule: str, paths: list[str] | tuple[()] | None = (), args: tuple[str, ...] = (), op: str = f"git {sub}") -> Job:
         return Job(op, rule, repo or label, None if repo is None or paths is None else list(paths), repo=repo, args=args)
@@ -436,15 +502,14 @@ def _git_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
     if sub == "reset":
         return dirty(None) if "--hard" in r else []
     if sub == "checkout":
-        paths = post or [w for w in words if repo and os.path.lexists(os.path.join(repo, w.literal()))]
+        paths = post or [w for w in words if repo and exists(os.path.join(repo, w.literal()))]
         return dirty(paths) if paths else dirty(None) if force else []
     if sub == "switch":
         return dirty(None) if force or "--discard-changes" in r else []
     if sub == "restore":
         if ("--staged" in r or "S" in s) and not ("--worktree" in r or "W" in s):
             return []
-        paths = post + [w for n, w in enumerate(pre) if not w.literal().startswith("-")
-                        and not (n and pre[n - 1].literal() in ("-s", "--source"))]
+        paths = post + [w for n, w in enumerate(pre) if not r[n].startswith("-") and not (n and r[n - 1] in ("-s", "--source"))]
         return dirty(paths) if paths else []
     if sub == "rm":
         return dirty(post + words) if force and "--cached" not in r and (post or words) else []
@@ -468,11 +533,13 @@ def _git_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
     return []
 
 
-def _compose_project(g: list[tuple[str, Word]], seg: Segment) -> str:
-    """compose 프로젝트명: -p, 없으면 프로젝트 폴더 이름(compose 정규화: 소문자, [a-z0-9_-] 만). 모르면 ''."""
+def _compose_project(g: list[tuple[str, Word]], seg: Segment, ctx: Ctx | None) -> str:
+    """compose 프로젝트명: -p, COMPOSE_PROJECT_NAME(줄 안 export 또는 실행 env), 없으면 프로젝트 폴더 이름
+    (compose 정규화: 소문자, [a-z0-9_-] 만). 모르면 ''."""
     proj = [w.literal() for k, w in g if k in ("-p", "--project-name")]
-    if proj:
-        return proj[-1]
+    env = seg.env.get("COMPOSE_PROJECT_NAME") or (ctx.environ.get("COMPOSE_PROJECT_NAME") if ctx else None)
+    if proj or env:
+        return proj[-1] if proj else env  # type: ignore[return-value]
     pdir = [w for k, w in g if k == "--project-directory"]
     files = [w for k, w in g if k in ("-f", "--file")]
     if pdir:
@@ -503,7 +570,7 @@ def _docker_handler(seg: Segment, ctx: Ctx | None) -> list[Job]:
     if compose:
         if w[:1] == ["down"] and any(x == "--volumes" or (x.startswith("-") and not x.startswith("--") and "v" in x)
                                      for x in w[1:]):
-            return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("compose-project", _compose_project(g, seg)))]
+            return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("compose-project", _compose_project(g, seg, ctx)))]
         return []
     if w[:1] == ["volume"] and w[1:2] in (["rm"], ["remove"]):
         return [Job(OP_VOLUME, VOLUMES, label, [], advice=ADV_VOLUME, args=("names", *[x for x in w[2:] if not x.startswith("-")]))]
@@ -732,19 +799,18 @@ def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
     if not mirror and not dsts:
         return []
     default = git_default_branch(repo, remote, ctx)
-    if default is None:   # 기본 브랜치를 모르면 덮어쓰기 대상이 기본 브랜치인지 확정할 수 없다
-        return [Finding(j.op, j.label, UNRESOLVED, ADV_UNRESOLVED)]
-    full = "refs/heads/" + default
+    # spec §3.5: 기본 브랜치 = origin/HEAD, 없으면 main·master. 그것도 확정 못 하면 두 이름 모두를 기본 브랜치로 본다
+    defaults, advice = ([default], ADV_DEFAULT_BRANCH) if default else (["main", "master"], ADV_DEFAULT_GUESS)
 
-    def hits(d: str) -> bool:
+    def hits(d: str, b: str) -> bool:
+        full = "refs/heads/" + b
         if d == "\0all":   # --all·--branches: 로컬에 기본 브랜치가 있으면 그것도 대상
             return _git(repo, ["rev-parse", "--verify", "-q", full], ctx) is not None
         pat = d if d.startswith("refs/") else "refs/heads/" + d
         return fnmatch(full, pat) if "*" in d else pat == full
 
-    if mirror or any(hits(d) for d in dsts):
-        return [Finding(j.op, f"{remote}/{default}", "DEFAULT_BRANCH", ADV_DEFAULT_BRANCH)]
-    return []
+    hit = defaults[0] if mirror else next((b for b in defaults for d in dsts if hits(d, b)), None)
+    return [Finding(j.op, f"{remote}/{hit}", "DEFAULT_BRANCH", advice)] if hit else []
 
 
 def _volume(op: str, name: str, target: str, ctx: Ctx) -> Finding | None:
@@ -796,8 +862,10 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
     """(호스트 경로로 바꾼 바인드 마운트 대상 작업들, 볼륨·확정 불가 판정들). 마운트 밖 = 컨테이너 내부 경로 → 판정 없음."""
     cx = seg.context
     workdir: str | None = None
-    if cx.launcher == "run":
-        mounts = cx.mounts
+    # compose run 은 인자의 -v 말고도 compose 파일의 서비스 마운트가 붙는다 — 인자 마운트 밖도 '모름'
+    partial = cx.launcher == "compose-run"
+    if cx.launcher in ("run", "compose-run"):
+        mounts = cx.mounts   # None = run 의 -v 출발지를 확정할 수 없음
     elif cx.launcher in ("exec", "compose-exec"):
         cid = cx.container
         if cx.launcher == "compose-exec":
@@ -807,34 +875,90 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
             return [], []   # 조회 실패 = 컨테이너 안 경로 허용(spec §3.5 Docker)
         mounts, workdir = info
     else:
-        # shortcut: compose run 의 마운트는 compose 파일에 있어 인자로 알 수 없다 — 조회 수단이 생기면 run 처럼 사상
         return [], []
+    may_mount = mounts is None or partial or bool(mounts)
+
+    def place(p: str) -> tuple[str, str]:
+        """('out'|'unknown'|'volume'|'bind', 볼륨 이름 | 호스트 경로)."""
+        q = os.path.normpath(p)
+        m = _mount_of(q, mounts or ())
+        if m is None:
+            return ("unknown" if mounts is None or partial else "out"), q
+        if m.kind == "volume":
+            return "volume", m.source
+        return "bind", m.source.rstrip("/") + q[len(m.destination.rstrip("/")):]
+
+    def bind_exists(p: str) -> bool:
+        k, h = place(p)
+        return k == "bind" and os.path.lexists(h)
+
     cseg = replace(seg, cwd=seg.cwd or workdir or None)   # -w 가 없으면 컨테이너 WorkingDir 기준
     out: list[Job] = []
+    if seg.name == "git":
+        jobs = _git_handler(cseg, None, bind_exists)   # ctx None: 사용자 alias 조회는 컨테이너 설정이라 하지 않는다
+    elif seg.name == "find":
+        jobs, out = _container_find(cseg, ctx, place)
+    else:   # ctx None: 호스트 임시 루트 규칙은 컨테이너 경로에 맞지 않다
+        jobs = [j for j in _host_jobs(cseg, None) if j.rule in _PATH_RULES]
     found: list[Finding] = []
-    for j in _host_jobs(cseg, None):   # ctx None: 호스트 임시 루트·find 미리보기는 컨테이너 경로에 맞지 않다
-        if j.rule not in _PATH_RULES:
+    for j in jobs:
+        unresolved = Finding(j.op, j.label, UNRESOLVED, j.advice)
+        if j.rule not in _PATH_RULES:   # git: 저장소가 바인드 마운트 아래면 호스트 저장소로 같은 규칙(spec §3.5 Docker)
+            kind, host_repo = place(j.repo) if j.repo else ("unknown", "")
+            if kind == "unknown" and may_mount:
+                found.append(unresolved)
+            if kind != "bind":
+                continue   # 마운트 밖·볼륨 안 저장소는 판정 없음
+            paths = j.paths
+            if paths:
+                paths = [h for k, h in map(place, paths) if k == "bind"]
+                if not paths:
+                    continue   # 경로가 모두 마운트 밖 — [] 로 두면 저장소 전체로 읽힌다
+            out.append(replace(j, repo=host_repo, paths=paths, label=host_repo if j.label == j.repo else j.label))
             continue
-        if j.paths is None or mounts is None:   # mounts None = run 의 -v 출발지를 확정할 수 없음
-            if mounts is None or mounts:
-                found.append(Finding(j.op, j.label, UNRESOLVED, j.advice))
+        if j.paths is None:
+            if may_mount:
+                found.append(unresolved)
             continue
         host: list[str] = []
         for p in j.paths:
-            q = os.path.normpath(p)
-            m = _mount_of(q, mounts)
-            if m is None:
-                continue
-            if m.kind == "volume":
-                if m.source and (f := _volume(j.op, m.source, q, ctx)) is not None:   # source '' = run 의 새 익명 볼륨
+            kind, v = place(p)
+            if kind == "unknown":
+                found.append(replace(unresolved, target=v))
+            elif kind == "volume":
+                if v and (f := _volume(j.op, v, os.path.normpath(p), ctx)) is not None:   # '' = run 의 새 익명 볼륨
                     found.append(f)
-                continue
-            h = m.source.rstrip("/") + q[len(m.destination.rstrip("/")):]
-            # 와일드카드는 호스트 셸이 컨테이너 경로로 펼치지 못해 글자 그대로 왔다 — 호스트 쪽에서 펼친다
-            host += (sorted(glob.glob(h)) or [h]) if any(c in h for c in "*?[") else [h]
+            elif kind == "bind":
+                # 와일드카드는 호스트 셸이 컨테이너 경로로 펼치지 못해 글자 그대로 왔다 — 호스트 쪽에서 펼친다
+                host += (sorted(glob.glob(v)) or [v]) if any(c in v for c in "*?[") else [v]
         if host:
             out.append(replace(j, paths=host))
     return out, found
+
+
+def _container_find(cseg: Segment, ctx: Ctx, place: Callable[[str], tuple[str, str]]) -> tuple[list[Job], list[Job]]:
+    """컨테이너 안 find 삭제: 시작 경로를 사상해 바인드 마운트 아래만 호스트에서 미리보기(spec §3.6).
+    (컨테이너 경로 작업들, 호스트 경로 작업들)."""
+    jobs = _find(cseg, None)
+    if not jobs:
+        return [], []
+    a = literal_args(cseg)
+    n = next((i for i, x in enumerate(a) if x.startswith("-") or x in ("!", "(", ")")), len(a))
+    starts = [expand(w, cseg) for w in cseg.argv[1:1 + n]] if n else [[cseg.cwd] if cseg.cwd else None]
+    if None in starts:
+        return jobs, []   # 시작 경로를 확정할 수 없다 — paths None 그대로(마운트가 있으면 확정 불가)
+    out: list[Job] = []
+    hosts: list[str] = []
+    for p in (x for s in starts for x in s):   # type: ignore[union-attr]
+        kind, v = place(p)
+        if kind == "bind":
+            hosts.append(v)
+        elif kind != "out":   # 볼륨·모름은 시작 경로 자체를 경로 작업으로 넘겨 같은 규칙을 받게 한다
+            out.append(replace(jobs[0], paths=[p], trailing=True))
+    if hosts:
+        hseg = replace(cseg, argv=[cseg.argv[0], *[Word((Part(h, "'"),)) for h in hosts], *cseg.argv[1 + n:]], cwd="/")
+        return out, _find(hseg, ctx)
+    return out, []
 
 
 def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:

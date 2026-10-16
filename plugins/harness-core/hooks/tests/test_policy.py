@@ -176,7 +176,70 @@ class GitPolicyTest(_WorldCase):
         w2.sh("rm local.sqlite", cwd="{WT}"); self.assertEqual(e("rm -rf {WT}"), [])                # 남은 build/ 는 재생성 산출물
 
 
+class GitReviewFixTest(_WorldCase):
+    def test_long_option_abbrev(self):                 # 리뷰 8-1: git 은 긴 옵션의 모호하지 않은 접두를 받는다
+        self.assertEqual([k for _, k in ev("git push origin --delet main")], ["DEFAULT_BRANCH"])
+        self.assertEqual([k for _, k in ev("git push --mirro origin")], ["DEFAULT_BRANCH"])
+        w.local_branch("lonely", pushed=False, before_session=True)
+        self.assertEqual([k for _, k in ev("git branch --delete --forc lonely")], ["UNPUSHED"])
+        self.assertEqual([k for _, k in ev("git reset --har")], ["DIRTY"])
+        self.assertEqual(ev("git push --dry-ru --delet origin main"), [])
+        self.assertEqual([k for _, k in ev("git push --forc origin main")], [UNRESOLVED])      # force·force-with-lease·force-if-includes 모호
+        self.assertEqual([k for _, k in ev("git push --frobnicate origin main")], [UNRESOLVED])
+        self.assertEqual(ev("git push --set-upstream --verbose --quiet --no-verify --follow-tags --porcelain --progress --atomic "
+                            "-o ci.skip --push-option=x --signed=if-asked --thin --force origin feat/x"), [])
+        self.assertEqual(ev("git branch --set-upstream-to=origin/main --track --list"), [])
+
+    def test_alias(self):                              # 리뷰 8-6: alias 한 단계 펼침
+        self.assertEqual([k for _, k in ev("git -c alias.zap='reset --hard' zap")], ["DIRTY"])
+        w._git("config", "alias.discard", "checkout --")
+        self.assertEqual([k for _, k in ev("git discard .")], ["DIRTY"])
+        self.assertEqual([k for _, k in ev("git -c alias.x='!sh -c true' x")], [UNRESOLVED])
+        self.assertEqual(ev("git -c alias.st=status st; git status"), [])
+
+    def test_default_branch_guess(self):               # 리뷰 8-5: 기본 브랜치를 모르면 main·master 로 추정
+        w.drop_origin_head(); w._git("branch", "-m", "main", "trunk"); w._git("update-ref", "-d", "refs/remotes/origin/main")
+        self.assertEqual(ev("git push --force origin feat/x"), [])
+        self.assertEqual([k for _, k in ev("git push --force origin master")], ["DEFAULT_BRANCH"])
+        self.assertIn("main·master 로 추정", w.evaluate_all(w.fmt("git push origin :main"), "{REPO}")[0].reason())
+
+    def test_compose_run(self):                        # 리뷰 8-4: compose run 마운트는 compose 파일에 있어 모른다
+        self.assertEqual(ev("docker compose -p p run web rm -rf /app/src", cwd="{OUT}"), [("삭제", UNRESOLVED)])
+        self.assertEqual(ev("docker compose -p p run -v {REPO}:/w web rm -f /w/notes_presession.txt", cwd="{OUT}"), [("삭제", PRESERVED)])
+        self.assertEqual(ev("docker compose -p p run web ls", cwd="{OUT}"), [])
+
+
 class DockerPolicyTest(_WorldCase):
+    def test_container_git(self):                      # 리뷰 8-2: 바인드 마운트 위 git 은 호스트 저장소 규칙
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd: [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+        c = d.container
+        self.assertEqual([k for _, k in e(f"docker exec {c} git checkout -- .")], ["DIRTY"])
+        self.assertEqual([k for _, k in e(f"docker exec {c} git reset --hard")], ["DIRTY"])
+        self.assertEqual(e(f"docker exec {c} git clean -fdx"), [("git clean", PROTECTED_NAME)])
+        self.assertEqual(e(f"docker exec -w /srv {c} git reset --hard"), [])
+        self.assertEqual(e(f"docker exec {c} git -C /srv clean -fdx"), [])
+
+    def test_container_find(self):                     # 리뷰 8-3: 마운트 밖 find 는 허용, 안이면 호스트에서 미리보기
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd: [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), "{REPO}")]
+        c = d.container
+        self.assertEqual(e(f"docker exec {c} find /tmp -name '*.log' -delete"), [])
+        self.assertEqual(e(f"docker exec {c} find /app -name '*.py' -delete"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(e(f"docker exec {c} find . -name '*.o' -delete"), [])
+        self.assertEqual(e(f"docker exec {c} find /data -delete"), [("삭제", "OLD_VOLUME")])
+
+    def test_compose_project_env(self):                # 리뷰 8-7
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        ctx = w2.ctx(environ_extra={"COMPOSE_PROJECT_NAME": d.project})
+        self.assertEqual([f.kind for f in w2.evaluate_all("docker compose down -v", "{REPO}", ctx)], ["OLD_VOLUME"])
+        self.assertEqual([f.kind for f in w2.evaluate_all(f"export COMPOSE_PROJECT_NAME={d.project}; docker compose down -v", "{REPO}")],
+                         ["OLD_VOLUME"])
+
+
     def test_container(self):
         w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
         if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")

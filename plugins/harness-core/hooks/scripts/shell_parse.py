@@ -845,7 +845,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         project_dir = seg.cwd
     ctx = Context(
         "container", a[i].literal(), ("compose-" if compose else "") + sub,
-        _mounts(o, seg) if sub == "run" and not compose else None,
+        _mounts(o, seg) if sub == "run" else None,
         project_dir if compose else None,
         proj[-1] if proj else None,
     )
