@@ -598,7 +598,7 @@ def _git_handler(seg: Segment, ctx: Ctx | None, exists: Callable[[str], bool] = 
         return [replace(job(REFLOG), paths=[])]   # 저장소를 몰라도 거부 — 조회가 필요 없다
     if sub == "push":
         # 평범한 push 는 기본 브랜치를 덮지 않는다 — 저장소·원격 조회 없이 판정 생략
-        return [job(PUSH, args=tuple(r))] if "--dry-run" not in r and "n" not in s and _push_rewrites(r) else []
+        return [job(PUSH, args=tuple(r))] if _push_rewrites(r) else []
     return []
 
 
@@ -821,9 +821,9 @@ def _j_reflog(j: Job, ctx: Ctx) -> list[Finding]:
 _PUSH_VALUES = ("--repo", "-o", "--push-option", "--receive-pack", "--exec")
 
 
-def _push_opts(a: list[str]) -> tuple[bool, bool, bool, bool, bool, str | None, list[str]]:
-    """(force, delete, mirror, every, tags, --repo 값, 위치 인자)."""
-    force = delete = mirror = every = tags = False
+def _push_opts(a: list[str]) -> tuple[bool, bool, bool, bool, bool, bool, str | None, list[str]]:
+    """(force, delete, mirror, every, tags, dry-run, --repo 값, 위치 인자). `-o` 등의 값은 플래그로 세지 않는다."""
+    force = delete = mirror = every = tags = dry = False
     remote_opt, pos, i, opts = None, [], 0, True
     while i < len(a):
         x = a[i]
@@ -838,26 +838,26 @@ def _push_opts(a: list[str]) -> tuple[bool, bool, bool, bool, bool, str | None, 
                 v, i = a[i], i + 1
             # --force-with-lease·--force-if-includes 는 강제가 아니다(원격이 예상과 같을 때만 덮는다)
             force, delete, mirror = force or k == "--force", delete or k == "--delete", mirror or k == "--mirror"
-            every, tags = every or k in ("--all", "--branches"), tags or k == "--tags"
+            every, tags, dry = every or k in ("--all", "--branches"), tags or k == "--tags", dry or k == "--dry-run"
             remote_opt = v if k == "--repo" else remote_opt
         else:
             for n, ch in enumerate(x[1:], 1):
                 if "-" + ch in _PUSH_VALUES:
                     i += 0 if x[n + 1:] else 1
                     break
-                force, delete = force or ch == "f", delete or ch == "d"
-    return force, delete, mirror, every, tags, remote_opt, pos
+                force, delete, dry = force or ch == "f", delete or ch == "d", dry or ch == "n"
+    return force, delete, mirror, every, tags, dry, remote_opt, pos
 
 
 def _push_rewrites(a: list[str]) -> bool:
-    """원격 이력을 덮거나 지울 수 있는 push 인가 — 강제·삭제·미러·`+ref`·`:dst`."""
-    force, delete, mirror, _, _, _, pos = _push_opts(a)
-    return force or delete or mirror or any(p.startswith(("+", ":")) for p in pos[1:])
+    """원격 이력을 덮거나 지울 수 있는 push 인가 — 강제·삭제·미러·`+ref`·`:dst`(dry-run 이면 아니다)."""
+    force, delete, mirror, _, _, dry, _, pos = _push_opts(a)
+    return not dry and (force or delete or mirror or any(p.startswith(("+", ":")) for p in pos[1:]))
 
 
 def _j_push(j: Job, ctx: Ctx) -> list[Finding]:
     repo = j.repo or ""
-    force, delete, mirror, every, tags, remote_opt, pos = _push_opts(list(j.args))
+    force, delete, mirror, every, tags, _, remote_opt, pos = _push_opts(list(j.args))
     cur =(_git(repo, ["symbolic-ref", "-q", "--short", "HEAD"], ctx) or "").strip() or None
     remote = pos[0] if pos else remote_opt or (
         cur and (_git(repo, ["config", f"branch.{cur}.remote"], ctx) or "").strip()) or "origin"

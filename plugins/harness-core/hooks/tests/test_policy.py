@@ -337,6 +337,13 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("git push origin :main"), [("git push", "DEFAULT_BRANCH")])
         self.assertEqual(ev("git push origin +main"), [("git push", "DEFAULT_BRANCH")])
 
+    def test_b_push_option_value_is_not_dry_run(self):   # 적대 리뷰(범위 밖 Important): -o 값은 플래그가 아니다
+        for c in ("git push -onx origin +main", "git push -o -n origin +main", "git push -o --dry-run origin +main",
+                  "git push --push-option -n origin +main", "git push --push-option=-n -f origin main"):
+            self.assertEqual(ev(c), [("git push", "DEFAULT_BRANCH")], c)
+        for c in ("git push -n origin +main", "git push --dry-run -f origin main", "git push -fn origin main", "git push -o x -n origin +main"):
+            self.assertEqual(ev(c), [], c)
+
     def test_d_commit_message_heredoc(self):
         msg = "git commit -m \"$(cat <<'EOF'\nfix: it's (x) > y\nEOF\n)\""
         self.assertTrue(w.judge_cmd(msg + " && git push origin feat").allow)
