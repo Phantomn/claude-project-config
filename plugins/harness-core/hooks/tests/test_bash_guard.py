@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _world import World
+from bash_guard import FOOTER, judge, log_event, render
+from ledger import KIND_PRE_DIRTY, KIND_PRE_SESSION, Ledger, state_dir
+
+ON = {"HARNESS_BASH_GUARD": "on"}
+OLD_ASK = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"x"}}'
+w: World
+
+
+class _WorldCase(unittest.TestCase):
+    def setUp(self):
+        global w
+        w = World()
+        self.addCleanup(w.close)
+
+
+class JudgeTest(_WorldCase):
+    def test_allow_render_exact(self):
+        d = judge(w.payload("ls -la"), {**w.environ, **ON}); self.assertTrue(d.allow)
+        self.assertEqual(render(d), '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}')
+
+    def test_deny_render(self):
+        out = json.loads(render(judge(w.payload("rm src/main.py"), {**w.environ, **ON})))["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny"); self.assertTrue(out["permissionDecisionReason"].startswith("[bash-guard] 거부: 삭제 "))
+        self.assertTrue(out["permissionDecisionReason"].endswith(FOOTER))
+
+    def test_multiple_reasons(self):
+        self.assertEqual(len(judge(w.payload("rm src/main.py; rm {HOME}/notes.md"), {**w.environ, **ON}).reasons), 2)
+
+    def test_reason_cap(self):
+        files = " ".join(f"f{i}.txt" for i in range(30))
+        w.sh(f"touch {files} && git add {files} && git commit -q -m many")
+        d = judge(w.payload(f"rm {files}"), {**w.environ, **ON})
+        self.assertEqual(len(d.reasons), 21); self.assertEqual(d.reasons[-1], "… 외 10건")
+
+    def test_mode_resolution(self):
+        self.assertEqual(judge(w.payload("rm src/main.py"), w.environ).mode, "off")
+        w.set_repo_switch("shadow"); self.assertEqual(judge(w.payload("rm src/main.py"), w.environ).mode, "shadow")
+        # 세션 cwd 는 홈(저장소 밖)이고 대상만 스위치 저장소 안 → 대상 저장소 값으로 on
+        w.set_repo_switch("on"); self.assertEqual(judge(w.payload("rm {REPO}/src/main.py", cwd="{HOME}"), w.environ).mode, "on")
+        self.assertEqual(judge(w.payload('cd {REPO} && rm -rf "$UNSET_X"', cwd="{HOME}"), w.environ).mode, "on")   # 단위 cwd 의 저장소 값
+        w2 = World(docker=True); self.addCleanup(w2.close)   # 컨테이너 바인드 마운트 대상(docker 없으면 이 부분 생략)
+        if w2.docker:
+            w2.set_repo_switch("on")
+            self.assertEqual(judge(w2.payload(f"docker exec {w2.docker.container} rm -rf /app/src", cwd="{HOME}"), w2.environ).mode, "on")
+
+    def test_parse_failure_policy(self):
+        self.assertTrue(judge(w.payload('echo "unterminated'), {**w.environ, **ON}).allow)
+        self.assertTrue(judge(w.payload('echo "rmdir format'), {**w.environ, **ON}).allow)   # 단어 경계: rmdir·format 은 아님
+        for c in ['find . -delete "x', 'echo "a > b']:
+            self.assertFalse(judge(w.payload(c), {**w.environ, **ON}).allow, c)
+        d = judge(w.payload('rm -rf "unterminated'), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("해석하지 못했다", d.reasons[0])
+
+    def test_budget(self):
+        self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
+        self.assertIn("판정 시간 초과", judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).reasons[0])
+        self.assertTrue(judge(w.payload("ls"), {**w.environ, **ON}, budget=0).allow)
+
+    def test_inplace_edit_records_ledger(self):
+        judge(w.payload("sed -i s/a/b/ {HOME}/notes.md", session_id=w.session_id), {**w.environ, **ON})
+        self.assertIn(KIND_PRE_SESSION, [e.kind for e in Ledger(w.environ).entries(w.fmt("{HOME}/notes.md"))])
+        judge(w.payload("echo x >> README.md", session_id=w.session_id), w.environ)   # >> 도 장부 기록(모드 무관, 재감사 rootcause-r1-s2-004)
+        self.assertIn(KIND_PRE_DIRTY, [e.kind for e in Ledger(w.environ).entries(w.fmt("{REPO}/README.md"))])
+
+    def test_mv_records_moved_in(self):   # D14 — 모드 off 여도 기록
+        judge(w.payload("mv {HOME}/notes.md {REPO}/build/", session_id=w.session_id), w.environ)
+        self.assertEqual(Ledger(w.environ).moved_in_near(w.fmt("{REPO}/build/notes.md")), w.fmt("{REPO}/build/notes.md"))
+        judge(w.payload("mv src/probe.ts {SCRATCH}/s1/", session_id=w.session_id), w.environ)   # 세션 파일 원본 → 기록 없음
+        self.assertIsNone(Ledger(w.environ).moved_in_near(w.fmt("{SCRATCH}/s1/probe.ts")))
+        judge(w.payload("mv src/main.py src/app.py", session_id=w.session_id), w.environ)   # 깨끗한 추적 파일 이름 변경 → 기록 없음
+        self.assertIsNone(Ledger(w.environ).moved_in_near(w.fmt("{REPO}/src/app.py")))
+        judge(w.payload("mv README.md {SCRATCH}/s1/", session_id=w.session_id), w.environ)   # 세션 전 커밋 안 된 수정이 있는 추적 파일 → 기록
+        self.assertIsNotNone(Ledger(w.environ).moved_in_near(w.fmt("{SCRATCH}/s1/README.md")))
+
+    def test_log_rotation(self):
+        for _ in range(5):
+            log_event({"x": "y" * 80}, w.environ, max_bytes=200)
+        self.assertTrue((state_dir(w.environ) / "bash-guard.jsonl.1").exists())
+
+
+class MainTest(_WorldCase):
+    def run_main(self, payload, old: str = OLD_ASK, extra: dict | None = None) -> subprocess.CompletedProcess:
+        stdin = payload if isinstance(payload, str) else json.dumps(payload)
+        return subprocess.run([sys.executable, str(SCRIPTS / "bash_guard.py"), "--old", old], input=stdin,
+                              env={**w.environ, **(extra or {})}, capture_output=True, text=True, timeout=30, check=False)
+
+    def log_lines(self) -> list[dict]:
+        p = state_dir(w.environ) / "bash-guard.jsonl"
+        return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+    def test_main_outputs(self):
+        r = self.run_main(w.payload("rmdir d"))
+        self.assertEqual((r.returncode, r.stdout), (0, OLD_ASK + "\n")); self.assertEqual(self.log_lines(), [])
+        sh = {"HARNESS_BASH_GUARD": "shadow"}
+        r = self.run_main(w.payload("rmdir d"), extra=sh)
+        self.assertEqual((r.returncode, r.stdout), (0, OLD_ASK + "\n"))
+        logs = self.log_lines(); self.assertEqual(len(logs), 1)
+        self.assertEqual((logs[0]["mode"], logs[0]["decision"], logs[0]["old_decision"]), ("shadow", "allow", "ask"))
+        r = self.run_main(w.payload("rm src/main.py"), extra=sh)   # 둘 다 비허용 → 기록 추가 없음
+        self.assertEqual(r.returncode, 0); self.assertEqual(len(self.log_lines()), 1)
+        r = self.run_main(w.payload("rmdir d"), extra=ON)
+        self.assertEqual(r.returncode, 0); self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        r = self.run_main(w.payload("rmdir d"), old="")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_internal_error_fallback(self):   # spec §3.8 (다), 재감사 rootcause-r1-s2-003·selfcontained-r1-s2-006
+        r = self.run_main({"tool_name": "Bash", "tool_input": "rm -rf x", "cwd": str(w.repo)})
+        self.assertEqual((r.returncode, r.stdout), (0, OLD_ASK + "\n"))
+        logs = self.log_lines(); self.assertEqual(len(logs), 1); self.assertTrue(logs[0]["error"])
+        r = self.run_main({"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}, "cwd": 5}, extra=ON)
+        self.assertEqual(r.returncode, 0); self.assertNotIn("ask", r.stdout)
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny"); self.assertIn("판정기 오류", out["permissionDecisionReason"])
+        r = self.run_main({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": 5}, extra=ON)
+        self.assertEqual(r.returncode, 0); self.assertNotIn("ask", r.stdout)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+
+
+if __name__ == "__main__":
+    unittest.main()

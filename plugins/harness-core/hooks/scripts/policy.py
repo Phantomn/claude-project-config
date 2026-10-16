@@ -1014,16 +1014,25 @@ def _container_find(cseg: Segment, ctx: Ctx, place: Callable[..., list[tuple[str
     return [], _find(hseg, ctx), found
 
 
-def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:
+def _targets(jobs: list[Job]) -> list[str]:
+    return [p for j in jobs for p in j.paths or ()] + [j.repo for j in jobs if j.repo]
+
+
+def assess(seg: Segment, ctx: Ctx) -> tuple[list[Finding], list[str]]:
+    """(판정, 판정 대상 경로) — 작업 목록(find 미리보기·docker 조회)을 한 번만 만든다."""
     if seg.context.kind != "host":
         jobs, found = _container_jobs(seg, ctx)
-        return found + _judge(jobs, ctx, host=False)
-    return _judge(_host_jobs(seg, ctx), ctx)
+        return found + _judge(jobs, ctx, host=False), _targets(jobs)
+    jobs = _host_jobs(seg, ctx)
+    return _judge(jobs, ctx), _targets(jobs)
+
+
+def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:
+    return assess(seg, ctx)[0]
 
 
 def judged_targets(seg: Segment, ctx: Ctx) -> list[str]:
-    jobs = _container_jobs(seg, ctx)[0] if seg.context.kind != "host" else _host_jobs(seg, ctx)
-    return [p for j in jobs for p in j.paths or ()] + [j.repo for j in jobs if j.repo]
+    return _targets(_container_jobs(seg, ctx)[0] if seg.context.kind != "host" else _host_jobs(seg, ctx))
 
 
 def is_judged_op(seg: Segment) -> bool:
