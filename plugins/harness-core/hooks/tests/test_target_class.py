@@ -203,6 +203,10 @@ class BasicsTest(_WorldCase):
         self.assertEqual(normalize(w.fmt("{SCRATCH}/lnk/."), False), w.fmt("{REPO}/src"))
         self.assertEqual(normalize(w.fmt("{SCRATCH}/lnk/"), False), w.fmt("{REPO}/src"))
 
+    def test_normalize_bare_relative_name(self):   # '/' 없는 상대 이름은 / 아래가 아니라 현재 폴더 아래(Task 4 minor)
+        cwd = os.getcwd(); os.chdir(w.fmt("{REPO}")); self.addCleanup(os.chdir, cwd)
+        self.assertEqual(normalize("README.md", False), w.fmt("{REPO}/README.md"))
+
     def test_scratch(self):
         ctx = w.ctx()
         self.assertTrue(is_scratch(w.fmt("{SCRATCH}/s1/x.txt"), ctx)); self.assertFalse(is_scratch(w.fmt("{SCRATCH}"), ctx))
