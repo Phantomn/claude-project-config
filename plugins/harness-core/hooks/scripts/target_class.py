@@ -186,7 +186,6 @@ REGENERABLE_NAMES: frozenset[str] = frozenset(
 REGENERABLE_SUFFIXES = (".pyc", ".pyo", ".o", ".class")
 SEVERITY = {MISSING: 0, SCRATCH: 0, SESSION_NEW: 0, IGNORED_ARTIFACT: 0, GIT_TRACKED: 1, PRESERVED: 2, PROTECTED_NAME: 2,
             UNRESOLVED: 3}
-_SESSION_REPO = "세션 저장소"
 
 
 @dataclass(frozen=True)
@@ -194,7 +193,8 @@ class Cls:
     kind: str
     path: str | None
     detail: str = ""
-    worktree_root: str | None = None
+    worktree_root: str | None = None     # 대상이 linked worktree 최상위면 그 경로
+    session_repo: bool = False           # 분류 1b(이번 세션이 만든 저장소 안)
 
 
 class _Unresolved(Exception):
@@ -285,7 +285,7 @@ def _nearest_git(path: str, cache: dict[str, str | None]) -> str | None:
     return cache[d]
 
 
-def _session_new(paths: list[str], ctx: Ctx) -> set[str]:
+def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None = None) -> set[str]:
     start = ctx.session_start
     if start is None or not paths:
         return set()
@@ -293,11 +293,9 @@ def _session_new(paths: list[str], ctx: Ctx) -> set[str]:
     cand = {p for p in paths if b.get(p, 0.0) >= start}
     if not cand:
         return set()
-    # 장부는 한 번만 읽는다 — entries() 는 호출마다 파일 전체를 읽어 폴더 순회에서 항목 수만큼 반복된다
-    rows: dict[str, list[Entry]] = {}
-    for p, e in ctx.ledger._rows(ctx.ledger._read()):
-        if p in cand:
-            rows.setdefault(p, []).append(e)
+    # 장부는 묶음당 한 번만 읽는다 — entries() 를 항목마다 부르면 폴더 순회에서 항목 수만큼 파일 전체를 읽는다
+    if rows is None:
+        rows = ctx.ledger.entries_for(cand)
     sid = ctx.session_id
     return {p for p in cand if not any((e.kind == KIND_PRE_SESSION and e.session_id == sid)
                                        or (e.kind == KIND_CREATED and e.session_id != sid) for e in rows.get(p, ()))}
@@ -322,14 +320,16 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     new_tops = _session_new(tops, ctx)
     for p in paths:
         if near[p] in new_tops:
-            res[p] = Cls(SCRATCH, p, _SESSION_REPO)
+            res[p] = Cls(SCRATCH, p, "세션 저장소", session_repo=True)
         elif protected_name(p):
             res[p] = Cls(PROTECTED_NAME, p)
     groups: dict[str, list[str]] = {}
     for key in sorted({near[p] for p in paths if p not in res and near[p]}):
         top = _git_top(key, ctx)
-        if top is not None:
-            groups.setdefault(top, []).extend(p for p in paths if p not in res and near[p] == key)
+        if top is None:
+            # .git 은 있는데 git 이 저장소로 못 읽는다(손상·소유권) — 저장소 아님으로 떨어뜨리면 추적·변경 판정이 빠진다
+            raise _Unresolved(f"git 저장소를 읽을 수 없다: {key}")
+        groups.setdefault(top, []).extend(p for p in paths if p not in res and near[p] == key)
     for top, ps in groups.items():
         tracked = git_tracked(top, ps, ctx)
         if tracked is None:
@@ -378,6 +378,7 @@ def _entries(d: str, ctx: Ctx) -> list[str]:
 
 def _protected_inside(d: str, ctx: Ctx) -> str | None:
     """임시 루트 폴더 규칙: 이름만 본다(상한 없음), 이번 세션 저장소 안으로는 내려가지 않는다."""
+    rows = None
     for root, dirs, files in os.walk(d, onerror=_unreadable):
         _budget(ctx)
         for n in dirs + files:
@@ -385,7 +386,9 @@ def _protected_inside(d: str, ctx: Ctx) -> str | None:
                 return os.path.join(root, n)
         repos = [os.path.join(root, x) for x in dirs if _is_session_repo(os.path.join(root, x), ctx)]
         if repos:
-            new = _session_new(repos, ctx)
+            if rows is None:
+                rows = ctx.ledger.entries_for()
+            new = _session_new(repos, ctx, rows)
             dirs[:] = [x for x in dirs if os.path.join(root, x) not in new]
     return None
 
@@ -403,7 +406,7 @@ def classify(path: str | None, ctx: Ctx, trailing_slash: bool = False) -> Cls:
         return Cls(PRESERVED, p, "옮겨진 유일본")
     try:
         me = _classify_many([p], ctx)[0]
-        if me.detail == _SESSION_REPO:
+        if me.session_repo:
             return me
         if is_linked_worktree_root(p):
             # 추적 파일은 커밋에 있다 — 커밋 안 된 변경·ignore 유일본은 정책이 worktree 규칙으로 본다(spec §3.4)
@@ -446,11 +449,25 @@ def note_touch(path: str, ctx: Ctx, tool: str | None) -> None:
         start, b = ctx.session_start, births([p], ctx).get(p)
         if start is not None and b is not None and b < start:
             L.record(p, KIND_PRE_SESSION, sid)
-        top = git_toplevel(p, ctx)
-        if top and not any(e.kind == KIND_TOUCHED and e.session_id == sid for e in L.entries(p)) \
-                and p in (git_tracked(top, [p], ctx) or ()):
-            r = run(["git", "--literal-pathspecs", "-C", top, "status", "--porcelain=v1", "-z", "--", p], ctx)
-            if r is not None and r.returncode == 0 and r.stdout:
-                L.record(p, KIND_PRE_DIRTY, sid)
-    if tool:
-        L.record(p, KIND_TOUCHED, sid)
+        if _nearest_git(p, {}) and not any(e.kind == KIND_TOUCHED and e.session_id == sid for e in L.entries(p)) \
+                and _pre_dirty(p, ctx):
+            L.record(p, KIND_PRE_DIRTY, sid)
+    # 판정기(tool None)도 touched 를 쓴다 — spec §3.7 기록 주체 2 는 '같은 규칙(created 제외)'
+    L.record(p, KIND_TOUCHED, sid)
+
+
+def _pre_dirty(p: str, ctx: Ctx) -> bool:
+    """추적 파일이고 커밋 안 된 수정이 있는가. .git 이 있는데 조회가 실패하면 True(과보호)."""
+    try:
+        top = _git_top(p, ctx)
+        tracked = git_tracked(top, [p], ctx) if top else None
+        if tracked is None:
+            raise _Unresolved("git 조회 실패")
+        if p not in tracked:
+            return False
+        r = run(["git", "--literal-pathspecs", "-C", top, "status", "--porcelain=v1", "-z", "--", p], ctx)
+        if r is None or r.returncode != 0:
+            raise _Unresolved("git 조회 실패")
+        return bool(r.stdout)
+    except _Unresolved:
+        return True

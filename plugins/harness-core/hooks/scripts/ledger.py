@@ -7,7 +7,7 @@ from __future__ import annotations
 import fcntl
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,8 +66,17 @@ class Ledger:
         return [r for r in map(_parse, text.splitlines()) if r]
 
     def entries(self, path: str) -> list[Entry]:
+        return self.entries_for([path]).get(path, [])
+
+    def entries_for(self, paths: Iterable[str] | None = None) -> dict[str, list[Entry]]:
+        """장부를 한 번 읽어 경로별 기록을 모은다. paths 가 None 이면 전부."""
         # 압축은 rename 으로 갈아끼우므로 잠금 없이 읽어도 온전한 파일 하나를 본다
-        return [e for p, e in self._rows(self._read()) if p == path]
+        wanted = None if paths is None else set(paths)
+        out: dict[str, list[Entry]] = {}
+        for p, e in self._rows(self._read()):
+            if wanted is None or p in wanted:
+                out.setdefault(p, []).append(e)
+        return out
 
     def moved_in_near(self, path: str) -> str | None:
         base = path.rstrip("/") + "/"

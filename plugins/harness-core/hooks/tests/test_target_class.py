@@ -101,6 +101,12 @@ class LedgerTest(_WorldCase):
         self.assertEqual(L.moved_in_near("/d"), "/d/sub/f")              # 하위에 기록
         self.assertIsNone(L.moved_in_near("/d/su")); self.assertIsNone(L.moved_in_near("/e"))
 
+    def test_entries_for(self):
+        L = Ledger(w.environ); L.record("/a", KIND_CREATED, "s1"); L.record("/b", KIND_TOUCHED, "s1"); L.record("/c", KIND_TOUCHED, "s1")
+        got = L.entries_for(["/a", "/b", "/none"])
+        self.assertEqual({p: [e.kind for e in es] for p, es in got.items()}, {"/a": [KIND_CREATED], "/b": [KIND_TOUCHED]})
+        self.assertEqual(set(L.entries_for()), {"/a", "/b", "/c"})                     # 인자 없음 = 전부
+
     def test_ledger_concurrent_append(self):  # Review Focus 4
         self.assertEqual(_run_two(w.environ, ("A", 500, 0), ("B", 500, 0)), [0, 0])
         lines = self.ledger_file().read_text(encoding="utf-8").splitlines()
@@ -258,6 +264,8 @@ class ClassifyTest(_WorldCase):
 
     def test_session_repo_is_scratch_data(self):      # spec §3.4 분류 1b, 재감사 rootcause-r1-s1-001
         w.sh("git clone -q {REPO} {SCRATCH}/s1/clone"); self.assertEqual(k("{SCRATCH}/s1/clone"), SCRATCH)
+        self.assertTrue(classify(w.fmt("{SCRATCH}/s1/clone"), w.ctx()).session_repo)
+        self.assertFalse(classify(w.fmt("{SCRATCH}/s1/x.txt"), w.ctx()).session_repo)
         w.sh("git clone -q {REPO} {OUT}/c2"); self.assertEqual(k("{OUT}/c2"), SCRATCH); self.assertEqual(k("{OUT}/c2/.git/config"), SCRATCH)
         w.sh("mkdir -p {SCRATCH}/s1/many && cd {SCRATCH}/s1/many && seq 2001 | xargs touch"); self.assertEqual(k("{SCRATCH}/s1/many"), SCRATCH)
         w.sh("mkdir -p {SCRATCH}/old && echo k > {SCRATCH}/old/k.pem"); self.assertEqual(k("{SCRATCH}/old"), PROTECTED_NAME)   # 임시 폴더라도 보호 이름(재감사 rootcause-r2-s1-001)
@@ -322,6 +330,13 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(git_ignored(repo, ps, ctx), {ps[3]})
         self.assertIsNone(git_tracked(repo, ps, w.ctx(budget=0)))                         # 조회 실패 = None(확정 불가 쪽)
 
+    def test_broken_git_is_unresolved(self):          # .git 이 있는데 rev-parse 실패 → 저장소 아님이 아니라 확정 불가
+        os.makedirs(w.fmt("{OUT}/bf")); Path(w.fmt("{OUT}/bf/.git")).write_text(""); Path(w.fmt("{OUT}/bf/f")).write_text("x")
+        self.assertEqual(k("{OUT}/bf/f"), UNRESOLVED)
+        os.makedirs(w.fmt("{OUT}/bd/.git")); Path(w.fmt("{OUT}/bd/f")).write_text("x")
+        time.sleep(0.02); tr = w.fmt("{OUT}/later-transcript.jsonl"); Path(tr).write_text("")   # 세션 전 폴더(1b 아님)
+        self.assertEqual(k("{OUT}/bd/f", w.ctx(transcript=tr)), UNRESOLVED)
+
 
 class SharedLedgerTest(_WorldCase):
     def test_ledger_pre_session_overrides_new_birth(self):
@@ -335,11 +350,30 @@ class SharedLedgerTest(_WorldCase):
         note_touch(w.fmt("{REPO}/README.md"), ctx, "Edit")
         self.assertTrue({KIND_PRE_SESSION, KIND_PRE_DIRTY, KIND_TOUCHED} <= {e.kind for e in L.entries(w.fmt("{REPO}/README.md"))})
 
-    def test_note_touch_judge_no_created_no_touched(self):       # 판정기(tool None)는 created·touched 를 쓰지 않는다
+    def test_note_touch_judge_touched_not_created(self):       # spec §3.7 기록 주체 2: 같은 규칙(created 제외)
         ctx = w.ctx(); L = ctx.ledger
-        note_touch(w.fmt("{REPO}/none.txt"), ctx, None); self.assertEqual(L.entries(w.fmt("{REPO}/none.txt")), [])
+        note_touch(w.fmt("{REPO}/none.txt"), ctx, None); self.assertEqual([e.kind for e in L.entries(w.fmt("{REPO}/none.txt"))], [KIND_TOUCHED])
         note_touch(w.fmt("{REPO}/README.md"), ctx, None)
-        self.assertEqual({e.kind for e in L.entries(w.fmt("{REPO}/README.md"))}, {KIND_PRE_SESSION, KIND_PRE_DIRTY})
+        self.assertEqual({e.kind for e in L.entries(w.fmt("{REPO}/README.md"))}, {KIND_PRE_SESSION, KIND_PRE_DIRTY, KIND_TOUCHED})
+
+    def test_other_session_judge_touch_is_recorded(self):       # (가) B 의 sed -i 상당 → A 의 '이번 세션 변경' 근거(B 의 touched)
+        b = w.ctx(session_id="B"); main = w.fmt("{REPO}/src/main.py")
+        note_touch(main, b, None)
+        self.assertIn((KIND_TOUCHED, "B"), [(e.kind, e.session_id) for e in b.ledger.entries(main)])
+
+    def test_clean_tracked_twice_no_pre_dirty(self):              # (나)
+        ctx = w.ctx(); main = w.fmt("{REPO}/src/main.py")
+        note_touch(main, ctx, None); w.touch_modify("{REPO}/src/main.py"); note_touch(main, ctx, None)
+        kinds = [e.kind for e in ctx.ledger.entries(main)]
+        self.assertNotIn(KIND_PRE_DIRTY, kinds); self.assertEqual(kinds.count(KIND_TOUCHED), 2)
+
+    def test_note_touch_query_failure_records_pre_dirty(self):    # 저장소 안인데 조회 실패 → 과보호
+        main = w.fmt("{REPO}/src/main.py"); ctx = w.ctx(budget=0)
+        note_touch(main, ctx, "Edit"); self.assertIn(KIND_PRE_DIRTY, [e.kind for e in ctx.ledger.entries(main)])
+        os.makedirs(w.fmt("{OUT}/broken")); Path(w.fmt("{OUT}/broken/.git")).write_text(""); f = w.fmt("{OUT}/broken/f"); Path(f).write_text("x")
+        ctx = w.ctx(); note_touch(f, ctx, "Edit"); self.assertIn(KIND_PRE_DIRTY, [e.kind for e in ctx.ledger.entries(f)])
+        a = w.fmt("{HOME}/data/a.txt"); ctx = w.ctx(budget=0)                    # 저장소 밖은 그대로
+        note_touch(a, ctx, "Edit"); self.assertNotIn(KIND_PRE_DIRTY, [e.kind for e in ctx.ledger.entries(a)])
 
     def test_other_session_created_is_not_mine(self):          # D12
         a, b = w.ctx(session_id="A"), w.ctx(session_id="B")
