@@ -1880,7 +1880,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if not in_pipe and t.op not in ("&&", "||"):
                 list_snap = snap
         elif t.op == "(":
-            if len(words) == 1 and not redirects and idx + 1 < len(toks) and toks[idx + 1].op == ")":   # `f() 본문`
+            if len(words) == 1 and not redirects and idx + 1 < len(toks) and toks[idx + 1].op == ")" \
+                    and not _is_assign(words[0]):   # `f() 본문` — `A=()` 는 빈 배열 대입
                 define_fn(None if words[0].is_quoted() else words[0].literal())
                 words, skip = [], idx + 2
                 continue

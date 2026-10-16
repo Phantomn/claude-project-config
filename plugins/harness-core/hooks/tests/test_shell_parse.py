@@ -426,6 +426,8 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertIsNone(last(c).cwd, c)
         self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
+        self.assertEqual(last("A=(); f=a; rm $f").env["f"], "a")   # 빈 배열 대입은 함수 머리가 아니다(재생에서 발견)
+        self.assertEqual(names("x=(); rm y"), ["rm"])
 
 
 def ex(word_src, cwd="/w", env=None):
