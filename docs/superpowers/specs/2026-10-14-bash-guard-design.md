@@ -367,7 +367,7 @@ class Segment:
 | `push`(아래 예외 외 전부: 기능 브랜치 강제 push, `+ref`, `--delete`, `--force-with-lease` 포함) | 허용 |
 | `push` 의 대상 ref 가 **기본 브랜치**이면서 `--force`·`-f`·`+ref`·`--delete`·`:ref`, 또는 `--mirror` | 거부 — "기본 브랜치 원격 이력 덮어쓰기. 기능 브랜치로 push 하고 PR 을 열어라" |
 | `reset --hard`, `checkout [--] <경로|.>`, `checkout -f`, `switch -f|--discard-changes`, `restore <경로>`(작업 트리 대상), `rm -f|--force <경로>`, `worktree remove [--force]`, linked worktree 최상위 폴더의 `rm -r` | 영향 범위의 커밋 안 된 변경(`git status --porcelain=v1 -z --untracked-files=no -- <범위>`)이 없거나 전부 이번 세션 변경이면 허용, 아니면 거부 — "먼저 `git stash push -u` 하거나 커밋하라". worktree 세 형태는 추가로 §3.4 워크트리 최상위 규칙 ②에 보호 분류가 있으면 거부 — "worktree 안에 유일본이 있다. 옮기거나 사용자에게 요청하라" |
-| `clean`(`-n`·`--dry-run` 이면 허용) | 같은 옵션에 `-f` 를 빼고 `-n` 을 더해 지워질 목록을 얻어 각 항목을 삭제 규칙으로 분류 |
+| `clean`(`-n`·`--dry-run` 이면 허용) | 같은 옵션에 `-n` 을 **더해**(`-f`·`-ff` 는 그대로 둔다 — `-ff` 를 `-f` 로 줄이면 중첩 저장소가 목록에서 빠지고, `-n` 은 `-f` 와 함께여도 지우지 않는다) 지워질 목록을 얻는다. 목록 출력을 막는 `-q`·`--quiet` 는 뺀다(빈 목록 = 허용으로 읽히는 오판). 각 항목(git 이 낸 대로, 폴더는 폴더 하나)을 삭제 규칙으로 분류 |
 | `stash drop|clear` | 해당 보관본 생성 시각(`git log -g --format=%ct refs/stash`) ≥ 세션 시작이면 허용, 아니면 거부 |
 | `reflog expire|delete`, `gc --prune=now|all`, `prune`, `filter-branch`, `filter-repo` | 거부 — reflog 복구 경로를 없애므로(D6 전제 보호) |
 
