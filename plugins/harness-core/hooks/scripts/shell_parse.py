@@ -378,6 +378,12 @@ def _late() -> bool:
     return _deadline[0] is not None and time.monotonic() > _deadline[0]
 
 
+def _check_deadline() -> None:
+    """마감 검사는 여기 한 곳 — 토큰마다·해석 입구·합류에서 부른다(단일 단위 안에서도 마감을 본다, 재검토 3 NB4·NB10)."""
+    if _late():
+        raise LexError("해석 시간 초과")
+
+
 SHELLS = {"bash", "sh", "zsh", "dash"}
 _MAX_DEPTH = 8
 _SHELL_C = re.compile(r"-[a-zA-Z]*c[a-zA-Z]*")
@@ -1400,9 +1406,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     """segments 에 단위를 덧붙이고 끝 상태(cwd, env)를 돌려준다. 오류는 LexError."""
     if depth > _MAX_DEPTH:
         raise LexError("재귀 깊이 초과")
+    _check_deadline()
     toks = lex(command)
     state_env = _Env(state_env)   # 쓰기 로그(합류 비용) — 호출자의 dict 는 그대로 둔다
-    st: dict = {"cwd": cwd, "dead": False, "fn": False}   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
+    st: dict = {"cwd": cwd, "dead": False, "fn": False, "start": True}   # start = 지금 단어들이 모두 예약어(명령 자리)   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다
     stack: list[tuple] = []   # (kind, cwd, env, in_pipe, andor, dead, list_snap) — 열 때의 바깥 상태
     words: list[Word] = []
     redirects: list[Redirect] = []
@@ -1417,6 +1424,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def flush() -> Segment | None:
         nonlocal words, redirects
         w, r, words, redirects = words, redirects, [], []
+        st["start"] = True
         # 치환은 할당 값·for 머리·리다이렉트 대상에서도 실행된다(컨트롤러 결정)
         subs = [x for wd in w + [rd.target for rd in r if rd.op not in _HEREDOC and rd.target is not None] for x in _word_subs(wd)]
         # 구분자에 따옴표가 없는 heredoc 본문의 치환도 실행된다
@@ -1618,8 +1626,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def join(states: list) -> None:
         """끝 상태들의 합을 지금 상태로. 비면 도달 불가. 방금 만든 끝 하나면 그대로 둔다. 마감이 지났으면 해석 실패."""
-        if _late():
-            raise LexError("해석 시간 초과")
+        _check_deadline()
         if not states:
             st["dead"] = True
         elif not all(s is last_end[0] for s in states):
@@ -1705,8 +1712,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         st["fn"] = True
 
     def at_start() -> bool:
-        lits = [None if x.is_quoted() else x.literal() for x in words]
-        return not redirects and all(x in _RESERVED or (x == "-p" and lits[i - 1:i] == ["time"]) for i, x in enumerate(lits))
+        return st["start"]
+
+    def add_word(w: Word) -> None:   # words 에 넣으며 명령 자리 플래그를 O(1) 로 유지(예약어 체인이 O(n²) 이었다)
+        lit = None if w.is_quoted() else w.literal()
+        st["start"] = st["start"] and (lit in _RESERVED or (lit == "-p" and bool(words) and words[-1].literal() == "time"))
+        words.append(w)
 
     def close_case() -> None:
         # 어느 분기가 돌았는지(또는 아무것도 안 돌았는지) 모르므로 상태는 시작과 모든 분기 끝이 같을 때만 유지
@@ -1819,6 +1830,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     for idx, t in enumerate(toks):
         if idx < skip:
             continue
+        _check_deadline()
         cur = cases[-1] if stack and stack[-1][0] == "case" else None
         word = t.word.literal() if t.kind == "word" and not t.word.is_quoted() else None
         if cur is not None and cur["mode"] == "head":
@@ -1835,7 +1847,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if cur is not None and cur["mode"] == "pat":
             if word == "esac" and cur["pat"] == 0 and not cur["paren"]:
                 close_case()
-                words.append(t.word)   # 예약어로 벗겨지고 뒤 리다이렉트는 case 전체에 붙는다
+                add_word(t.word)   # 예약어로 벗겨지고 뒤 리다이렉트는 case 전체에 붙는다
             elif t.kind == "word" and cur["pat"] in (0, 2):
                 if _word_subs(t.word):
                     raise LexError("case 패턴 안 치환은 지원하지 않음")
@@ -1909,9 +1921,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                     raise LexError(f"명령 자리의 확장 글롭 {lit[:20]!r}")
                 if st["fn"]:
                     raise LexError("함수 본문은 복합 명령이어야 함")
-                words.append(w)
+                add_word(w)
         elif t.kind == "redir":
             redirects.append(Redirect(t.op, t.fd, t.target, t.body))
+            st["start"] = False
         elif t.op in _BOUNDARY:
             seg = flush()
             if in_pipe or t.op in ("|", "|&"):
@@ -1935,7 +1948,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if len(words) == 1 and not redirects and idx + 1 < len(toks) and toks[idx + 1].op == ")" \
                     and not _is_assign(words[0]):   # `f() 본문` — `A=()` 는 빈 배열 대입
                 define_fn(None if words[0].is_quoted() else words[0].literal())
-                words, skip = [], idx + 2
+                words, skip, st["start"] = [], idx + 2, True
                 continue
             flush()
             open_group("(")

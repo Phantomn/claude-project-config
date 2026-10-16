@@ -276,6 +276,16 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
                 self.assertLessEqual(r.log_len, 6 * n + 20, c[:40])
                 self.assertLess(time.perf_counter() - t0, 2.0, c[:40])
 
+    def test_prefix_chain_is_linear_and_deadline_everywhere(self):   # 5-3 NB4·NB10
+        for c in ("! " * 6000 + "x", "time " * 6000 + "x", "! time ! " * 2000 + "x"):
+            t0 = time.perf_counter()
+            self.assertIsNone(parse(c, "/w", {}).error)
+            self.assertLess(time.perf_counter() - t0, 1.0, c[:20])
+        past = time.monotonic() - 1
+        for c in ("! " * 100 + "x", "time " * 100 + "x", "case a in " + "".join(f"p{i}) v{i}=1;; " for i in range(50)) + "esac",
+                  "f() { " + "".join(f"v{i}=1; " for i in range(50)) + "}; f; f", "a && b; c", "x"):   # 단일 단위·로그 복사·목록·단순
+            self.assertIsNotNone(parse(c, "/w", {}, deadline=past).error, c[:20])
+
     def test_merge_cost_is_not_quadratic_in_variables(self):   # NB9: 합류는 스냅샷 뒤에 바뀐 키만 비교한다
         for c in ("".join(f"while a && b{i}=1; do c || d{i}=2; done\n" for i in range(4000)),
                   "".join(f"t && if a; then f{i}=1; fi || u\n" for i in range(4000)),
