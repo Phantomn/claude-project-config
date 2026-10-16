@@ -12,8 +12,10 @@ from shell_parse import (
     LexError,
     Segment,
     Word,
+    _cmd_name,
     _drop,
     _opts,
+    _strip_all,
     expand,
     literal_args,
 )
@@ -96,8 +98,54 @@ class Job:
 
 # ---- 인자 해석 ----
 
+_COMMON_LONGS = ("--help", "--version")
+# 명령 → (모르는 긴 옵션일 때의 작업, 규칙, GNU 긴 옵션 전부). 표에 있는 명령만 접두 약어를 풀고 모르는 옵션을 확정 불가로 본다
+_LONGS: dict[str, tuple[str, str, frozenset[str]]] = {
+    "rm": (OP_DELETE, DELETE, frozenset(("--force", "--interactive", "--one-file-system", "--no-preserve-root",
+                                         "--preserve-root", "--recursive", "--dir", "--verbose", *_COMMON_LONGS))),
+    "unlink": (OP_DELETE, DELETE, frozenset(_COMMON_LONGS)),
+    "shred": (OP_DELETE, DELETE, frozenset(("--force", "--iterations", "--random-source", "--size", "--remove", "--verbose",
+                                            "--exact", "--zero", *_COMMON_LONGS))),
+    "cp": (OP_OVERWRITE, OVERWRITE, frozenset((
+        "--archive", "--attributes-only", "--backup", "--copy-contents", "--debug", "--dereference", "--force",
+        "--interactive", "--link", "--no-clobber", "--no-dereference", "--preserve", "--no-preserve", "--parents",
+        "--recursive", "--reflink", "--remove-destination", "--sparse", "--strip-trailing-slashes", "--suffix",
+        "--symbolic-link", "--target-directory", "--no-target-directory", "--update", "--verbose",
+        "--keep-directory-symlink", "--one-file-system", "--context", *_COMMON_LONGS))),
+    "mv": (OP_OVERWRITE, OVERWRITE, frozenset((
+        "--backup", "--debug", "--exchange", "--force", "--interactive", "--no-clobber", "--no-copy",
+        "--strip-trailing-slashes", "--suffix", "--target-directory", "--no-target-directory", "--update", "--verbose",
+        "--context", *_COMMON_LONGS))),
+    "install": (OP_OVERWRITE, OVERWRITE, frozenset((
+        "--backup", "--compare", "--debug", "--directory", "--group", "--mode", "--owner", "--preserve-timestamps",
+        "--strip", "--strip-program", "--suffix", "--target-directory", "--no-target-directory", "--verbose",
+        "--preserve-context", "--context", *_COMMON_LONGS))),
+    "tee": (OP_OVERWRITE, OVERWRITE, frozenset(("--append", "--ignore-interrupts", "--output-error", *_COMMON_LONGS))),
+    "truncate": (OP_OVERWRITE, OVERWRITE, frozenset(("--no-create", "--io-blocks", "--reference", "--size", *_COMMON_LONGS))),
+}
+_PERM_LONGS = ("--changes", "--dereference", "--no-dereference", "--no-preserve-root", "--preserve-root", "--quiet",
+               "--silent", "--reference", "--recursive", "--verbose", *_COMMON_LONGS)
+_LONGS.update({n: (OP_RPERM, RPERM, frozenset(_PERM_LONGS + (("--from",) if n == "chown" else ())))
+               for n in ("chmod", "chown", "chgrp")})
+
+
+class _BadOption(Exception):
+    """모르는 긴 옵션·모호한 접두 — 값을 받는지 몰라 피연산자 경계를 확정할 수 없다."""
+
+
+def _long(k: str, longs: frozenset[str] | None) -> str:
+    # getopt_long 처럼 정확한 이름 또는 모호하지 않은 접두를 받는다
+    if longs is None or k in longs:
+        return k
+    hit = [o for o in longs if o.startswith(k)]
+    if len(hit) != 1:
+        raise _BadOption(k)
+    return hit[0]
+
+
 def _args(seg: Segment, values: frozenset[str] = frozenset()) -> tuple[set[str], dict[str, Word], list[Word]]:
-    """GNU 식 옵션(어디에 있어도 옵션, `--` 뒤는 모두 피연산자). (플래그, 값 옵션, 피연산자)."""
+    """GNU 식 옵션(어디에 있어도 옵션, `--` 뒤는 모두 피연산자). (플래그, 값 옵션, 피연산자). 긴 옵션은 정식 이름으로."""
+    longs = _LONGS[seg.name][2] if seg.name in _LONGS else None
     flags: set[str] = set()
     vals: dict[str, Word] = {}
     ops: list[Word] = []
@@ -110,11 +158,12 @@ def _args(seg: Segment, values: frozenset[str] = frozenset()) -> tuple[set[str],
         elif s == "--":
             opts = False
         elif s.startswith("--"):
-            k, eq, _ = s.partition("=")
+            raw, eq, _ = s.partition("=")
+            k = _long(raw, longs)
             flags.add(k)
             if k in values:
                 if eq:
-                    vals[k] = _drop(w, len(k) + 1)
+                    vals[k] = _drop(w, len(raw) + 1)
                 elif i < len(a):
                     vals[k], i = a[i], i + 1
         else:
@@ -157,10 +206,26 @@ def _delete(values: frozenset[str] = frozenset()) -> Callable[[Segment, Ctx | No
     return h
 
 
+_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+_DELETERS = ("rm", "unlink", "shred")
+
+
+def _find_deletes(seg: Segment) -> bool:
+    a = seg.argv[1:]
+    for i, w in enumerate(a):
+        if w.literal() in _FIND_EXEC:
+            j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
+            # /bin/rm·sudo rm·\rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
+            if _cmd_name(_strip_all(a[i + 1:j], {}, seg.env)) in _DELETERS:
+                return True
+    return False
+
+
 def _find(seg: Segment, ctx: Ctx | None) -> list[Job]:
     a = literal_args(seg)
-    if "-delete" not in a and not any(x in ("-exec", "-execdir") and a[i + 1:i + 2] == ["rm"] for i, x in enumerate(a)):
+    if "-delete" not in a and not _find_deletes(seg):
         return []
+    # find_preview 는 '-delete' 와 '-exec|-execdir rm … {} ;|+' 만 받는다 — 그 밖의 삭제 형태(/bin/rm, -ok, shred …)는 None → 확정 불가
     n = next((i for i, x in enumerate(a) if x.startswith("-") or x in ("!", "(", ")")), len(a))
     starts = [expand(w, seg) for w in seg.argv[1:1 + n]]   # 시작 경로만 셸처럼 확장 — 표현식의 '*.py' 는 find 가 본다
     paths = None
@@ -180,6 +245,14 @@ def _into(seg: Segment, ctx: Ctx | None, dest: Word, srcs: list[Word], force_dir
         return d
     names: list[str] = []
     for s in srcs:
+        if contents and _REMOTE.match(s.literal()):
+            # rsync 원격 원본(첫 '/' 앞에 ':'): 'host:' 뒤 마지막 이름이 목적지 아래 이름. 끝 '/'·빈 경로·글롭·변수면
+            # 안의 항목을 모르므로 목적지 폴더 자체를 덮어쓰기 규칙으로(폴더 분류 = 안의 가장 보호 쪽)
+            name = os.path.basename(s.literal().split(":", 1)[1]).lstrip(":")
+            if not name or any(c in name for c in "*?[$`"):
+                return replace(d, paths=[t], trailing=True)
+            names.append(name)
+            continue
         ps = expand(s, seg)
         if ps is None:
             return replace(d, paths=None)
@@ -194,7 +267,8 @@ def _into(seg: Segment, ctx: Ctx | None, dest: Word, srcs: list[Word], force_dir
     return replace(d, paths=[os.path.join(t, n) for n in names])
 
 
-_COPY_VALUES = frozenset({"-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"})
+_COPY_VALUES = frozenset({"-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group",
+                          "--no-preserve", "--sparse", "--strip-program"})
 
 
 def _copy(seg: Segment, ctx: Ctx | None) -> list[Job]:
@@ -293,8 +367,13 @@ def _redirects(seg: Segment, ctx: Ctx | None) -> list[Job]:
 
 def _host_jobs(seg: Segment, ctx: Ctx | None) -> list[Job]:
     h = HANDLERS.get("mkfs" if seg.name.startswith("mkfs") else seg.name)
+    try:
+        jobs = h(seg, ctx) if h else []
+    except _BadOption:
+        op, rule, _ = _LONGS[seg.name]
+        jobs = [Job(op, rule, " ".join([seg.name, *literal_args(seg)]), None)]
     out = []
-    for j in _redirects(seg, ctx) + (h(seg, ctx) if h else []):
+    for j in _redirects(seg, ctx) + jobs:
         if j.rule == OVERWRITE and j.paths is not None:
             keep = [p for p in j.paths if not p.startswith(BENIGN_DEVICES)]   # /dev/null 등은 손실 없음
             if not keep:

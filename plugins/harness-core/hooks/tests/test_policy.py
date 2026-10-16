@@ -81,5 +81,34 @@ class JudgedOpTest(_WorldCase):
         self.assertEqual(j("rm x; echo a > f; git reset --hard; git push; docker volume rm v"), [True, True, True, True, True])
 
 
+def judged(c):
+    return [policy.is_judged_op(s) for s in parse(w.fmt(c), w.fmt("{REPO}"), w.environ).segments]
+
+
+class ReviewFixTest(_WorldCase):
+    def test_find_exec_variants(self):                 # 리뷰 1: -exec 뒤 명령 이름 정규화
+        for c in ["find {HOME}/data -exec /bin/rm {} +", "find {HOME}/data -exec sudo rm {} +",
+                  "find {HOME}/data -exec shred -u {} +", "find {HOME}/data -exec unlink {} \\;", "find {HOME}/data -ok rm {} \\;"]:
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+            self.assertEqual(judged(c), [True], c)
+        self.assertEqual(ev("find {HOME}/data -name '*.txt' -exec rm -f {} +"), [("삭제", PRESERVED)])   # 미리보기 형태
+        self.assertEqual(ev("find . -name x -exec mv {} /t \\;"), []); self.assertEqual(judged("find . -name x -exec mv {} /t \\;"), [False])
+
+    def test_rsync_remote_source(self):                # 리뷰 2: 원격 원본
+        self.assertEqual(ev("rsync -a host:data {HOME}/"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("rsync -a host:src/ {HOME}/data/"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("rsync -a user@host:x/new {HOME}/data/"), [])
+        self.assertEqual(ev("rsync -a rsync://host/mod/ {SCRATCH}/s1/"), [])
+        self.assertEqual(ev("rsync -a src/ {HOME}/data/"), [])
+
+    def test_long_option_prefix(self):                 # 리뷰 3: GNU 긴 옵션 약어
+        self.assertEqual(ev("cp --target=/etc/x a"), [("시스템 경로 쓰기", "SYSTEM")])
+        self.assertEqual(ev("cp --target-dir={HOME}/data a.txt"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("rm --rec --forc {HOME}/data"), [("삭제", PRESERVED)])
+        self.assertEqual(ev("cp --frobnicate a {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])   # 모르는 옵션
+        self.assertEqual(ev("cp --no a {HOME}/notes.md"), [("덮어쓰기", UNRESOLVED)])           # 모호한 접두
+        self.assertEqual(ev("cp --backup=numbered src/probe.ts {HOME}/data/"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
