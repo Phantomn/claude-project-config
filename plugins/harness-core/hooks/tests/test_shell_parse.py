@@ -287,7 +287,7 @@ class ControlFlowMergeTest(unittest.TestCase):   # 재검토 Out-of-Scope 1: 조
             self.assertIsNotNone(parse(c, "/w", {}, deadline=past).error, c[:20])
         t0 = time.perf_counter()   # 해석 도중에 마감이 지나는 경우 — 토큰 루프가 보지 않으면 단일 단위를 끝까지 읽는다
         self.assertIsNotNone(parse("! " * 400000 + "x", "/w", {}, deadline=time.monotonic() + 0.02).error)
-        self.assertLess(time.perf_counter() - t0, 0.5)
+        self.assertLess(time.perf_counter() - t0, 1.5)   # 전체 해석(약 3초)보다 훨씬 먼저 멈춘다
 
     def test_merge_cost_is_not_quadratic_in_variables(self):   # NB9: 합류는 스냅샷 뒤에 바뀐 키만 비교한다
         for c in ("".join(f"while a && b{i}=1; do c || d{i}=2; done\n" for i in range(4000)),

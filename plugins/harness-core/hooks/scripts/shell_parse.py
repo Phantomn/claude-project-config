@@ -240,6 +240,8 @@ def lex(src: str) -> list[Token]:
     last_word_end = -1
     while i < n:
         c = s[i]
+        if len(toks) & 1023 == 0:
+            _check_deadline()   # 큰 입력은 토큰화 중에도 마감을 본다
         if c in " \t":
             i = _BLANK.match(s, i).end()
         elif c == "\\" and s[i + 1 : i + 2] == "\n":
