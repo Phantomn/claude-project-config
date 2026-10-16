@@ -384,6 +384,22 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertEqual(ev(c), [("삭제", GIT_TRACKED)], c)
         self.assertEqual(ev("f=nothing; read -r g; rm -rf src/$f"), [])   # 바뀌지 않은 변수는 그대로
 
+    def test_f_more_variable_changes(self):   # 재검토 Out-of-Scope 2: readonly·nameref·원소·연산자 대입·source·동적 이름
+        (w.scratch / "s1/sub").mkdir()
+        for c in ("f=nothing; readonly f=..; rm -rf src/$f", "f=nothing; declare -n r=f; r=..; rm -rf src/$f",
+                  "f=nothing; typeset -n r=f; r=..; rm -rf src/$f", "declare -n r=f; f=nothing; r=..; rm -rf src/$f",
+                  "f=nothing; f[0]=..; rm -rf src/$f", "f=nothing; f[$i]+=..; rm -rf src/$f",
+                  'f=; : "${f:=../..}"; rm -rf "{SCRATCH}/s1/sub/$f"',"f=nothing; : ${f:=..}; rm -rf src/$f",
+                  "f=nothing; echo ${f=..} > /dev/null; rm -rf src/$f", "f=nothing; source ./env.sh; rm -rf src/$f",
+                  "f=nothing; . ./env.sh; rm -rf src/$f", 'v=f; f=nothing; read "$v"; rm -rf src/$f',
+                  'v=f; f=nothing; printf -v "$v" ..; rm -rf src/$f', 'v=f; f=nothing; declare "$v"=..; rm -rf src/$f',
+                  'v=f; f=nothing; unset "$v"; rm -rf src/$f', 'v=f; f=nothing; readonly "$v"=..; rm -rf src/$f'):
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev('f=nothing; eval "f=.."; rm -rf src/$f'), [("삭제", PROTECTED_NAME)])   # eval 은 이미 해석한다(src/.. = 저장소)
+        for c in ("f=x; source ./env.sh; rm -f {SCRATCH}/s1/x.txt", "f=x; readonly g=1; rm -f {SCRATCH}/s1/$f.txt",
+                  "f=x; g[0]=1; : ${h:=1}; rm -f {SCRATCH}/s1/$f.txt"):   # 다른 변수·변수 안 쓰는 대상은 그대로
+            self.assertEqual(ev(c), [], c)
+
     def test_f_conditional_changes_are_merged(self):   # 재검토 Out-of-Scope 1: if·&&/||·while/until·0회 for 본문의 변화를 믿지 않는다
         for c in ("f=..; if false; then f=nothing; fi; rm -rf src/$f", "f=..; true || f=nothing; rm -rf src/$f",
                   "f=..; while false; do f=nothing; done; rm -rf src/$f", "D=src; if [ -d tmp ]; then D=tmp/out; fi; rm -rf $D",

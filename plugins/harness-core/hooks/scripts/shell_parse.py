@@ -337,7 +337,9 @@ class ParseResult:
     error: str | None = None
 
 
-_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
+_OP_ASSIGN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?=")   # `${f:=값}`·`${f=값}` 는 확장하며 f 에 대입한다
+_NAMEREF = "\x00nameref"   # declare -n 이 있었다 — 어느 이름에 대입해도 다른 변수가 바뀔 수 있다
 _BOUNDARY = ("\n", ";", ";;", "&&", "||", "|", "|&", "&")
 _SUBSHELL_OPS = ("|", "|&", "&")  # 파이프 구성원·배경 명령은 서브셸이라 cd·변수가 밖으로 안 나간다
 _VAR_DECL = ("export", "declare", "typeset", "local")
@@ -843,13 +845,21 @@ def _is_assign(w: Word) -> bool:
 
 
 def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None] | None:
-    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값` 은 누적이라 미확정."""
+    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값`(누적)·`NAME[i]=값`(원소)은 미확정."""
     if not _is_assign(w):
         return None
-    head, _, rest = w.parts[0].text.partition("=")
-    if head.endswith("+"):
-        return head[:-1], None
+    m = _ASSIGN.match(w.parts[0].text)
+    head, rest = m.group()[:-1], w.parts[0].text[m.end():]   # type: ignore[union-attr]
+    if head.endswith(("+", "]")):
+        return head.partition("[")[0].rstrip("+"), None
     return head, _text(((Part(rest, ""),) if rest else ()) + w.parts[1:], env)
+
+
+def _forget(env: dict[str, str | None]) -> None:
+    """모든 변수를 미확정으로(어느 변수를 바꿨는지 모르는 source·동적 이름·nameref). 내부 키(\\x00…)는 그대로."""
+    for k in env:
+        if not k.startswith("\x00"):
+            env[k] = None
 
 
 _READ_VALUE = {"read": "adinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}   # 값을 받는 한 글자 옵션
@@ -858,8 +868,8 @@ _READ_VALUE = {"read": "adinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}
 def _clobbered(name: str, w: list[Word]) -> list[str]:
     """변수를 바꾸는 내장 명령이 건드리는 변수 이름 — 새 값은 모델링하지 않는다(미확정으로 둔다)."""
     a = [x.literal() for x in w[1:]]
-    if name == "unset":
-        return a
+    if name in ("unset", "readonly"):
+        return [x.partition("=")[0] for x in a if not x.startswith("-")]
     if name == "let":
         return [m.group() for x in a if (m := _NAME.match(x))]
     if name == "getopts":
@@ -1232,6 +1242,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
         while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
             w = w[1:]
+        if _NAMEREF in state_env:
+            _forget(state_env)
+        for m in _OP_ASSIGN.finditer(" ".join([x.literal() for x in w] + [rd.target.literal() for rd in r if rd.target]
+                                              + [rd.body for rd in r if rd.body])):
+            state_env[m.group(1)] = None
         if w and all(_is_assign(x) for x in w):  # 할당만 있는 단위는 이후 단위에 반영
             for x in w:
                 k, v = _assign_of(x, state_env)  # type: ignore[misc]
@@ -1253,15 +1268,26 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         unit_cwd = st["cwd"]
         name = _cmd_name(w)
         for k in _clobbered(name, w):
-            state_env[k] = None
+            if _NAME.fullmatch(n := k.partition("[")[0]):
+                state_env[n] = None
+            else:
+                _forget(state_env)   # 동적 이름(`read "$v"`) — 어느 변수인지 모른다
+        if name in ("source", "."):
+            _forget(state_env)
         if name == "git":
             while len(w) > 2 and w[1].literal() == "-C":
                 unit_cwd = _resolve_dir(w[2], unit_cwd, unit_env)
                 w = [w[0]] + w[3:]
         if name in _VAR_DECL:
             for x in w[1:]:
-                if (a := _assign_of(x, state_env)) is not None:
+                lit = x.literal()
+                if lit.startswith("-"):
+                    if name != "export" and "n" in lit[1:]:   # export -n 은 내보내기 해제
+                        state_env[_NAMEREF] = "1"
+                elif (a := _assign_of(x, state_env)) is not None:
                     state_env[a[0]] = a[1]
+                elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
+                    _forget(state_env)   # 동적 이름(`declare "$v"=…`)
             return None
         if not (w or r):
             return None
