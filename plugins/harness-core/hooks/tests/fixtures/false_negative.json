@@ -20,7 +20,7 @@
   {"id": "colon-truncate-redirect", "command": ": > ~/data/important.csv", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 리다이렉트로 비우기"},
   {"id": "push-plus-main", "command": "git push origin +main", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 강제 push(+refspec) 기본 브랜치"},
   {"id": "push-force-main", "command": "git push --force origin main", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 강제 push 기본 브랜치"},
-  {"id": "clean-xffd", "command": "git clean -xffd", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 세션 전 미추적 파일 존재"},
+  {"id": "clean-xffd", "command": "git clean -xffd", "cwd": "{REPO}", "setup": ["no_env"], "expect": "deny", "why": "부록 B 세션 전 미추적 파일 존재"},
   {"id": "checkout-dot", "command": "git checkout .", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 세션 전 수정 존재(README.md)"},
   {"id": "restore-dot", "command": "git restore .", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 세션 전 수정 존재(README.md)"},
   {"id": "stash-drop-presession", "command": "git stash drop stash@{1}", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 세션 전 보관본(World 의 stash@{1})"},
@@ -31,6 +31,7 @@
   {"id": "echo-etc-hosts", "command": "echo x > /etc/hosts", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 시스템 파일 덮어쓰기"},
   {"id": "rm-rf-home", "command": "rm -rf ~", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 끝 문단(현행 deny 유지)"},
   {"id": "rm-r-home-data", "command": "rm -r {HOME}/data", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 끝 문단(rm -r 홈 아래 데이터)"},
+  {"id": "rm-R-capital", "command": "rm -R {HOME}/data", "cwd": "{REPO}", "setup": [], "expect": "deny", "why": "부록 B 끝 문단(rm -R 대문자 재귀)"},
   {"id": "reset-hard-head3", "command": "git reset --hard HEAD~3", "cwd": "{REPO}", "setup": ["dirty_before_session:{REPO}/README.md"], "expect": "deny", "why": "부록 B 끝 문단(세션 전 수정 존재)"},
   {"id": "branch-D-lonely", "command": "git branch -D lonely", "cwd": "{REPO}", "setup": ["unpushed_branch:lonely"], "expect": "deny", "why": "§3.5·D6 push 안 된 세션 전 브랜치(UNPUSHED)"}
 ]

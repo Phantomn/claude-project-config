@@ -199,6 +199,10 @@ class AcceptanceTest(_WorldCase):   # spec §8 합격 묶음 — 부록 B·C
         bad = [c["id"] for c in load("false_negative.json") if judge_case(c).allow]
         self.assertEqual(bad, [])
 
+    def test_unknown_setup_rejected(self):
+        with self.assertRaises(ValueError):
+            judge_case({"id": "x", "command": "ls", "setup": ["close"]})
+
     def test_never_ask_on(self):   # SC1: on 출력은 유효 JSON 이고 결정은 allow·deny 뿐
         for c in load("false_positive.json") + load("false_negative.json"):
             out = json.loads(render(judge_case(c)))["hookSpecificOutput"]
@@ -219,7 +223,7 @@ class AcceptanceTest(_WorldCase):   # spec §8 합격 묶음 — 부록 B·C
             w.sh(s)   # 판정한 명령은 실행해 다음 단계가 실제 결과 상태를 보게 한다
 
     def test_self_revert_scenario(self):
-        # 세션 중 수정은 실제 세션 경로로만 만든다 — 장부를 거치지 않은 수정 뒤 checkout 이 pre-dirty 를 남기는 것은 §13 한계(임의 스크립트)
+        # 세션 중 수정은 실제 세션 경로로만 만든다 — 장부를 거치지 않은 수정 뒤 checkout 이 pre-dirty 를 남기는 것은 §13 에 직접 없는 과보호 방향의 한계
         w.clean_tree()
         # Edit 도구 경로: touch-ledger 기록 뒤 파일 수정
         r = subprocess.run([sys.executable, str(SCRIPTS / "touch-ledger.py")], input=json.dumps(w.edit_payload("{REPO}/src/main.py")),

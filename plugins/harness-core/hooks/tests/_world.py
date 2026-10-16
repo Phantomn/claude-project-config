@@ -386,12 +386,19 @@ class World:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
+SETUP_NAMES = frozenset({"clean_tree", "dirty_before_session", "touch_modify", "make_worktree", "no_env",
+                         "scratch_clone", "scratch_many", "unpushed_branch"})
+
+
 def judge_case(case: dict):
     """픽스처 한 항목: 새 World 에 setup("이름" 또는 "이름:인자" = World 메서드 호출)을 적용하고 on 모드로 판정."""
+    steps = [s.partition(":") for s in case.get("setup", [])]
+    bad = [n for n, _, _ in steps if n not in SETUP_NAMES]
+    if bad:   # 픽스처가 World 의 아무 메서드(close 등)나 부르지 못하게
+        raise ValueError(f"{case.get('id')}: 알 수 없는 setup {bad}")
     w = World()
     try:
-        for step in case.get("setup", []):
-            name, _, arg = step.partition(":")
+        for name, _, arg in steps:
             getattr(w, name)(*([arg] if arg else []))
         return w.judge_cmd(case["command"], case.get("cwd", "{REPO}"))
     finally:
