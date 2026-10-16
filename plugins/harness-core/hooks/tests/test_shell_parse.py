@@ -418,6 +418,46 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         self.assertEqual(last("cd -P -- -x; rm y").cwd, f"{d}/-x")
         self.assertEqual(last("cd -P {D}/ex; rm y").cwd, f"{d}/ex")
 
+    def test_unmodeled_is_distinct_from_syntax_error(self):   # 6-1 NB6: 모델링 불가는 구문 오류와 구분된다
+        for c in ("f() { f; }; f", "f() { f; }", "f() { g; }; g() { f; }; f", "f() { :; }; f() { cd /; }; f", "if t; then f() { :; }; fi; f",
+                  "f() { :; }; unset -f f; f", "f() { :; }; source x; f", "f() { :; }; eval 'f() { :; }'; f", "f() { h() { :; }; h; }; f",
+                  "while true; do break $n; done", "while true; do (break); done", "while true; do break 2; done", "f() { break; }",
+                  "a() { b; }; b() { c; }; c() { d; }; d() { e; }; e() { :; }; a", "f() { cat <<EOF; }\nx\nEOF\nf",
+                  "f() { " + "v=1; " * 30000 + "}; " + "f; " * 20):
+            r = parse(c, "/w", {})
+            self.assertIsNotNone(r.error, c[:30]); self.assertTrue(r.unmodeled, c[:30])
+        for c in ("@(true)", "echo \"x", "fi", "rm x )", "f() rm x"):   # bash 도 못 도는 구문 오류·입력 불량
+            r = parse(c, "/w", {})
+            self.assertIsNotNone(r.error, c); self.assertFalse(r.unmodeled, c)
+
+    def test_reserved_prefix_strip_is_linear(self):   # 6-1 NB9: unit 의 예약어 벗기기 O(n)·마감
+        t0 = time.perf_counter()
+        self.assertIsNone(parse("! " * 80000 + "x", "/w", {}).error)
+        self.assertIsNone(parse("time " * 80000 + "x", "/w", {}).error)
+        self.assertLess(time.perf_counter() - t0, 3.0)   # 각 0.9초(절반은 토큰화)·선형
+        t0 = time.perf_counter()
+        self.assertIsNotNone(parse("! " * 300000 + "x", "/w", {}, deadline=time.monotonic() + 0.3).error)
+        self.assertLess(time.perf_counter() - t0, 1.5)
+
+    def test_inline_binding_and_scope(self):   # 6-2 NB1·NB2·NB3·NB4·NB5·NB7·NB8
+        d, last = self._world()
+        self.assertEqual(last("x=0; f() { local x=1; g; }; g() { local x=2; }; f; rm $x").env.get("x"), "0")   # NB1 중첩 호출의 local 복원
+        self.assertEqual(last("x=0; f() { if t; then local x=1; else local x=2; fi; }; f; rm $x").env.get("x"), "0")   # NB1 갈래 합류
+        self.assertEqual(last("x=0; f() { t && local x=1; }; f; rm $x").env.get("x"), "0")
+        for c in ("f() { shift; cd \"$1\"; }; f {D}/ex {D}/missing; rm y", "f() { set -- x; cd \"$1\"; }; f {D}/ex; rm y",
+                  "f() { set a b; cd \"$1\"; }; f {D}/ex; rm y", "f() { shift 2; cd \"$1\"; }; f {D}/ex {D}/ex {D}/missing; rm y",
+                  "f() { cd {D}/ex; }; f >&3; rm y", "f() { cd {D}/ex; }; f > {D}/nonexist/log; rm y",
+                  "f() { :; }; f 1 2 3 4 5 6 7 8 9 {D}/ex; cd \"${10}\"; rm y"):   # NB2 재바인딩, NB4 호출 리다이렉트, NB8 ${10} 복원
+            self.assertIsNone(last(c).cwd, c)
+        for c, cwd in (("f() { set -e; cd \"$1\"; }; f {D}/ex; rm y", f"{d}/ex"), ("f() { cd {D}/ex; }; f 2>/dev/null; rm y", f"{d}/ex"),
+                       ("f() { for i in 1; do cd {D}/ex; return; done; cd {D}; }; f; rm y", f"{d}/ex"),   # NB5 확정 for 안 return
+                       ("f() { for i in 1 2; do cd {D}/ex; return; done; cd {D}; }; f; rm y", f"{d}/ex"),
+                       ("v={D}/missing; f() { cd \"$v\"; }; v={D}/ex f; rm y", f"{d}/ex")):   # NB3 접두 할당이 본문에 보인다
+            self.assertEqual(last(c).cwd, cwd, c)
+        self.assertEqual(last("v={D}/missing; f() { cd \"$v\"; }; v={D}/ex f; rm y").env.get("v"), f"{d}/missing")   # 접두 할당은 호출 동안만
+        self.assertEqual(last("f() { x=${10}; }; f 1 2 3 4 5 6 7 8 9 ten; rm $x").env.get("x"), "ten")
+        self.assertIn("rm", names("f() { :; }; f; f() { rm x; }; trap f EXIT"))   # NB7 unknown 정의의 본문 판정은 남는다
+
     def test_return_is_not_exit(self):   # NB2: 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측)
         d, last = self._world()
         for c in ("cd {D}/missing || return; rm y", "cd {D}/missing || return 1; rm y", "cd {D}/missing 2>/dev/null || return 0; rm y"):

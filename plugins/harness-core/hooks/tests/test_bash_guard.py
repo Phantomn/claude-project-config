@@ -58,6 +58,12 @@ class JudgeTest(_WorldCase):
             self.assertFalse(judge(w.payload(c), {**w.environ, **ON}).allow, c)
         d = judge(w.payload('rm -rf "unterminated'), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("해석하지 못했다", d.reasons[0])
 
+    def test_unmodeled_denies_without_danger_words(self):   # 6-1 NB6: 모델링 불가 구문은 위험 단어와 무관하게 거부, 구문 오류는 §3.8(가)
+        for c in ("f() { f; }; cd {HOME}; cp {SCRATCH}/s1/x.txt notes.md", "f() { break; }; cp {SCRATCH}/s1/x.txt {HOME}/notes.md",
+                  "if [ -d x ]; then f() { :; }; fi; f; cat {SCRATCH}/s1/x.txt | tee {HOME}/notes.md", "f() { :; }; unset -f f; f; cp a b"):
+            d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn("해석 한계", d.reasons[0], c)
+        self.assertTrue(judge(w.payload("@(true); cp {SCRATCH}/s1/x.txt {HOME}/notes.md"), {**w.environ, **ON}).allow)   # 구문 오류는 현행
+
     def test_budget(self):
         self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
         self.assertIn("판정 시간 초과", judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).reasons[0])

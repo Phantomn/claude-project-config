@@ -17,6 +17,11 @@ class LexError(ValueError):
     pass
 
 
+class ModelError(LexError):
+    """해석기가 모델링하지 못하는 구문(함수 재귀·재정의·갈래 정의 뒤 호출·source/eval 정의·unset -f·함수 안 함수·인라인 상한·break 모양·
+    heredoc 슬라이스) — bash 가 돌리는 명령이라 위험 단어와 무관하게 거부한다. 구문 오류(LexError)는 spec §3.8 (가)."""
+
+
 @dataclass(frozen=True)
 class Part:
     text: str
@@ -338,6 +343,7 @@ class ParseResult:
     segments: list[Segment] = field(default_factory=list)
     error: str | None = None
     log_len: int = 0   # 최상위 해석의 쓰기 로그 길이(비용 상한 테스트용)
+    unmodeled: bool = False   # error 가 모델링 불가(ModelError) — bash 는 돌리므로 fail-closed
 
 
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
@@ -1334,6 +1340,8 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     _deadline[0] = deadline
     try:
         _parse(command, cwd, state_env, context, 0, segments)
+    except ModelError as e:
+        return ParseResult([], str(e), unmodeled=True)
     except LexError as e:
         return ParseResult([], str(e))
     drop = {i for name, a, b in fn_def_segs if name in fn_called for i in range(a, b)}
@@ -1448,10 +1456,13 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
         nonlocal last_list
-        neg = False
-        while w and not w[0].is_quoted() and w[0].literal() in _RESERVED:
-            neg ^= w[0].literal() == "!"   # `! !` 은 원래 값
-            w = w[2 if w[0].literal() == "time" and len(w) > 1 and w[1].literal() == "-p" else 1:]
+        neg, i = False, 0
+        while i < len(w) and not w[i].is_quoted() and (lit := w[i].literal()) in _RESERVED:   # 인덱스로 한 번에(슬라이스 반복은 이차)
+            neg ^= lit == "!"   # `! !` 은 원래 값
+            i += 2 if lit == "time" and i + 1 < len(w) and w[i + 1].literal() == "-p" else 1
+            if i & 1023 == 0:
+                _check_deadline()
+        w = w[i:]
         if w or r:   # 요소의 단위 수와 '실패 경로 없음' 여부(outcome 이 읽는다)
             elem.update(n=elem["n"] + 1, sure=False, pre=None, exit=False, neg=neg)
             last_end[0] = last_list = None   # 상태가 바뀔 수 있다 — 앞서 만든 끝 상태를 지금 상태로 믿지 않는다
@@ -1569,10 +1580,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             n = w[1].literal() if len(w) > 1 else "1"
             loops = [c for c in ctl if c["loop"]]
             if not n.isdigit() or int(n) < 1 or int(n) > len(loops):
-                raise LexError(f"모델링할 수 없는 {name} {n}")
+                raise ModelError(f"모델링할 수 없는 {name} {n}")
             target = loops[-int(n)]
             if any(k[0] == "(" for k in stack[target["depth"] + 1:]):
-                raise LexError(f"서브셸 안의 {name}")
+                raise ModelError(f"서브셸 안의 {name}")
             target["ends"].append(now())
             elem["exit"] = True
         seg = Segment(name, w, r, unit_cwd, unit_env, context, depth, via_xargs)
@@ -1749,9 +1760,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         """정의된 함수 호출 — 본문을 호출 시점 상태에서 다시 해석한다. 위치 매개변수는 인자 단어(확정이면 값), local·위치
         매개변수는 호출 끝에 복원, return 은 호출 끝으로 합류, exit 은 밖까지 도달 불가. 모델링 불가(None)·재귀·깊이·총량 초과는 해석 실패."""
         if body is None or fname in fn_stack or len(fn_stack) >= _FN_DEPTH:
-            raise LexError(f"모델링할 수 없는 함수 호출 {fname}")
+            raise ModelError(f"모델링할 수 없는 함수 호출 {fname}")
         if _for_runs[1] + len(body) > _FOR_CHARS:
-            raise LexError("함수 인라인 총량 초과")
+            raise ModelError("함수 인라인 총량 초과")
         _for_runs[1] += len(body)
         vals = [_text(x.parts, env, split=True) for x in args]
         inner: dict[str, str | None] = {k: v for k, v in state_env.items() if k not in _PARAMS and k != _LOCALS}
@@ -1763,6 +1774,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         fn_called.add(fname)
         try:
             after_cwd, after_env = _parse(body, st["cwd"], inner, context, depth + 1, segments, via_xargs)
+        except LexError as e:   # 정의 시점엔 읽혔는데 본문만 다시 읽으면 깨지는 모양(heredoc 이 `}` 뒤 등) — 모델링 불가
+            raise ModelError(f"함수 본문 재해석 실패 {fname}: {e}") from e
         finally:
             fn_stack.pop()
         dead = after_env.pop(_DEAD, None) is not None
