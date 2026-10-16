@@ -1025,8 +1025,10 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
     return words[i + _WRAPPER_TAIL.get(name, 0):]
 
 
-def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, str | None]) -> list[Word]:
+def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, str | None],
+               names: list[str] | None = None) -> list[Word]:
     """할당과 래퍼를 반복해 벗긴다. 할당 값은 env(이 줄 단어를 확장하는 env)로 확장해 run_env(명령이 보는 env)에 저장.
+    벗긴 래퍼 이름은 names 에 모은다.
 
     맨 앞 접두 할당(bash 가 왼쪽부터 순차 확장)은 호출자가 먼저 벗긴다 — 여기서는 모두 래퍼 뒤 단어로 본다.
     """
@@ -1036,6 +1038,8 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
             w = w[1:]
         if not w or (rest := _strip_wrapper(w, run_env, env)) is None:
             break
+        if names is not None:
+            names.append(_cmd_name(w))
         w = rest
     return w
 
@@ -1367,7 +1371,10 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         while w and (a := _assign_of(w[0], run_env)) is not None:  # 맨 앞 할당끼리는 왼쪽부터 순차 확장
             run_env[a[0]] = a[1]
             w = w[1:]
-        w = _strip_all(w, run_env, unit_env)
+        wrappers: list[str] = []
+        w = _strip_all(w, run_env, unit_env, wrappers)
+        # 래퍼 밑의 명령은 성공 가정을 못 받는다(sudo 는 비밀번호·권한, env·nice 는 PATH 검색) — command·builtin 은 결과를 바꾸지 않는다(NB6)
+        plain = not r and all(x in ("command", "builtin") for x in wrappers)
         if w and not w[0].is_quoted() and w[0].literal() in _LOOP_HEAD:
             if len(w) > 1:   # 항목마다 묶지 못한 루프 변수는 미확정
                 state_env[w[1].literal()] = None
@@ -1406,11 +1413,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                         state_env[_MADE + a[1]] = "1"
                 elif not _NAME.fullmatch(lit.partition("=")[0].partition("[")[0]):
                     _forget(state_env)   # 동적 이름(`declare "$v"=…`)
-            elem["sure"] = name not in ("typeset", "local") and not r and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
+            elem["sure"] = name not in ("typeset", "local") and plain and _sure_assign(w, state_env)   # 함수 밖 local 은 늘 실패
             return None
         if not (w or r):
             return None
-        if not r:
+        if plain:
             if name in _SURE_CMDS or (name == "readonly" and _sure_assign(w, state_env)):
                 elem["sure"] = True
             elif name == "exit":   # 최상위 return 은 오류를 내고 계속 실행된다(bash -c 실측) — 경로 끝이 아니다
@@ -1425,7 +1432,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             st["cwd"] = after[0]
             state_env.clear()
             state_env.update(after[1])
-        if name in ("cd", "pushd"):
+        if name in ("cd", "pushd", "popd") and any(x not in ("command", "builtin") for x in wrappers):
+            pass   # 래퍼(sudo·env·nice …) 뒤의 cd 는 외부 명령 검색이라 이 셸의 폴더를 바꾸지 않는다
+        elif name in ("cd", "pushd"):
             elem["pre"] = now()   # 실패한 cd 는 폴더를 바꾸지 않는다 — 실패 끝은 cd 전 상태
             args = [x for x in w[1:] if x.literal() != "--" and not (x.literal().startswith("-") and x.literal() != "-")]
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
@@ -1433,7 +1442,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             if st["cwd"] is not None:
                 state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
                 # 있는 폴더·앞서 만든 폴더로의 cd 만 실패 경로가 없다 — 없는 폴더(`cd build && …`)는 실패 끝을 유지
-                elem["sure"] = not r and (_made(st["cwd"], state_env) or (
+                elem["sure"] = plain and (_made(st["cwd"], state_env) or (
                     os.path.isdir(st["cwd"]) and os.access(st["cwd"], os.X_OK)))
             else:
                 state_env.pop("PWD", None)

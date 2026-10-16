@@ -372,6 +372,18 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                   "mkdir -pm 700 {D}/m && cd {D}/m; rm y"):
             self.assertEqual(last(c).cwd, f"{d}/m", c)
         self.assertEqual(last("mkdir -m 644 {D}/m && rm y").cwd, d)   # mkdir 자체는 성공한다
+
+    def test_wrapped_command_is_not_sure(self):   # NB6: 래퍼를 벗긴 이름으로 성공 가정을 정하지 않는다(command·builtin 은 결과에 영향 없음)
+        d, last = self._world()
+        for c in ("sudo -n true && cd {D}/ex; rm y", "env true && cd {D}/ex; rm y", "nice true && cd {D}/ex; rm y",
+                  "timeout 1 true && cd {D}/ex; rm y", "doas true && cd {D}/ex; rm y", "nohup echo x && cd {D}/ex; rm y",
+                  "sudo mkdir -p {D}/n && cd {D}/n; rm y", "env X=1 true && cd {D}/ex; rm y"):
+            self.assertIsNone(last(c).cwd, c)
+        for c in ("command true && cd {D}/ex; rm y", "builtin true && cd {D}/ex; rm y", "time true && cd {D}/ex; rm y",
+                  "command -p true && cd {D}/ex; rm y", "command cd {D}/ex && true; rm y", "builtin cd {D}/ex; rm y"):
+            self.assertEqual(last(c).cwd, f"{d}/ex", c)
+        for c in ("sudo cd {D}/ex; rm y", "env cd {D}/ex; rm y", "nice cd {D}/ex; rm y", "sudo cd {D}/ex && true; rm y"):   # 래퍼 뒤 cd 는 이 셸에서 돌지 않는다
+            self.assertEqual(last(c).cwd, d, c)
         self.assertEqual(last("f() { :; }; cd {D}/ex; rm y").cwd, f"{d}/ex")
         self.assertIsNotNone(parse("f() rm x", "/w", {}).error)
 
