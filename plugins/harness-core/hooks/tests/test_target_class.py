@@ -557,6 +557,16 @@ class ClockMarginTest(_WorldCase):
         t = ctx.session_start + 0.5; os.utime(f, (t, t))
         self.assertFalse(is_session_change(f, ctx)); self.assertTrue(is_session_change(f, self.mctx("0", transcript=tr)))
 
+    def test_other_session_touch_just_before_start(self):   # (b') 장부 쪽 `e.ts >= start - margin` — 실제 Ledger.record 로
+        f = w.fmt("{HOME}/shared.txt"); Path(f).write_text("x")
+        Ledger(w.environ).record(normalize(f, False), KIND_TOUCHED, "other")   # 다른 세션이 손댄 시각 = 지금
+        time.sleep(0.05)
+        tr = w.fmt("{OUT}/t4.jsonl"); Path(tr).write_text("")                  # 내 세션 시작은 그 0.05초 뒤
+        ctx = self.mctx("0.5", transcript=tr)
+        t = ctx.session_start + 1; os.utime(f, (t, t))                         # 수정 시각은 여유 밖(세션 중)
+        self.assertFalse(is_session_change(f, ctx))                            # 시작 직전의 남의 손길도 내 변경 아님
+        self.assertTrue(is_session_change(f, self.mctx("0", transcript=tr)))    # 여유 0 이면 시작 전 기록이라 무시
+
     def test_session_repo_needs_margin(self):               # (c) 분류 1b
         tr = w.fmt("{OUT}/t3.jsonl"); Path(tr).write_text("")
         repo = w.fmt("{OUT}/fresh"); subprocess.run(["git", "init", "-q", repo], env=w.environ, check=True)
