@@ -116,6 +116,13 @@ class LedgerTest(_WorldCase):
         self.assertEqual(L.moved_in_near("/d"), "/d/sub/f")              # 하위에 기록
         self.assertIsNone(L.moved_in_near("/d/su")); self.assertIsNone(L.moved_in_near("/e"))
 
+    def test_rows_cache_follows_file(self):   # C1: 한 인스턴스는 읽기를 캐시하되, 어느 쪽의 record() 뒤에도 새 줄을 본다
+        L, M = Ledger(w.environ), Ledger(w.environ)
+        L.record("/a", KIND_MOVED_IN, "s1"); self.assertEqual(M.moved_in_near("/a"), "/a")
+        M.record("/b", KIND_MOVED_IN, "s1"); self.assertEqual(L.moved_in_near("/b"), "/b"); self.assertEqual(M.moved_in_near("/b"), "/b")
+        L.record("/c", KIND_TOUCHED, "s1"); self.assertEqual([e.kind for e in M.entries("/c")], [KIND_TOUCHED])
+        self.assertIs(M._rows_cached(), M._rows_cached())   # 파일이 그대로면 같은 객체
+
     def test_entries_for(self):
         L = Ledger(w.environ); L.record("/a", KIND_CREATED, "s1"); L.record("/b", KIND_TOUCHED, "s1"); L.record("/c", KIND_TOUCHED, "s1")
         got = L.entries_for(["/a", "/b", "/none"])
@@ -370,6 +377,31 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(git_tracked(repo, ps, ctx), set(ps[:2]))
         self.assertEqual(git_ignored(repo, ps, ctx), {ps[3]})
         self.assertIsNone(git_tracked(repo, ps, w.ctx(budget=0)))                         # 조회 실패 = None(확정 불가 쪽)
+
+    def test_big_ledger_many_targets_within_budget(self):   # 최종 리뷰 C1: 장부 2MB + 피연산자 200개가 예산 안에 끝난다
+        L = Ledger(w.environ)
+        for i in range(78000):   # 압축 상한(5MB) 바로 아래 — 실제 운영 장부의 최대 크기
+            L.record(f"/elsewhere/session-file-{i}.txt", KIND_TOUCHED, f"s{i % 7}")
+        self.assertGreater(L.path.stat().st_size, 4 * 1024 * 1024)
+        many = w.home / "many"; many.mkdir()
+        files = [str(many / f"f{i}.txt") for i in range(200)]
+        for f in files:
+            Path(f).write_text("x")
+        time.sleep(0.02); tr = w.fmt("{OUT}/later-transcript.jsonl"); Path(tr).write_text("")   # 그 뒤 시작한 세션 → 전부 세션 전 파일
+        ctx = w.ctx(transcript=tr); t0 = time.monotonic()
+        kinds = {classify(p, ctx).kind for p in files}
+        self.assertLess(time.monotonic() - t0, 5.0); self.assertEqual(kinds, {PRESERVED})   # 200개 전부 예산 안에 분류(시간 초과 없음)
+        from bash_guard import judge
+        payload = {**w.payload("rm " + " ".join(files)), "transcript_path": tr}
+        t0 = time.monotonic(); d = judge(payload, {**w.environ, "HARNESS_BASH_GUARD": "on"}); dt = time.monotonic() - t0
+        self.assertFalse(d.allow); self.assertLess(dt, 5.5); self.assertIn("세션 전부터 있던 유일본", d.reasons[0])
+
+    def test_budget_checked_before_ledger(self):   # C1: 예산이 다했으면 장부를 열기 전에 끝낸다(읽을 수 없는 장부로 관측)
+        if os.geteuid() == 0:
+            self.skipTest("root 는 권한 000 파일도 읽는다")
+        led = state_dir(w.environ) / "ledger.tsv"; led.parent.mkdir(parents=True, exist_ok=True); led.write_text(""); led.chmod(0)
+        c = classify(w.fmt("{HOME}/notes.md"), w.ctx(budget=0))
+        self.assertEqual(c.kind, UNRESOLVED); self.assertIn("시간 초과", c.detail)
 
     def test_broken_git_is_unresolved(self):          # .git 이 있는데 rev-parse 실패 → 저장소 아님이 아니라 확정 불가
         os.makedirs(w.fmt("{OUT}/bf")); Path(w.fmt("{OUT}/bf/.git")).write_text(""); Path(w.fmt("{OUT}/bf/f")).write_text("x")

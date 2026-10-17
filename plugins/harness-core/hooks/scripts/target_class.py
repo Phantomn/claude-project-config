@@ -413,9 +413,10 @@ def classify(path: str | None, ctx: Ctx, trailing_slash: bool = False) -> Cls:
     if is_scratch_root(p, ctx):
         # 루트 자체는 다른 세션·프로세스의 파일까지 담는다 (spec §3.4 임시 루트 ★)
         return Cls(UNRESOLVED, p, "임시 루트 자체 — 자기 세션 폴더로 범위를 좁혀라")
-    if ctx.ledger.moved_in_near(p):
-        return Cls(PRESERVED, p, "옮겨진 유일본")
     try:
+        _budget(ctx)   # 경로마다 입구에서 — 장부·git 조회 전에 예산이 다했으면 바로 끝낸다(최종 리뷰 C1)
+        if ctx.ledger.moved_in_near(p):
+            return Cls(PRESERVED, p, "옮겨진 유일본")
         me = _classify_many([p], ctx)[0]
         if me.session_repo:
             return me

@@ -57,6 +57,7 @@ class Ledger:
         self.path: Path | None = d / "ledger.tsv" if d.is_absolute() else None
         self.compact_bytes = compact_bytes
         self.deadline = deadline   # time.monotonic() 기준 잠금 대기 마감(판정 예산과 같은 값)
+        self._cache: tuple[tuple | None, list[tuple[str, Entry]], list[tuple[str, Entry]]] | None = None
 
     def _read(self) -> str:
         if self.path is None:
@@ -69,6 +70,21 @@ class Ledger:
     def _rows(self, text: str) -> list[tuple[str, Entry]]:
         return [r for r in map(_parse, text.splitlines()) if r]
 
+    def _rows_cached(self, moved_in: bool = False) -> list[tuple[str, Entry]]:
+        """장부 행(moved_in=True 면 moved-in 행만). 파일(inode·mtime·크기)이 그대로면 다시 읽지 않는다 — 판정 한 번이
+        대상 수만큼 장부를 읽지 않게(최종 리뷰 C1). 어느 프로세스의 record() 든 파일을 바꾸므로 키가 달라져 무효가 된다."""
+        if self.path is None:
+            return []
+        try:
+            st = os.stat(self.path)
+            key: tuple | None = (st.st_ino, st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            key = None
+        if self._cache is None or self._cache[0] != key:
+            rows = self._rows(self._read())
+            self._cache = (key, rows, [r for r in rows if r[1].kind == KIND_MOVED_IN])
+        return self._cache[2 if moved_in else 1]
+
     def entries(self, path: str) -> list[Entry]:
         return self.entries_for([path]).get(path, [])
 
@@ -77,15 +93,15 @@ class Ledger:
         # 압축은 rename 으로 갈아끼우므로 잠금 없이 읽어도 온전한 파일 하나를 본다
         wanted = None if paths is None else set(paths)
         out: dict[str, list[Entry]] = {}
-        for p, e in self._rows(self._read()):
+        for p, e in self._rows_cached():
             if wanted is None or p in wanted:
                 out.setdefault(p, []).append(e)
         return out
 
     def moved_in_near(self, path: str) -> str | None:
         base = path.rstrip("/") + "/"
-        for p, e in self._rows(self._read()):
-            if e.kind == KIND_MOVED_IN and (p == path or path.startswith(p.rstrip("/") + "/") or p.startswith(base)):
+        for p, _ in self._rows_cached(moved_in=True):
+            if p == path or path.startswith(p.rstrip("/") + "/") or p.startswith(base):
                 return p
         return None
 
@@ -132,15 +148,15 @@ class Ledger:
                 os.close(afd)
             return
         try:
-            text = self._read()
+            # touched 는 중복을 허용하고 압축 전에는 파일을 읽을 일이 없다 — 기록마다 장부 전체를 읽지 않는다(C1)
             if kind != KIND_TOUCHED and any(p == path and e.kind == kind and e.session_id == session_id
-                                            for p, e in self._rows(text)):
+                                            for p, e in self._rows_cached()):
                 return
             if os.fstat(fd).st_size <= self.compact_bytes:
                 os.write(fd, line.encode(**_ENC))
                 return
             now = time.time()
-            kept = [ln + "\n" for ln in text.splitlines() if _keep(ln, now)]
+            kept = [ln + "\n" for ln in self._read().splitlines() if _keep(ln, now)]
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             os.fchmod(tfd, 0o600)   # 같은 pid 로 남은 임시 파일이면 O_CREAT 의 모드가 적용되지 않는다
