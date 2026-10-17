@@ -48,7 +48,7 @@ def _retry_on_clock_step(fn):
 
 
 class WorldCase(unittest.TestCase):
-    """테스트마다 새 World 를 테스트 모듈의 전역 `w` 에 둔다. 벽시계 역행(WSL2 실측 약 30초마다 −1.28초)이
+    """테스트마다 새 World 를 테스트 모듈의 전역 `w` 에 둔다. 벽시계 역행(WSL2 실측 2026-10-15(journald `Time jumped backwards`, 200회 반복 재현): 약 30초마다 약 0.6초 역행, 연속 2회 합 1.28초)이
     세계 생성 뒤에 끼어 시각 순서가 깨진 채 실패하면, 세계를 다시 만들어 최대 3번 돌린다."""
 
     def setUp(self) -> None:
@@ -86,7 +86,7 @@ class DockerRes:
 
 class World:
     def __init__(self, worktree: bool = False, docker: bool = False) -> None:
-        # 벽시계가 뒤로 가면(WSL2 실측 약 0.5초) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
+        # 벽시계가 뒤로 가면(위 WorldCase 의 실측) 세션 전 파일이 세션 뒤 생성으로 찍혀 분류 테스트가 간헐 실패한다 — 순서가 맞을 때까지 다시 만든다
         for attempt in range(3):
             self._create(worktree, docker)
             if self._order_ok(WORLD_CLOCK_MARGIN):

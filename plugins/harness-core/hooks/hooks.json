@@ -1,5 +1,5 @@
 {
-  "description": "harness-core — Bash 자동승인/차단 가드(재귀삭제 대상 판정·코드읽기 serena/codegraph 전환 차단) + Read 코드파일 넛지 + serena·codegraph 연동(HARNESS_CODEREAD_GUARD=1). + /wrap 태스크 인계(SessionStart 표시·첫 입력 수령·TaskCreated·Stop 강제).",
+  "description": "harness-core — Bash 가드: 현행 자동승인/차단(OLD) + bash-guard 대상 성질 판정기(HARNESS_BASH_GUARD=off|shadow|on, 프로젝트 settings env 로도 켬; off·shadow 는 OLD 출력, on 은 allow/deny 만) + Write/Edit/NotebookEdit 직전 공유 장부 기록(touch-ledger, 스위치 무관) + 코드읽기 serena/codegraph 전환 차단·Read 코드파일 넛지(HARNESS_CODEREAD_GUARD=1) + /wrap 태스크 인계(SessionStart 표시·첫 입력 수령·TaskCreated·Stop 강제).",
   "hooks": {
     "PreToolUse": [
       {

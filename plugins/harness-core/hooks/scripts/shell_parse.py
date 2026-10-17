@@ -375,7 +375,7 @@ class Segment:
 class ParseResult:
     segments: list[Segment] = field(default_factory=list)
     error: str | None = None
-    log_len: int = 0   # 최상위 해석의 쓰기 로그 길이(비용 상한 테스트용)
+    log_len: int = 0   # 최상위 해석의 쓰기 로그 길이 — 테스트 계측(test_shell_parse.test_log_is_bounded_by_writes 가 쓴다), 판정은 안 쓴다
     unmodeled: bool = False   # error 가 모델링 불가(ModelError) — bash 는 돌리므로 fail-closed
     dynamic: bool = False     # 그중 정적으로 알 수 없는 코드(CodeUnknown) — 사유 문구가 다르다
 

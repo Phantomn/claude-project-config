@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import target_class
 from _world import World, WorldCase
+from guard_mode import repo_root, switch_mode
 from ledger import (
     KIND_CREATED,
     KIND_MOVED_IN,
@@ -65,10 +66,8 @@ from target_class import (
     normalize,
     note_touch,
     protected_name,
-    repo_root,
     run,
     session_start,
-    switch_mode,
 )
 
 w: World = None  # type: ignore[assignment]  # WorldCase.setUp 이 테스트마다 넣는다
@@ -619,7 +618,7 @@ MARGIN = "HARNESS_BASH_GUARD_CLOCK_MARGIN"
 
 
 class ClockMarginTest(_WorldCase):
-    """벽시계 역행(WSL2 실측 약 30초마다 −1.28초) 방어: 세션 시작 + 여유 안의 시각은 '세션 전'으로 본다."""
+    """벽시계 역행(WSL2 실측 2026-10-15(journald `Time jumped backwards`, 200회 반복 재현): 약 30초마다 약 0.6초 역행, 연속 2회 합 1.28초) 방어: 세션 시작 + 여유 안의 시각은 '세션 전'으로 본다."""
 
     def mctx(self, margin, **kw):
         return w.ctx(environ_extra={MARGIN: margin}, **kw)

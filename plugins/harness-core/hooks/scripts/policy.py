@@ -838,10 +838,6 @@ def _judge_path(j: Job, p: str, ctx: Ctx, host: bool = True) -> Finding | None:
     return Finding(j.op, target, "DIRTY", ADV_DIRTY)
 
 
-def _old(t: float, ctx: Ctx) -> bool:
-    return before_session(t, ctx)
-
-
 # ---- 작업 단위 규칙 (git·docker 볼륨) ----
 
 def _j_dirty(j: Job, ctx: Ctx) -> list[Finding]:
@@ -875,7 +871,7 @@ def _j_stash(j: Job, ctx: Ctx) -> list[Finding]:
         times, target = (None if t is None else [t]), j.args[1]
     if times is None:
         return [Finding(j.op, target, UNRESOLVED, ADV_UNRESOLVED)]
-    return [Finding(j.op, target, "OLD_STASH", ADV_STASH)] if any(_old(t, ctx) for t in times) else []
+    return [Finding(j.op, target, "OLD_STASH", ADV_STASH)] if any(before_session(t, ctx) for t in times) else []
 
 
 def _j_branch(j: Job, ctx: Ctx) -> list[Finding]:
@@ -884,7 +880,7 @@ def _j_branch(j: Job, ctx: Ctx) -> list[Finding]:
     if info is None:
         return [Finding(j.op, b, UNRESOLVED, ADV_UNRESOLVED)]
     if (info.upstream_ref_exists and info.ahead == 0) or info.merged_into_default or info.reachable_elsewhere or (
-            info.created_at is not None and not _old(info.created_at, ctx)):
+            info.created_at is not None and not before_session(info.created_at, ctx)):
         return []
     return [Finding(j.op, b, "UNPUSHED", ADV_UNPUSHED)]
 
@@ -973,7 +969,7 @@ def _volume(op: str, name: str, target: str, ctx: Ctx) -> Finding | None:
     t = docker_volume_created(name, ctx)
     if t is None:   # 데몬 없음 등 — 볼륨 삭제는 확정 불가(spec §3.5 Docker)
         return Finding(op, target, UNRESOLVED, ADV_VOLUME)
-    return Finding(op, target, "OLD_VOLUME", ADV_VOLUME) if _old(t, ctx) else None
+    return Finding(op, target, "OLD_VOLUME", ADV_VOLUME) if before_session(t, ctx) else None
 
 
 def _j_volumes(j: Job, ctx: Ctx) -> list[Finding]:

@@ -11,11 +11,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 # subprocess·hashlib·datetime 은 쓰는 함수 안에서 import — 모든 Bash 호출의 기동 지연(약 5ms)을 조회가 필요할 때만 낸다
-from guard_mode import (  # noqa: F401 — 재수출(기존 import 경로 유지)
-    MODE_RANK,
-    repo_root,
-    switch_mode,
-)
 from ledger import (
     KIND_CREATED,
     KIND_PRE_DIRTY,
@@ -30,7 +25,7 @@ TYPE_CHECKING = False   # typing import 를 피한다(bash_guard 와 같은 이�
 if TYPE_CHECKING:
     import subprocess
 
-# 벽시계가 뒤로 간다(WSL2 실측 약 30초마다 −0.6초·−0.68초 연속) — 세션 전 항목이 세션 시작 뒤로 찍혀
+# 벽시계가 뒤로 간다(WSL2 실측 2026-10-15(journald `Time jumped backwards`, 200회 반복 재현): 약 30초마다 약 0.6초 역행, 연속 2회 합 1.28초) — 세션 전 항목이 세션 시작 뒤로 찍혀
 # '세션이 만든 것'(저장소 통째 삭제 허용)이 되지 않게, 세션 시작 + 여유 안의 시각은 세션 전으로 본다
 CLOCK_MARGIN = 2.0
 CLOCK_MARGIN_ENV = "HARNESS_BASH_GUARD_CLOCK_MARGIN"
