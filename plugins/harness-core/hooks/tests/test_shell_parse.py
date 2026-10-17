@@ -1478,6 +1478,17 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
         self.assertEqual(names('run() { "$@"; }; run make -j4')[-1], "make")
 
+    def test_c7_coproc(self):   # 6a: coproc 는 예약어 — 안쪽 명령을 판정하고(이름 붙은 꼴은 복합 명령 앞만), 서브셸이라 상태는 밖으로 안 나간다(c7/real7.out)
+        for c in ("coproc rm -rf ~/data", "coproc NAME { rm -rf ~/data; }", "coproc NAME ( rm -rf ~/data )", "coproc { rm -rf ~/data; }",
+                  "coproc sudo rm -rf ~/data", "coproc while true; do rm -rf ~/data; done"):
+            self.assertEqual(targets(c), [["/h/data"]], c)
+        for c in ("coproc cd /; rm -rf x", "coproc NAME { cd /; }; rm -rf x", "coproc { cd /; }; rm -rf x"):
+            self.assertEqual(targets(c), [["/w/x"]], c)
+        self.assertEqual(targets("coproc ; { cd /tmp; }; rm -rf x"), [["/tmp/x"]])   # 복합 명령이 뒤따르지 않은 coproc 은 다음 그룹을 가두지 않는다
+        self.assertEqual(targets('coproc X=/h/data; rm -rf "$X"'), [None])
+        self.assertEqual(names("coproc NAME echo x"), ["NAME"])   # 단순 명령 앞의 이름은 명령(bash 실측: NAME: command not found)
+        self.assertTrue(dyn("coproc $X rm -rf ~/data"))
+
 
 if __name__ == "__main__":
     unittest.main()

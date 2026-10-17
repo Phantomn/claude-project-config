@@ -429,7 +429,7 @@ _CODE_OPTS = ("-c", "--command", "--session-command")
 _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic", "busybox")   # busybox <애플릿> …
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
 # `time` 은 예약어라 뒤에 복합 명령(`time if …`)이 올 수 있다 — 래퍼로 벗기면 `if` 가 명령 자리로 보이지 않는다(NB8)
-_RESERVED = ("{", "}", "!", "time", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
+_RESERVED = ("{", "}", "!", "time", "coproc", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac")
 _LOOP_HEAD = ("for", "select")
 _LOOPS = ("for", "select", "while", "until")
 _CTL_OPEN = ("if", "while", "until")
@@ -1911,13 +1911,21 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
 
     def unit(w: list[Word], r: list[Redirect]) -> Segment | None:
         nonlocal last_list
-        neg, i = False, 0
+        neg, i, co = False, 0, False
         while i < len(w) and not w[i].is_quoted() and (lit := w[i].literal()) in _RESERVED:   # 인덱스로 한 번에(슬라이스 반복은 이차)
             neg ^= lit == "!"   # `! !` 은 원래 값
+            co |= lit == "coproc"
             i += 2 if lit == "time" and i + 1 < len(w) and w[i + 1].literal() == "-p" else 1
             if i & 1023 == 0:
                 _check_deadline()
         w = w[i:]
+        if co and w:   # coproc 단순 명령 — 비동기 서브셸이라 판정만 하고 상태는 되돌린다(c7/real7.out: cd·대입이 밖에 없다)
+            st.pop("co", None)
+            s0 = now()
+            seg = unit(w, r)
+            set_state(s0)
+            elem.update(sure=False, pre=None, exit=False)
+            return seg
         if w or r:   # 요소의 단위 수와 '실패 경로 없음' 여부(outcome 이 읽는다)
             elem.update(n=elem["n"] + 1, sure=False, pre=None, exit=False, neg=neg)
             last_end[0] = last_list = None   # 상태가 바뀔 수 있다 — 앞서 만든 끝 상태를 지금 상태로 믿지 않는다
@@ -2181,6 +2189,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     def open_group(kind: str) -> None:
         # 파이프 구성원 판정은 같은 그룹 깊이에서만 하므로 안쪽은 in_pipe·`&&` 목록을 새로 시작한다
         nonlocal snap, list_snap, in_pipe, andor
+        if st.pop("co", False):   # coproc 복합 명령 — 서브셸처럼 닫을 때 되돌린다
+            isolated.add(len(stack))
         if st["fn"]:   # 함수 본문 — 닫을 때 서브셸처럼 되돌리고 본문 소스를 남긴다
             isolated.add(len(stack))
             fn_cur[-1]["depth"] = len(stack)
@@ -2443,6 +2453,12 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 continue
             if word not in ("fi", "done", "for", "select"):   # for·select 머리는 unit 이, fi·done 뒤 리다이렉트는 단위가 받는다
                 continue
+        if word == "coproc" and at_start():   # `coproc [NAME] 복합명령` — 이름은 복합 명령 앞에서만(단순 명령 앞이면 그것이 명령)
+            add_word(t.word)
+            st["co"] = True
+            if (n := bare(idx + 1)) and _NAME.fullmatch(n) and (bare(idx + 2) == "{" or (idx + 2 < len(toks) and toks[idx + 2].op == "(")):
+                skip = idx + 2
+            continue
         if word == "function" and not words and not redirects:   # `function f [()] 본문`
             skip = idx + 2
             if skip + 1 < len(toks) and toks[skip].op == "(" and toks[skip + 1].op == ")":
@@ -2501,6 +2517,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             st["start"] = False
         elif t.op in _BOUNDARY:
             seg = flush()
+            st.pop("co", None)   # 복합 명령이 뒤따르지 않은 coproc
             if in_pipe or t.op in ("|", "|&"):
                 restore()   # 파이프 구성원은 서브셸
             if t.op in ("&&", "||"):
