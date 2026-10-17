@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -67,6 +70,12 @@ class JudgeTest(_WorldCase):
         for c in ("env -C {HOME} cp {SCRATCH}/s1/x.txt notes.md", "sudo -D {HOME} cp {SCRATCH}/s1/x.txt notes.md"):   # 폴더를 바꾸는 래퍼는 모델링
             d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn(w.fmt("{HOME}/notes.md"), d.reasons[0], c)
         self.assertTrue(judge(w.payload("env -C {SCRATCH}/s1 cp x.txt y.txt"), {**w.environ, **ON}).allow)
+
+    def test_trap_cleanup_pattern(self):   # 최종 리뷰 I4: 정리 패턴은 허용, 보호 대상을 지우는 trap 은 거부
+        self.assertTrue(judge(w.payload('TMP=$(mktemp -d); trap \'rm -rf "$TMP"\' EXIT; echo x > "$TMP/a"'), {**w.environ, **ON}).allow)
+        d = judge(w.payload("trap 'rm -rf {HOME}/data' EXIT"), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("삭제", d.reasons[0])
+        for c in ("trap - EXIT", "trap -p", "trap '' INT"):
+            self.assertTrue(judge(w.payload(c), {**w.environ, **ON}).allow, c)
 
     def test_budget(self):
         self.assertFalse(judge(w.payload("rm {HOME}/notes.md"), {**w.environ, **ON}, budget=0).allow)
@@ -184,6 +193,15 @@ class MainTest(_WorldCase):
         for c in cmds:
             self.assertEqual(self.run_bytes(json.dumps(w.payload(c)).encode(), ON).returncode, 0)
         self.assertEqual([x["command"] for x in self.log_lines()], cmds)
+
+    def test_log_lock_held_elsewhere(self):   # 최종 리뷰 I1: 다른 프로세스가 기록 잠금을 쥐어도 deny 가 지연 없이 나오고 기록은 남는다
+        lock = state_dir(w.environ) / "bash-guard.jsonl.lock"; lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600); self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        t0 = time.monotonic(); r = self.run_main(w.payload("rm src/main.py"), extra=ON); dt = time.monotonic() - t0
+        self.assertLess(dt, 3.0); self.assertEqual(r.returncode, 0)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual([x["decision"] for x in self.log_lines()], ["deny"])   # 잠금 없이도 한 줄은 남는다(O_APPEND 한 번 쓰기)
 
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
         p = state_dir(w.environ) / "bash-guard.jsonl"

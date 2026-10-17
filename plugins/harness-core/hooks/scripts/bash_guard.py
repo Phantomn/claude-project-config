@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -179,7 +178,7 @@ def final_output(d: Decision, old: str) -> str:
 # ---- 기록 (spec §3.9) ----
 
 def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX_BYTES) -> None:
-    from ledger import state_dir
+    from ledger import LOCK_WAIT, lock_file, state_dir
 
     d = state_dir(environ)
     if not d.is_absolute():
@@ -188,15 +187,18 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
     p = d / "bash-guard.jsonl"
     # 짝 없는 surrogate(명령 JSON 의 \udXXX)는 `\udXXX` 글자로 — JSON 문자열 안이라 읽으면 원문 그대로, 파일은 유효한 UTF-8
     line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8", "backslashreplace")
-    # 순환(.1 교체)과 추가를 같은 잠금 안에서 — 다른 세션의 줄이 교체 사이에 사라지지 않게
-    lock = os.open(d / "bash-guard.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    # 순환(.1 교체)과 추가를 같은 잠금 안에서 — 다른 세션의 줄이 교체 사이에 사라지지 않게. 잠금은 장부와 같은 상한 있는
+    # 비차단 헬퍼(최종 리뷰 I1 — 무한 대기는 deny 를 낸 뒤 훅을 timeout 으로 취소시켰다)
+    lock = lock_file(d / "bash-guard.jsonl.lock", time.monotonic() + LOCK_WAIT)
+    # 못 잠그면(None) 순환은 건너뛰고 한 줄만 추가 — O_APPEND 의 write 한 번은 리눅스 로컬 FS 에서 다른 쓰기와 섞이지 않는다
+    # (VFS 가 쓰기 동안 inode 잠금을 쥔다; 순환의 rename 과 겹치면 이 줄은 .1 쪽에 남는다)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            if p.stat().st_size > max_bytes:
-                os.replace(p, p.with_name(p.name + ".1"))
-        except FileNotFoundError:
-            pass
+        if lock is not None:
+            try:
+                if p.stat().st_size > max_bytes:
+                    os.replace(p, p.with_name(p.name + ".1"))
+            except FileNotFoundError:
+                pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             os.fchmod(fd, 0o600)   # 이전 버전이 0644 로 만든 파일도 맞춘다
@@ -204,7 +206,8 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
         finally:
             os.close(fd)
     finally:
-        os.close(lock)
+        if lock is not None:
+            os.close(lock)
 
 
 def _old_decision(old: str) -> str | None:

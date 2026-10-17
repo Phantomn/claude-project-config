@@ -39,6 +39,28 @@ def state_dir(environ: Mapping[str, str]) -> Path:
     return Path(base) / "harness-core"
 
 
+def lock_file(path: str | Path, end: float) -> int | None:
+    """훅이 쓰는 모든 잠금은 여기 하나 — 비차단(LOCK_NB) 재시도를 end(time.monotonic) 까지만. 못 잠그면 None.
+    파일이 rename 으로 바뀔 수 있으므로(장부 압축) 잠근 뒤 그 inode 가 아직 현재 파일인지 확인한다."""
+    while True:
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    os.close(fd)
+                    return None
+                time.sleep(0.01)
+        try:
+            if os.fstat(fd).st_ino == os.stat(path).st_ino:
+                return fd
+        except FileNotFoundError:
+            pass
+        os.close(fd)
+
+
 def _parse(line: str) -> tuple[str, Entry] | None:
     # rsplit: 경로에 탭이 있어도 뒤 3칸은 고정이라 안전
     parts = line.rsplit("\t", 3)
@@ -110,24 +132,7 @@ class Ledger:
         훅 timeout 안에 끝나게."""
         now = time.monotonic()
         end = max(now + LOCK_MIN_WAIT, self.deadline if self.deadline is not None else now + LOCK_WAIT)
-        # 압축이 파일을 rename 으로 바꾸므로, 잠근 뒤 그 inode 가 아직 현재 파일인지 확인한다
-        while True:
-            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= end:
-                        os.close(fd)
-                        return None
-                    time.sleep(0.01)
-            try:
-                if os.fstat(fd).st_ino == os.stat(self.path).st_ino:
-                    return fd
-            except FileNotFoundError:
-                pass
-            os.close(fd)
+        return lock_file(self.path, end)   # type: ignore[arg-type]
 
     def record(self, path: str, kind: str, session_id: str | None) -> None:
         if session_id is None or self.path is None:
