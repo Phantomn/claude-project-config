@@ -99,6 +99,11 @@ class OverwriteTest(_WorldCase):
         for c in ("wget --o {HOME}/notes.md http://x", "wget --frobnicate -O {SCRATCH}/s1/o http://x"):   # 모호 약어·모르는 옵션 = 피연산자 경계를 모른다
             self.assertEqual(ev(c), [("덮어쓰기", UNRESOLVED)], c)
         self.assertEqual(ev("wget --no-clob --quiet -O {SCRATCH}/s1/o http://x"), [])
+        # C3 I5-a: wget 은 목록의 불리언 X 에 `--no-X` 를 받는다(1.21.4 실측: --no-content-disposition·--no-show-progress·--no-continue 등, 약어 `--no-cont` 는 거부)
+        for c in ("wget --no-content-disposition -O {SCRATCH}/s1/o http://x", "wget --no-show-progress http://x", "wget --no-timestamping --no-quiet http://x"):
+            self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev("wget --no-continue -O {HOME}/notes.md http://x"), [("덮어쓰기", PRESERVED)])
+        self.assertEqual(ev("wget --no-cont -O {SCRATCH}/s1/o http://x"), [("덮어쓰기", UNRESOLVED)])
 
     def test_git_output_overwrites(self):   # git log/diff/show 의 --output 은 그 파일을 덮어쓴다(git 2.43 실측)
         self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])

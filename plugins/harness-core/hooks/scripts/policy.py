@@ -447,7 +447,8 @@ def _out_files(seg: Segment, ctx: Ctx | None) -> list[Job]:
             break
         raw, eq, _ = x.partition("=")
         if x.startswith("--"):   # 긴 옵션 약어는 ln 처럼 정식 이름으로(getopt_long) — 모호·모름이면 _BadOption → 확정 불가
-            x = _long(raw, longs) + eq + x[len(raw) + 1:]
+            # wget 은 목록의 불리언 X 에 `--no-X` 를 받는다(1.21.4 실측, 약어 `--no-cont` 는 거부) — 출력 옵션 판정과 무관(C3 I5-a)
+            x = raw if raw.startswith("--no-") and "--" + raw[5:] in longs else _long(raw, longs) + eq + x[len(raw) + 1:]
         for o in opts:
             if o.startswith("--"):
                 if x == o and i < len(a):
