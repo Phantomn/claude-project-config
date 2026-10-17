@@ -7,7 +7,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
 # subprocess·hashlib·datetime 은 쓰는 함수 안에서 import — 모든 Bash 호출의 기동 지연(약 5ms)을 조회가 필요할 때만 낸다
@@ -300,19 +300,25 @@ def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None
         rows = ctx.ledger.entries_for(paths)
 
     def _created_here(p: str) -> bool:
-        try:
-            mtime = os.lstat(p).st_mtime
-        except OSError:
-            return False
-        # 기록보다 오래된 파일은 기록 뒤에 생긴 것이 아니다 — 판정만 거친 명령의 목적지(유령 기록)를 외부가 나중에 만들어도 세션 전으로(C2 K-R)
-        return any(e.kind == KIND_CREATED and e.session_id == sid and mtime >= e.ts - ctx.clock_margin
-                   for e in rows.get(p, ()))   # type: ignore[union-attr]
+        return created_evidence(p, ctx, rows.get(p, ()))   # type: ignore[union-attr]
 
     # 생성 시각을 못 읽는 파일 시스템(drvfs 의 /mnt/c 는 birth 0)에서는 이 세션의 created 기록(Write·Bash 의 mkdir/리다이렉트/
     # 복사 목적지)이 birth 와 같은 증거다. 기록도 없으면 현행 보호(최종 묶음 C 항목 8)
     cand = {p for p in paths if (p in b and not before_session(b[p], ctx)) or (p not in b and _created_here(p))}
     return {p for p in cand if not any((e.kind == KIND_PRE_SESSION and e.session_id == sid)
                                        or (e.kind == KIND_CREATED and e.session_id != sid) for e in rows.get(p, ()))}
+
+
+def created_evidence(p: str, ctx: Ctx, entries: Iterable[Entry] | None = None) -> bool:
+    """이 세션의 created 기록이 '세션이 만든 것'의 증거인가(birth 를 못 읽는 FS 용). 기록보다 오래된 파일(mtime < 기록 ts − 여유)은
+    기록 뒤에 생긴 것이 아니다 — 판정만 거친 명령의 목적지(유령 기록)를 외부가 나중에 만들어도 세션 전으로(C2 K-R)."""
+    try:
+        mtime = os.lstat(p).st_mtime
+    except OSError:
+        return False
+    sid = ctx.session_id
+    return any(e.kind == KIND_CREATED and e.session_id == sid and mtime >= e.ts - ctx.clock_margin
+               for e in (ctx.ledger.entries(p) if entries is None else entries))
 
 
 def _is_session_repo(top: str | None, ctx: Ctx) -> bool:
@@ -466,7 +472,8 @@ def note_touch(path: str, ctx: Ctx, tool: str | None) -> None:
             L.record(p, KIND_CREATED, sid)
     else:
         b = births([p], ctx).get(p)
-        if ctx.session_start is not None and b is not None and before_session(b, ctx):
+        # birth 를 모르면(drvfs) 이 세션의 created 증거가 없는 기존 파일 = 세션 전 — 유령 기록 경로가 첫 제자리 수정으로 세션 것이 되지 않게(C3 K-c)
+        if ctx.session_start is not None and ((b is not None and before_session(b, ctx)) or (b is None and not created_evidence(p, ctx))):
             L.record(p, KIND_PRE_SESSION, sid)
         if _nearest_git(p, {}) and not any(e.kind == KIND_TOUCHED and e.session_id == sid for e in L.entries(p)) \
                 and _pre_dirty(p, ctx):

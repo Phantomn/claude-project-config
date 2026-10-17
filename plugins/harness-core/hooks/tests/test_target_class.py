@@ -437,6 +437,20 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(k(str(d / "ghost.txt")), PRESERVED); self.assertFalse(judge(w.payload(f"rm -f {d}/ghost.txt"), env).allow)
         self.assertTrue(judge(w.payload(f"mkdir {d}/ghost2"), env).allow); (d / "ghost2").mkdir()      # 정상 흐름: 기록 뒤 생성(mtime ≥ 기록)
         self.assertEqual(k(str(d / "ghost2")), SESSION_NEW)
+        # C3 K-c(F1·F3): 유령 기록 경로에 외부가 옛 mtime 으로 만든 파일을 세션이 제자리 수정해도 세션 것이 되지 않는다(pre-session 기록)
+        self.assertTrue(judge(w.payload(f"cp {{SCRATCH}}/s1/x.txt {d}/report.txt"), env).allow)   # 판정만
+        (d / "report.txt").write_text("old"); os.utime(d / "report.txt", (t, t)); self.assertEqual(k(str(d / "report.txt")), PRESERVED)
+        self.assertTrue(judge(w.payload(f"echo more >> {d}/report.txt"), env).allow)              # 세션의 제자리 수정 판정(note_touch)
+        with open(d / "report.txt", "a") as fh: fh.write("more")
+        self.assertEqual(k(str(d / "report.txt")), PRESERVED); self.assertFalse(judge(w.payload(f"rm -f {d}/report.txt"), env).allow)
+        self.assertTrue(judge(w.payload(f"echo x > {d}/sed.txt"), env).allow)                       # F3: 판정만 한 리다이렉트
+        (d / "sed.txt").write_text("a"); os.utime(d / "sed.txt", (t, t)); self.assertEqual(k(str(d / "sed.txt")), PRESERVED)
+        self.assertTrue(judge(w.payload(f"sed -i s/a/b/ {d}/sed.txt"), env).allow); (d / "sed.txt").write_text("b")
+        self.assertEqual(k(str(d / "sed.txt")), PRESERVED)
+        self.assertTrue(judge(w.payload(f"echo x > {d}/fresh.txt"), env).allow); (d / "fresh.txt").write_text("x")   # 정상 생성 흐름은 수정 뒤에도 세션 것
+        self.assertTrue(judge(w.payload(f"echo y >> {d}/fresh.txt"), env).allow)
+        with open(d / "fresh.txt", "a") as fh: fh.write("y")
+        self.assertEqual(k(str(d / "fresh.txt")), SESSION_NEW); self.assertTrue(judge(w.payload(f"rm -f {d}/fresh.txt"), env).allow)
         ctx = w.ctx(environ_extra={CLOCK_MARGIN_ENV: "1.0"}); ctx.ledger.record(w.fmt("{HOME}/notes.md"), KIND_CREATED, ctx.session_id)   # birth 가 있는 FS 는 birth 가 우선
         self.assertEqual(k("{HOME}/notes.md", ctx), PRESERVED)
         judge(w.payload("echo x > /dev/bash-guard-nonexistent"), env)                     # 장치 경로는 생성 기록을 남기지 않는다
