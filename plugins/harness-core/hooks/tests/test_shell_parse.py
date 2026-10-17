@@ -1339,6 +1339,10 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
             if want:
                 self.assertEqual([s.name for s in r.segments][-1], want, c)
         self.assertIn("명령 이름을 확정할 수 없음", parse("run() { \"$@\"; }; run $X", "/w", {"HOME": "/h"}).error)   # 호출 때는 확정 불가(재해석 실패로 감싸인다)
+        # 파이프 대상도 같은 확정(항목 6): 이름이 리터럴이면 그 이름으로 — 셸이면 stdin 규칙, 아니면 셸 코드가 아니다
+        self.assertTrue(dyn(f"{U4} | $B/bash") and dyn(f"{U4} | $SHELL"))
+        for c in (f"{U4} | $B/vitest", f"{U4} | \"$S\"/venv/bin/python -", f"PY=$(x)/bin/python; {U4} | $PY -"):
+            self.assertIsNone(parse(c, "/w", {"HOME": "/h"}).error, c)
 
     def test_c6_assignment_shape(self):   # 항목 2: 값은 모르지만 마지막 경로 성분이 리터럴인 대입은 그 이름으로 — `$B/vitest` 규칙의 한 단계 확장
         for c, want in (("PY=$(poetry env info -p)/bin/python; $PY script.py", "python"), ('export PY="$(x)/bin/python"; timeout 300 $PY -m pytest', "python"),

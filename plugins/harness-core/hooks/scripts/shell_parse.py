@@ -417,7 +417,6 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
 }
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
 # `-c 코드`(watch 는 인자 전체)를 그 셸이 돌린다 — `sh -c 코드` 로 바꿔 안쪽을 해석한다(su·runuser 는 로그인 셸, flock·watch 는 sh)
-_CODE_WRAPPERS = ("su", "runuser", "flock", "watch")
 _CODE_OPTS = ("-c", "--command", "--session-command")
 _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic", "busybox")   # busybox <애플릿> …
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
@@ -460,7 +459,6 @@ _SH_LONG = frozenset({"norc", "noprofile", "posix", "login", "restricted", "verb
 _SH_LONG_VALUE = frozenset({"rcfile", "init-file"})   # 값 단어를 받는다(`--rcfile=x` 는 bash 가 거부)
 _SH_LONG_EXIT = frozenset({"help", "version", "dump-strings", "dump-po-strings"})   # 코드를 돌리지 않고 끝난다
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
 # env 안의 셸 작업 폴더 — 변수 이름이 될 수 없는 키라 사용자 할당(PWD=…)으로 덮이지 않는다. `$(pwd)` 가 읽는다.
 SHELL_CWD = "\x00cwd"
@@ -1048,7 +1046,6 @@ def _mktemp_dir(w: Word) -> bool:
 _FN = "\x00fn:"
 _INFN = "\x00infn"   # 인라인 해석 중(local·return 이 함수 범위를 갖는다)
 _DEAD = "\x00dead"   # 인라인 해석이 보고하는 도달 불가(exit)
-_PARAMS = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "#", "@", "*")
 _FN_DEPTH = 4   # 함수 호출 깊이 상한
 _EXP = "\x00exp:"   # export 된 셸 변수 표시 — 새 셸 프로세스(sh -c 등)는 이것과 접두 할당만 받는다
 _MADE = "\x00made:"   # env 안의 '이 해석에서 mkdir·mktemp -d 가 만든 폴더' 표시 — 갈래 합류(_merge)를 함께 따른다
@@ -1626,8 +1623,6 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     seg.env 는 seg 단어를 확장한 env, run_env 는 seg 가 실행될 때의 env(접두 할당 포함·컨테이너면 컨테이너 쪽).
     """
     d = seg.depth + 1
-    if pipe_prev is not None and seg.argv and _text(seg.argv[0].parts, seg.env) is None:
-        raise CodeUnknown("파이프 대상 명령을 확정할 수 없음")   # `… | $SHELL`·`| $(which sh)` — 셸이면 코드를 돌린다(C3 D4)
     if seg.name in SHELLS:
         if (code := _shell_code(seg, pipe_prev)) is not None:
             _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
