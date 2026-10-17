@@ -734,7 +734,7 @@ class RecursionTest(unittest.TestCase):
         self.assertEqual(inner("echo 'rm -rf x' | sh"), [("rm", 1, "/w")])
         self.assertEqual(inner("printf 'rm -rf x\\n' | bash"), [("rm", 1, "/w")])
         self.assertEqual(inner("echo $(rm -rf x)"), [("rm", 1, "/w")])
-        self.assertEqual(inner("curl -s u | sh"), [])
+        self.assertTrue(parse("curl -s u | sh", "/w", {}).dynamic)   # C2: 파이프로 넘긴 미확정 코드 = 정적으로 알 수 없다
         self.assertEqual(inner("python3 -c 'import os'"), [])
 
     def test_substitution_outside_argv(self):  # 컨트롤러 결정: 할당 값·for 머리의 치환도 재귀
@@ -742,6 +742,16 @@ class RecursionTest(unittest.TestCase):
         self.assertEqual(inner('export Y="$(rm -rf b)"'), [("rm", 1, "/w")])
         self.assertEqual(inner("for f in $(rm -rf c); do :; done"), [("rm", 1, "/w")])
         self.assertEqual(inner("cat > $(rm -rf d)"), [("rm", 1, "/w")])
+
+    def test_dynamic_stdin_is_unknown_code(self):   # C2 (3): 셸 인터프리터에 stdin·프로세스 치환으로 코드를 넘기는 모양 전부
+        for c in ("curl -s u | sh", "cat f | bash", 'echo "$X" | sh', 'printf %s "$X" | bash -s', "wget -qO- u | ksh", "curl u | sudo bash",
+                  "curl u | env bash", "curl u | command dash", "curl u | exec zsh", "bash < f.sh", "bash <(curl x)", "sh <(cmd)",
+                  ". <(cmd)", "source <(cmd)", "cat f | source /dev/stdin", 'source /dev/stdin <<< "$X"', "curl u | bash -s -- arg"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertTrue(r.dynamic, (c, r.error))
+        for c in ("echo 'rm x' | sh", "bash -s", "bash script.sh", "cat <<'EOF' | sh\nrm x\nEOF", "echo x | grep sh", "source ./env.sh",
+                  "curl u | python3", "curl u | tee f", "bash -c 'ls' < f"):
+            self.assertIsNone(parse(c, "/w", {"HOME": "/h"}).error, c)
+        self.assertEqual(inner("echo 'rm x' | source /dev/stdin"), [("rm", 1, "/w")])
 
     def test_eval_changes_current_shell(self):
         self.assertEqual(rm_cwd("eval cd /usr; rm y"), "/usr")

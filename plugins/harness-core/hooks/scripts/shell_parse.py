@@ -443,7 +443,7 @@ def _check_deadline() -> None:
         raise LexError("해석 시간 초과")
 
 
-SHELLS = {"bash", "sh", "zsh", "dash"}
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _MAX_DEPTH = 8
 _SHELL_C = re.compile(r"-[a-zA-Z]*c[a-zA-Z]*")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1270,15 +1270,29 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         stdin = stdin or bool(re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", x))
         i += 1
     if i < len(a) and a[i].literal() not in ("-", "--") and not stdin:
+        if a[i].literal().startswith("<("):
+            raise CodeUnknown("프로세스 치환으로 넘긴 코드를 확정할 수 없음")   # bash <(curl …)
         return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s 면 stdin 이 코드)
-    for r in seg.redirects:
+    return _stdin_code(seg.redirects, o.env, pipe_prev)
+
+
+def _stdin_code(redirects: list[Redirect], env: Mapping[str, str | None], pipe_prev: Segment | None) -> str | None:
+    """셸이 표준입력에서 읽을 코드: heredoc·`<<<`·리터럴 파이프(echo/printf/cat heredoc)는 텍스트, 파일·명령 파이프는 알 수 없다(C2).
+    입력원이 없으면 None(도구의 stdin 은 비어 있다)."""
+    for r in redirects:
         if r.op in _HEREDOC:
-            return _heredoc_text(r, o.env)
+            return _heredoc_text(r, env)
         if r.op == "<<<" and r.target is not None:
-            if (code := _text(r.target.parts, o.env)) is None:
+            if (code := _text(r.target.parts, env)) is None:
                 raise CodeUnknown("<<< 문자열을 확정할 수 없음")
             return code
-    return _pipe_text(pipe_prev) if pipe_prev is not None else None
+        if r.op == "<":
+            raise CodeUnknown("표준입력 파일의 코드를 확정할 수 없음")
+    if pipe_prev is None:
+        return None
+    if (code := _pipe_text(pipe_prev)) is None:
+        raise CodeUnknown("파이프로 넘긴 코드를 확정할 수 없음")
+    return code
 
 
 def _drop(w: Word, n: int) -> Word:
@@ -1717,6 +1731,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                     state_env[_FN + x.literal()] = None
         if name in ("source", "."):
             a = w[1].literal() if len(w) > 1 else ""
+            if a == "/dev/stdin" or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2)
+                code = _stdin_code(r, unit_env, pipe_prev) if a == "/dev/stdin" else None
+                if code is None:
+                    raise CodeUnknown("source 의 코드를 확정할 수 없음")
+                _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
             if "/" in a and a.rpartition("/")[2] in ("activate", "activate.sh"):   # 가상환경 activate 는 자기 변수만 바꾼다
                 state_env.update(dict.fromkeys(_VENV_VARS))
             else:   # 읽어 들인 파일은 변수·함수·작업 폴더를 모두 바꿀 수 있다(재검토 3 OOS2)
