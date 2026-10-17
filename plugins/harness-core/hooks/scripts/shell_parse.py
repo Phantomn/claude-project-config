@@ -449,9 +449,10 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _MAX_DEPTH = 8
 # 셸 호출 옵션(C4 R-A, bash 5.2·dash 0.5.12 실측): 한 글자는 두 셸의 합집합, 그 밖(zsh 전용 등)은 확정 불가
 _SH_LETTERS = frozenset("abcefhiklmnprstuvxBCDEHIPTV")
-_SH_LONG = frozenset({"--norc", "--noprofile", "--posix", "--login", "--restricted", "--verbose", "--noediting", "--pretty-print"})
-_SH_LONG_VALUE = frozenset({"--rcfile", "--init-file"})   # 값 단어를 받는다(`--rcfile=x` 는 bash 가 거부)
-_SH_LONG_EXIT = frozenset({"--help", "--version", "--dump-strings", "--dump-po-strings"})   # 코드를 돌리지 않고 끝난다
+# bash 5.2.21 긴 옵션(`bash --help` 와 실측 c5/longopts.out) — 맨 앞에서는 `-name` 한 대시도 같다. 다른 셸은 모르는 옵션
+_SH_LONG = frozenset({"norc", "noprofile", "posix", "login", "restricted", "verbose", "noediting", "pretty-print", "debug", "debugger"})
+_SH_LONG_VALUE = frozenset({"rcfile", "init-file"})   # 값 단어를 받는다(`--rcfile=x` 는 bash 가 거부)
+_SH_LONG_EXIT = frozenset({"help", "version", "dump-strings", "dump-po-strings"})   # 코드를 돌리지 않고 끝난다
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
@@ -1265,29 +1266,35 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
     """셸이 실행할 코드 — 바깥 셸(outer, 기본 seg)이 확장한 뒤의 텍스트. 확장할 수 없으면 LexError(해석 실패).
 
     옵션은 bash getopt 규칙(bash 5.2·dash 0.5.12 실측, C4 R-A): `-`/`+` 묶음, 묶음 안 o/O 마다 다음 단어가 값,
-    -c 는 플래그(코드 = 옵션 뒤 첫 단어), noexec(-n·-D·-o noexec)는 마지막 설정이 이긴다(+n·+o 가 해제). 모르는 옵션은 확정 불가."""
+    -c 는 플래그(코드 = 옵션 뒤 첫 단어), noexec(-n·-D·-o noexec)는 마지막 설정이 이긴다(+n·+o 가 해제). 모르는 옵션은 확정 불가.
+    bash 는 짧은 옵션 앞의 긴 옵션을 `-name`·`--name` 둘 다 먼저 소비한다(C5 NB1) — 다른 셸에서 긴 이름은 모르는 옵션."""
     o = outer or seg
     a = seg.argv
-    i, cmd, stdin, noexec = 1, False, False, False
+    i, cmd, stdin, noexec, lead = 1, False, False, False, True
     while i < len(a):
         x = a[i].literal()
         if x in ("-", "--"):   # 옵션 끝 — 다음 단어가 코드·스크립트 파일, 없으면 stdin(C3 D3: `bash -- <(…)`)
             i += 1
             break
-        if x.startswith("--"):
-            if x in _SH_LONG_EXIT:
-                return None
-            if x not in _SH_LONG and x not in _SH_LONG_VALUE:
+        if x.startswith("--") or (lead and x.startswith("-")):
+            name = x[2:] if x.startswith("--") else x[1:]
+            if name in _SH_LONG or name in _SH_LONG_VALUE or name in _SH_LONG_EXIT:
+                if seg.name != "bash":
+                    raise CodeUnknown(f"셸 옵션 {x} 을 해석할 수 없음")
+                if name in _SH_LONG_EXIT:
+                    return None
+                i += 2 if name in _SH_LONG_VALUE else 1
+                continue
+            if x.startswith("--"):
                 raise CodeUnknown(f"셸 옵션 {x} 을 해석할 수 없음")
-            i += 2 if x in _SH_LONG_VALUE else 1
-            continue
         if len(x) < 2 or x[0] not in "-+":
             break
-        on, j = x[0] == "-", i + 1
+        on, j, lead = x[0] == "-", i + 1, False
         for c in x[1:]:
             if c in "oO":
-                if c == "o" and (not on or (j < len(a) and a[j].literal() == "noexec")):
-                    noexec = on   # 값을 모르는 +o 도 해제로 본다(실행 쪽이 안전)
+                v = a[j].literal().lower().replace("_", "") if c == "o" and j < len(a) else ""   # zsh 는 대소문자·밑줄 무시(C5 NB2)
+                if c == "o" and (not on or v in ("noexec", "exec")):
+                    noexec = on and v == "noexec"   # 값을 모르는 +o 도 해제로 본다(실행 쪽이 안전), `-o exec` 는 zsh 의 해제
                 j += 1
             elif c not in _SH_LETTERS:
                 raise CodeUnknown(f"셸 옵션 {x[0]}{c} 을 해석할 수 없음")

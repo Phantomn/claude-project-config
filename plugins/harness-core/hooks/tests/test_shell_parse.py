@@ -1227,5 +1227,42 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
             self.assertEqual([s.context.daemon_set for s in ctx_of(c)], [False], c)
 
 
+def inner_names(c):
+    return [s.name for s in parse(c, "/w", {"HOME": "/h"}).segments if s.depth > 0]
+
+
+class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증거)으로 판별 — bash 5.2.21·dash 0.5.12·zsh 5.9 실측(c5/longopts.out)
+    def test_c5_single_dash_long_options(self):   # NB1: bash 는 맨 앞 긴 옵션을 -name 으로도 받는다(shell.c parse_long_options)
+        rm = [("rm", 1, "/w")]
+        for c in ("bash -posix -c 'rm -rf ~/data'", "bash -verbose -c 'rm -rf ~/data'", "bash -norc -c 'rm -rf ~/data'",
+                  "bash -noprofile -c 'rm -rf ~/data'", "bash -rcfile /dev/null -c 'rm -rf ~/data'", "bash -init-file x -c 'rm -rf ~/data'",
+                  "bash -login -c 'rm -rf ~/data'", "bash -noediting -c 'rm -rf ~/data'", "bash -restricted -c 'rm -rf ~/data'",
+                  "bash -debug -c 'rm -rf ~/data'", "bash -debugger -c 'rm -rf ~/data'", "bash -pretty-print -c 'rm -rf ~/data'",
+                  "bash -norc -posix -e -c 'rm -rf ~/data'", "bash --debug -c 'rm -rf ~/data'"):
+            self.assertEqual(inner(c), rm, c)
+        self.assertEqual(inner_names("sudo bash -posix -c 'rm -rf ~/data'")[-1:], ["rm"])
+        self.assertIn("rm", inner_names("echo x | xargs bash -posix -c 'rm -rf ~/data'"))
+        self.assertIn("rm", inner_names("docker exec c bash -posix -c 'rm -rf /app/src'"))
+        self.assertIn("rm", inner_names("docker exec c bash -verbose -c 'rm -rf /app/src'"))
+        for c in (f"{U4} | bash -norc", f"{U4} | bash -noprofile", f"{U4} | bash -posix", f"{U4} | bash -rcfile /dev/null",
+                  "dash -posix -c 'ls'", "sh -norc -c 'ls'", "zsh -verbose -c 'ls'", "dash --norc -c 'ls'"):   # 비 bash 셸의 긴 이름은 모르는 옵션
+            self.assertTrue(dyn(c), c)
+        for c in ("bash -help -c 'rm -rf ~/data'", "bash -version -c 'rm -rf ~/data'", "bash -dump-strings -c 'rm -rf ~/data'",
+                  "bash -dump-po-strings -c 'rm -rf ~/data'", "bash -e -posix -c 'rm -rf ~/data'"):   # 끝나는 옵션·짧은 옵션 뒤(-o 가 -c 를 먹어 오류)
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
+        self.assertEqual(inner("bash -c 'ls'"), [("ls", 1, "/w")])
+        self.assertEqual(inner("bash --norc -c 'ls'"), [("ls", 1, "/w")])
+        self.assertEqual(inner("bash -xtrace -c 'ls'"), [("ls", 1, "/w")])   # 긴 이름이 아니면 짧은 옵션 묶음(-x -t -r -a -c -e)
+        for c in ("bash -euo pipefail script.sh", "sh -eu script.sh"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+
+    def test_c5_zsh_exec_clears_noexec(self):   # NB2: zsh 옵션 이름은 대소문자·밑줄 무시, `-o exec` 가 NO_EXEC 를 끈다
+        for c in ("zsh -n -o exec -c 'rm -rf ~/data'", "zsh -n -o EXEC -c 'rm -rf ~/data'", "zsh -n -o Ex_Ec -c 'rm -rf ~/data'",
+                  "zsh -o noexec -o exec -c 'rm -rf ~/data'"):
+            self.assertEqual(inner(c), [("rm", 1, "/w")], c)
+        for c in ("zsh -o no_exec -c 'rm -rf ~/data'", "zsh -o NO_EXEC -c 'rm -rf ~/data'"):
+            self.assertEqual(inner(c), [], c)
+
+
 if __name__ == "__main__":
     unittest.main()
