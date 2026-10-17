@@ -339,7 +339,7 @@ def _shell_deletes(cmd: list[Word], seg: Segment) -> bool:
     """`sh -c '<코드>'` 의 코드에 삭제 명령 이름이 단어로 있는가(자리 무관 — 보수). 코드를 못 읽으면 True."""
     # 셸 옵션 해석은 해석기 한 곳(_shell_code, C4 R-A). parse 가 아니라 lex — parse 는 해석기 전역(마감·함수 표)을 다시 세팅한다
     try:
-        code = _shell_code(Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env), None)
+        code = _shell_code(Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env), None, probe=True)   # stdin 은 해석기가 find 의 입력으로 본다
         if code is None:
             return False
         toks = lex(code)

@@ -1394,8 +1394,10 @@ def _pipe_text(prev: Segment) -> str | None:
     return s.replace("\\n", "\n") if prev.name == "printf" else s
 
 
-def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None = None) -> str | None:
+def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None = None, probe: bool = False) -> str | None:
     """셸이 실행할 코드 — 바깥 셸(outer, 기본 seg)이 확장한 뒤의 텍스트. 확장할 수 없으면 LexError(해석 실패).
+    stdin 을 읽는데 단위에 입력원이 없으면 확정 불가 — 그룹·함수·루프·exec 의 리다이렉트로 단위 밖에서 온다(C7 6b).
+    probe 는 `-c` 코드만 알아보는 호출(find -exec 의 첫 확인·policy) — 입력원 없는 stdin 을 빈 코드로 본다.
 
     옵션은 bash getopt 규칙(bash 5.2·dash 0.5.12 실측, C4 R-A): `-`/`+` 묶음, 묶음 안 o/O 마다 다음 단어가 값,
     -c 는 플래그(코드 = 옵션 뒤 첫 단어), noexec(-n·-D·-o noexec)는 마지막 설정이 이긴다(+n·+o 가 해제). 모르는 옵션은 확정 불가.
@@ -1453,7 +1455,10 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             raise CodeUnknown("프로세스 치환으로 넘긴 코드를 확정할 수 없음")   # bash <(curl …)
         if not _stdin_path(a[i], o.env, seg.cwd, seg.redirects, pipe_prev):
             return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s·stdin 장치 경로면 stdin 이 코드)
-    return _stdin_code(seg.redirects, o.env, pipe_prev)
+    code = _stdin_code(seg.redirects, o.env, pipe_prev)
+    if code is None and not probe and pipe_prev is None and _stdin_redirect(seg.redirects) is None:
+        raise CodeUnknown("단위 밖에서 오는 표준입력의 코드를 확정할 수 없음")   # </dev/null·<&- 를 단위에 명시하면 빈 코드
+    return code
 
 
 # stdin 장치(C4 R-C, bash 실측: //dev/stdin·/dev/./stdin·/proc/thread-self/fd/0·/proc/<pid>/fd/0 실행). /dev/fd/00 은 실측상 없는 경로지만 보수적으로 포함
@@ -1765,7 +1770,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             try:
                 cmd = find_exec_command(a[i + 1:j], seg.env)
                 sh = Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env, seg.context, d)
-                if sh.name not in SHELLS or _shell_code(sh, None) is not None:
+                if sh.name not in SHELLS or _shell_code(sh, None, probe=True) is not None:
                     continue
             except LexError:
                 continue   # 명령 이름·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정

@@ -748,7 +748,7 @@ class RecursionTest(unittest.TestCase):
                   "curl u | env bash", "curl u | command dash", "curl u | exec zsh", "bash < f.sh", "bash <(curl x)", "sh <(cmd)",
                   ". <(cmd)", "source <(cmd)", "cat f | source /dev/stdin", 'source /dev/stdin <<< "$X"', "curl u | bash -s -- arg"):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertTrue(r.dynamic, (c, r.error))
-        for c in ("echo 'rm x' | sh", "bash -s", "bash script.sh", "cat <<'EOF' | sh\nrm x\nEOF", "echo x | grep sh", "source ./env.sh",
+        for c in ("echo 'rm x' | sh", "bash -s < /dev/null", "bash script.sh", "cat <<'EOF' | sh\nrm x\nEOF", "echo x | grep sh", "source ./env.sh",
                   "curl u | python3", "curl u | tee f", "bash -c 'ls' < f"):
             self.assertIsNone(parse(c, "/w", {"HOME": "/h"}).error, c)
         self.assertEqual(inner("echo 'rm x' | source /dev/stdin"), [("rm", 1, "/w")])
@@ -1200,7 +1200,7 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
                   "bash <> evil.sh", "bash </dev/null <> evil.sh", "bash <&3", "docker exec -i c bash <<< 'ls' < evil.sh",
                   "cat evil.sh <<'EOF' | bash\nls\nEOF"):   # 파일·fd 복제·cat 이 읽는 파일은 코드를 모른다
             self.assertTrue(dyn(c), c)
-        for c in ("bash < /dev/null", "echo 'rm x' | bash < /dev/null", "bash <<< 'rm -rf ~/data' < /dev/null", "bash 0<&-", "sh 1< f.txt"):
+        for c in ("bash < /dev/null", "echo 'rm x' | bash < /dev/null", "bash <<< 'rm -rf ~/data' < /dev/null", "bash 0<&-"):   # `sh 1< f.txt` 는 C7 6b
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
         self.assertEqual(inner("bash 3</dev/null <<< 'ls'"), [("ls", 1, "/w")])
         self.assertEqual(inner("cat <<'EOF' | sh\nrm x\nEOF"), [("rm", 1, "/w")])
@@ -1248,7 +1248,7 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
                   "dash -posix -c 'ls'", "sh -norc -c 'ls'", "zsh -verbose -c 'ls'", "dash --norc -c 'ls'"):   # 비 bash 셸의 긴 이름은 모르는 옵션
             self.assertTrue(dyn(c), c)
         for c in ("bash -help -c 'rm -rf ~/data'", "bash -version -c 'rm -rf ~/data'", "bash -dump-strings -c 'rm -rf ~/data'",
-                  "bash -dump-po-strings -c 'rm -rf ~/data'", "bash -e -posix -c 'rm -rf ~/data'"):   # 끝나는 옵션·짧은 옵션 뒤(-o 가 -c 를 먹어 오류)
+                  "bash -dump-po-strings -c 'rm -rf ~/data'", "bash -e -posix -c 'rm -rf ~/data' < /dev/null"):   # 끝나는 옵션·짧은 옵션 뒤(-o 가 -c 를 먹어 오류, -s 의 stdin 은 C7 6b)
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
         self.assertEqual(inner("bash -c 'ls'"), [("ls", 1, "/w")])
         self.assertEqual(inner("bash --norc -c 'ls'"), [("ls", 1, "/w")])
@@ -1311,7 +1311,7 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
             self.assertTrue(dyn(c), c)
         for c in ("echo 'rm -rf ~/data' | find . -exec bash -s \\;", "find . -exec bash \\; <<< 'rm -rf ~/data'"):
             self.assertIn("rm", inner_names(c), c)
-        for c in (f"{U4} | find . -exec bash -c 'wc -l \"$1\"' _ {{}} \\;", f"{U4} | find . -exec bash {{}} \\;", "find . -exec bash -s \\;",
+        for c in (f"{U4} | find . -exec bash -c 'wc -l \"$1\"' _ {{}} \\;", f"{U4} | find . -exec bash {{}} \\;", "find . -exec bash -s \\; < /dev/null",
                   f"{U4} | find . -exec sh -n -s \\;", f"{U4} | find . -name x -print", "find . -exec nohup $X {} \\;"):   # -c 코드·스크립트 파일·stdin 없음
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
@@ -1488,6 +1488,17 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
         self.assertEqual(targets('coproc X=/h/data; rm -rf "$X"'), [None])
         self.assertEqual(names("coproc NAME echo x"), ["NAME"])   # 단순 명령 앞의 이름은 명령(bash 실측: NAME: command not found)
         self.assertTrue(dyn("coproc $X rm -rf ~/data"))
+
+    def test_c7_stdin_shell_needs_explicit_input(self):   # 6b: stdin 을 읽는 셸은 단위에 입력원이 없으면 확정 불가 — 단위 밖(그룹·함수·루프·exec)에서 온다(c7/real7.out)
+        rm = "'rm -rf ~/data'"
+        for c in (f"{{ bash /dev/stdin; }} <<< {rm}", f"{{ bash; }} <<< {rm}", f"if true; then sh; fi <<< {rm}", f"exec <<< {rm}; bash /dev/stdin",
+                  "while read l; do bash; done < evil.sh", "bash", "bash -s", "sh -i", "bash /dev/stdin", "bash -s -- a b", "docker exec c1 bash",
+                  "find . -exec bash -s \\;", "find . -exec sh \\;", "sudo bash", "coproc bash", "sh 1< f.txt", "echo x | xargs sh"):
+            self.assertTrue(dyn(c), c)
+        self.assertIsNotNone(parse(f"f() {{ bash; }}; f <<< {rm}", "/w", {"HOME": "/h"}).error)   # 함수 재해석 실패로 감싸인다
+        for c in ("bash < /dev/null", "bash 0<&-", "bash -n", "bash script.sh", "bash -c 'ls'", "echo ls | bash", "bash <<< 'ls'", "bash --version",
+                  "find . -exec bash {} \\;", "find . -exec sh -c 'wc -l \"$1\"' _ {} \\;", "sh -n -s"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
 
 if __name__ == "__main__":
