@@ -390,6 +390,13 @@ class DockerPolicyTest(_WorldCase):
         ctx = w2.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})             # 데몬 없음(소켓 부재) = 컨테이너가 있을 수 없다
         self.assertEqual(e(f"docker exec {c} rm -rf /app/src", ctx=ctx), []); self.assertEqual(ctx.stats, {"container_no_daemon": 1})
         self.assertEqual(e('docker exec "$C" rm -rf /app/src', ctx=ctx), [("삭제", UNRESOLVED)])   # 이름 미확정은 데몬과 무관하게 확정 불가
+        # C2 I2-R: 클라이언트가 PATH 에 없는 것은 데몬 부재의 증거가 아니다(절대경로·좁은 훅 PATH 로 docker 가 돌 수 있다) — 소켓 증거만
+        from target_class import docker_daemon_absent
+        ctx = w2.ctx(environ_extra={"PATH": "/nonexistent"}); self.assertFalse(docker_daemon_absent(ctx))
+        for cmd in (f"/usr/bin/docker exec {c} rm -rf /app/src", f"docker exec {c} rm -rf /app/src"):
+            self.assertEqual(e(cmd, ctx=ctx), [("삭제", UNRESOLVED)], cmd); self.assertNotIn("container_no_daemon", ctx.stats)
+        self.assertTrue(docker_daemon_absent(w2.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})))
+        self.assertFalse(docker_daemon_absent(w2.ctx(environ_extra={"DOCKER_HOST": "tcp://127.0.0.1:1"})))   # 연결 불가는 모름
         ctx = w2.ctx(); e('docker exec "$C" rm -rf /app/src', ctx=ctx); e(f"docker exec {bad} rm -rf /app/src", ctx=ctx)
         e("cd {HOME} && cd - && docker compose exec web rm -rf /app/src", ctx=ctx)
         self.assertEqual(ctx.stats, {"container_lookup_none": 2, "compose_project_dir_none": 1})

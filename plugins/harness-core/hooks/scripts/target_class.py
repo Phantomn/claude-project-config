@@ -791,11 +791,9 @@ def docker_container_info(container: str, ctx: Ctx) -> tuple[tuple[Mount, ...], 
 
 
 def docker_daemon_absent(ctx: Ctx) -> bool:
-    """데몬이 없다는 긍정 증거만: docker 실행 파일 없음, DOCKER_HOST 의 unix 소켓 없음, (컨텍스트 미설정이면) 기본 소켓 없음.
-    증거가 없으면 False — 조회 실패를 '컨테이너 없음'으로 읽지 않는다(최종 리뷰 I2)."""
-    import shutil
-    if shutil.which("docker", path=ctx.environ.get("PATH")) is None:
-        return True
+    """데몬이 없다는 긍정 증거 = 소켓 부재뿐: DOCKER_HOST 의 unix 소켓 없음, 또는(DOCKER_HOST·컨텍스트 미설정) 기본 소켓
+    /var/run/docker.sock 과 rootless $XDG_RUNTIME_DIR/docker.sock 둘 다 없음. 증거가 없으면 False — 조회 실패를 '컨테이너 없음'으로
+    읽지 않는다(최종 리뷰 I2). 클라이언트가 PATH 에 없는 것은 증거가 아니다 — 절대경로·좁은 훅 PATH 로도 docker 는 돈다(C2 I2-R)."""
     host = ctx.environ.get("DOCKER_HOST", "")
     if host.startswith("unix://"):
         return not os.path.exists(host[len("unix://"):])
@@ -806,7 +804,8 @@ def docker_daemon_absent(ctx: Ctx) -> bool:
             current = json.load(f).get("currentContext")
     except (OSError, ValueError, AttributeError):
         current = None
-    return not current and not os.path.exists("/var/run/docker.sock")
+    runtime = ctx.environ.get("XDG_RUNTIME_DIR", "")
+    return not current and not os.path.exists("/var/run/docker.sock") and not (runtime and os.path.exists(os.path.join(runtime, "docker.sock")))
 
 
 def compose_container_id(service: str, project_dir: str, project: str | None, ctx: Ctx) -> str | None:
