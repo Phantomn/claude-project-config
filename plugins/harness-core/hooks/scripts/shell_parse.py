@@ -1328,18 +1328,32 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
 _STDIN_DEV = re.compile(r"/dev/stdin|/dev/fd/0+|/proc/[^/]+(?:/task/[^/]+)?/fd/0+")
 
 
+def _dev_like(p: str) -> bool:
+    """정리 전 경로가 /dev·/proc 를 지나는가 — 접두 중 하나라도(`/dev/fd/../..` 는 커널이 링크를 따른 뒤 .. 를 푼다) 또는 정리 뒤."""
+    if not p.startswith("/"):
+        return False
+    c = [x for x in p.split("/") if x not in ("", ".")]
+    return bool(c) and (c[0] in ("dev", "proc") or os.path.normpath("/" + "/".join(c)).startswith(("/dev/", "/proc/")))
+
+
 def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None) -> bool:
-    """단어가 stdin 장치 경로인가 — 연속 /·.·.. 를 정리한 뒤 판별. 확정할 수 없는 /dev·/proc 경로는 CodeUnknown."""
+    """단어가 stdin 장치 경로인가 — 허용 목록(C5 D1·D2): /dev·/proc 를 지나는 경로는 깨끗한(확장·글롭·`..`·끝 / 없음) stdin 장치면
+    True, 깨끗한 /dev/null 은 False(빈 코드), 그 밖(/proc/*/root·fd 링크·글롭·중괄호 등 변형)은 전부 CodeUnknown."""
     s = _text(w.parts, env)
     p = s if s is not None else w.literal()
     if not p.startswith("/") and cwd is not None:
         p = os.path.join(cwd, p)
-    p = "/" + os.path.normpath(p).lstrip("/") if p.startswith("/") else p   # normpath 는 앞 '//' 를 남긴다
-    if s is None:
-        if p.startswith(("/dev/", "/proc/")):
-            raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
+    globby = any(not q.quote and re.search(r"[*?[{]", q.text) for q in w.parts)
+    dev = _dev_like(p) or (globby and any(_dev_like(x) for x in (_expand(w, env, cwd) or [])[:1]))   # 펼친 첫 단어가 스크립트
+    if not dev:
         return False
-    return bool(_STDIN_DEV.fullmatch(p))
+    clean = "/" + "/".join(x for x in p.split("/") if x not in ("", "."))
+    if s is not None and not globby and ".." not in p.split("/") and not p.endswith("/"):
+        if _STDIN_DEV.fullmatch(clean):
+            return True
+        if clean == "/dev/null":
+            return False
+    raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
 
 
 def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:

@@ -1213,7 +1213,7 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
         self.assertTrue(dyn(f"cd /dev && {U4} | bash ./stdin"))   # 상대경로는 작업 폴더 기준
         self.assertEqual(inner("echo 'rm x' | bash //dev/stdin"), [("rm", 1, "/w")])
         self.assertEqual(inner("echo 'rm x' | source /dev/./stdin"), [("rm", 1, "/w")])
-        for c in (f"{U4} | bash ./build.sh", f"{U4} | bash /dev/null", f"{U4} | bash /dev/fd/3", "source ./env.sh", f"{U4} | bash /proc/cpuinfo"):
+        for c in (f"{U4} | bash ./build.sh", f"{U4} | bash /dev/null", "source ./env.sh"):   # /dev/fd/3·/proc/cpuinfo 는 C5 에서 확정 불가로
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
     def test_c4_daemon_set_when_env_unknown(self):   # R-D: I2-c·N3 — 상태 env 를 확정 못 하는 문장 뒤·--config·DOCKER_CONFIG 는 데몬 지정
@@ -1262,6 +1262,17 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
             self.assertEqual(inner(c), [("rm", 1, "/w")], c)
         for c in ("zsh -o no_exec -c 'rm -rf ~/data'", "zsh -o NO_EXEC -c 'rm -rf ~/data'"):
             self.assertEqual(inner(c), [], c)
+
+    def test_c5_device_path_allowlist(self):   # D1·D2: /dev·/proc 아래(정리 전 원문·글롭 펼침)는 깨끗한 stdin 장치와 /dev/null 만 안다
+        for p in ("/proc/self/root/dev/stdin", "/proc/self/root/proc/self/fd/0", "/dev/fd/../../self/fd/0", "/dev/stdi?", "/dev/[s]tdin",
+                  "/dev/{stdin,null}", "/d?v/stdin", "/tmp/../dev/stdin", "/dev/fd/3", "/proc/cpuinfo", "/dev/null/", "/proc/self/cwd/x.sh"):
+            for c in (f"{U4} | bash {p}", f"{U4} | source {p}", f"{U4} | . -- {p}", f"{U4} | dash {p}"):
+                self.assertTrue(dyn(c), c)
+        self.assertTrue(dyn("echo 'rm x' | bash /dev/fd/../../self/fd/0"))   # 리터럴 파이프라도 경로를 모른다
+        self.assertEqual(inner("echo 'rm x' | bash /proc/self/fd/0"), [("rm", 1, "/w")])   # 깨끗한 stdin 장치는 해석
+        for c in (f"{U4} | bash /dev/null", f"{U4} | bash ./build.sh", f"{U4} | bash /opt/dev/stdin.sh", f"{U4} | bash build/../run.sh",
+                  "source ./env.sh", "bash ./scripts/*.sh"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
 
 
 if __name__ == "__main__":
