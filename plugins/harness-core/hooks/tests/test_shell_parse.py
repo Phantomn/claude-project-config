@@ -528,10 +528,10 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
         d, last = self._world()
         for c, cwd in (("command() { cd {D}/ex; }; command true; rm y", f"{d}/ex"), ("sudo() { cd {D}/ex; }; sudo ls; rm y", f"{d}/ex"),
                        ("env() { cd {D}/ex; }; env; rm y", f"{d}/ex"), ("nice() { cd {D}/ex; }; nice x; rm y", f"{d}/ex"),
-                       ("c=cd; $c {D}/ex; rm y", f"{d}/ex"), ("$u {D}/ex; rm y", None), ("c=f; $c; f() { cd {D}/ex; }; rm y", d),   # 정의 전 호출은 보통 명령(bash 도 not found)
+                       ("c=cd; $c {D}/ex; rm y", f"{d}/ex"), ("c=f; $c; f() { cd {D}/ex; }; rm y", d),   # 정의 전 호출은 보통 명령(bash 도 not found)
                        ("f() { cd {D}/ex; }; command f; rm y", d)):   # `command f` 는 함수를 건너뛴다
             self.assertEqual(last(c).cwd, cwd, c)
-        self.assertIsNone(last("f=a; $u x; rm $f").env.get("f", "unset"))
+        self.assertTrue(dyn("$u {D}/ex; rm y") and dyn("f=a; $u x; rm $f"))   # C6: 모르는 명령 이름은 상태를 잊는 대신 확정 불가
 
     def test_dollar_at_command_position(self):   # 6-4 NB11: `"$@"` 명령 자리는 호출 인자 단어들로
         d, last = self._world()
@@ -651,7 +651,7 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
                        ("cd {D}/ex; f() { cd ..; }; cd {D}; f; rm y", os.path.dirname(d)),   # 호출 시점 cwd 에서 상대 cd
                        ("run() { \"$@\"; }; run cd {D}/ex; rm y", f"{d}/ex"), ("f() { \"$1\" \"$2\"; }; f cd {D}/ex; rm y", f"{d}/ex"),   # 인자가 명령 자리로
                        ("run() { \"$@\"; }; cd {D}/ex; run ls; rm y", f"{d}/ex"), ("c=f; f() { cd {D}/ex; }; $c; rm y", f"{d}/ex"),
-                       ("g() { cd {D}/ex; }; c=g; f() { $c; }; f; rm y", f"{d}/ex"), ("f() { :; }; $u; rm y", None),
+                       ("g() { cd {D}/ex; }; c=g; f() { $c; }; f; rm y", f"{d}/ex"),
                        ("cd() { :; }; cd {D}/ex; rm y", d), ("f() { cd {D}/ex; return; cd {D}; }; f; rm y", f"{d}/ex"),
                        ("f() { cd {D}/ex || return 1; cd {D}; }; f; rm y", None), ("f() { exit 1; }; f; rm y", d),
                        ("f() { cd {D}/ex; }; f 2>/dev/null; rm y", f"{d}/ex")):
@@ -1283,7 +1283,7 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
             self.assertTrue(dyn(c), c)
         for c, want in (("env A=1 ls", ["ls"]), ("env -i PATH=/bin ls", ["ls"]), ('env "$K=v" ls', ["ls"]), ("env FOO=$X ls", ["ls"]),
                         ("X=rm; sudo $X -rf ~/data", ["rm"]), ("X=ls; nohup $X", ["ls"]), ("X='A=1'; env $X ls", ["ls"]),
-                        ('sudo -u "$U" ls', ["ls"]), ("command -v $X", ["command"]), ("$X rm x", ["$X"])):   # 래퍼가 아닌 명령 자리는 이 규칙 밖
+                        ('sudo -u "$U" ls', ["ls"]), ("command -v $X", ["command"])):   # 래퍼 없는 `$X rm x` 는 C6 에서 확정 불가
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
             self.assertEqual([s.name for s in r.segments if s.depth == 0][-1:], want, c)
         self.assertEqual(targets("X=rm; sudo $X -rf ~/data"), [["/h/data"]])
@@ -1314,6 +1314,31 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
         for c in (f"{U4} | find . -exec bash -c 'wc -l \"$1\"' _ {{}} \\;", f"{U4} | find . -exec bash {{}} \\;", "find . -exec bash -s \\;",
                   f"{U4} | find . -exec sh -n -s \\;", f"{U4} | find . -name x -print", "find . -exec nohup $X {} \\;"):   # -c 코드·스크립트 파일·stdin 없음
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+
+
+class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 resolve_command_name 한 곳 — 단위 첫 단어·래퍼 뒤·xargs·find·policy 가 모두 거친다
+    def test_c6_command_position_unknown_everywhere(self):   # 이름을 모르면 확정 불가('안쪽 없음 = 허용' 금지) — c5rr/real.sh: bash 는 실행한다
+        for c in ("$X rm -rf ~/data", "$CMD ~/data", '"$X" -rf ~/data', "${X} -rf ~/data", "$(echo rm) -rf ~/data", "`echo rm` -rf ~/data",
+                  "$X -c 'rm -rf ~/data'", "$X bash -c 'rm -rf ~/data'", "$X sudo rm -rf ~/data", "time $X -rf ~/data", "time -p $X",
+                  "echo ~/data | xargs $X -rf", "xargs $X", "env $X=1 $Y", 'env "$X"=1 $Y -rf ~/data', "env $X=1 $Y=2 $Z", "env A=1 $X=2 $Y",
+                  "docker exec c1 $X", "X=; $X rm -rf ~/data"):   # 빈 값은 사라져 다음 단어가 명령이 된다 — 확정 불가로 본다
+            self.assertTrue(dyn(c), c)
+        self.assertEqual(shell_parse.parse("$X rm x", "/w", {"HOME": "/h"}).error, "명령 이름을 확정할 수 없음")
+        # 값이 확정된 변수는 그 이름으로 — 각 호출 지점이 같은 함수를 쓰는지(건너뛰면 이름이 `$X` 로 남아 판정이 빠진다)
+        self.assertEqual(names("X=ls; $X -la"), ["ls"])
+        self.assertEqual(names("X=sudo; $X rm -rf ~/data"), ["rm"])   # 래퍼 벗기기 전에 확정
+        self.assertEqual(targets("X=rm; $X -rf ~/data"), [["/h/data"]])
+        self.assertEqual(inner_names("X=rm; echo ~/data | xargs $X -rf"), ["rm"])
+        self.assertEqual(inner_names("X=env; $X bash -c 'rm -rf ~/data'"), ["rm"])
+        self.assertTrue(dyn(f"S=bash; {U4} | find . -exec $S \\;"))   # find -exec 의 셸이 find 의 stdin 을 받는다
+        self.assertEqual([s.name for s in parse("X=bash; docker exec c1 $X -c 'rm -rf /app'", "/w", {"HOME": "/h"}).segments][-1], "rm")
+        # 허용 유지: 폴더만 모르는 리터럴 이름, 조회·인자 자리의 변수, 함수 정의 본문(호출 때 인자로 다시 해석)
+        for c, want in (("$B/vitest run", "vitest"), ('"$S"/venv/bin/python x.py', "python"), ("command -v $X", "command"),
+                        ("echo $X", "echo"), ("ls $X", "ls"), ("run() { \"$@\"; }; run make -j4", "make"), ("f() { $1 x; }", None)):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            if want:
+                self.assertEqual([s.name for s in r.segments][-1], want, c)
+        self.assertIn("명령 이름을 확정할 수 없음", parse("run() { \"$@\"; }; run $X", "/w", {"HOME": "/h"}).error)   # 호출 때는 확정 불가(재해석 실패로 감싸인다)
 
 
 if __name__ == "__main__":

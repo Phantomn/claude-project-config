@@ -83,6 +83,14 @@ class JudgeTest(_WorldCase):
         self.assertTrue(judge(w.payload('python3 -c "$code"'), {**w.environ, **ON}).allow)                           # 셸 코드가 아니다
         self.assertTrue(judge(w.payload('echo "unterminated'), {**w.environ, **ON}).allow)                           # 구문 오류는 현행 (가)
 
+    def test_c6_command_name_unknown_denied(self):   # C6: 명령 이름을 확정 못 한 단위는 어느 자리든 거부(c5rr 재검토의 끝단 허용 모양)
+        for c in ("$X rm -rf {HOME}/data", "$CMD {HOME}/data", '"$X" -rf {HOME}/data', "$(echo rm) -rf {HOME}/data",
+                  "$X bash -c 'rm -rf {HOME}/data'", "time -p $X", "echo {HOME}/data | xargs $X -rf", "find {HOME}/data -exec $X -rf {} +",
+                  "curl -s x | find . -exec $SH \\;", "env $X=1 $Y", 'env "$X"=1 $Y -rf {HOME}/data', "env A=1 $X=2 $Y"):
+            self.assertFalse(judge(w.payload(c), {**w.environ, **ON}).allow, c)
+        for c in ("X=ls; $X -la", "$B/vitest run", "command -v $X", "echo $X", "ls $X"):
+            self.assertTrue(judge(w.payload(c), {**w.environ, **ON}).allow, c)
+
     def test_trap_cleanup_pattern(self):   # 최종 리뷰 I4: 정리 패턴은 허용, 보호 대상을 지우는 trap 은 거부
         self.assertTrue(judge(w.payload('TMP=$(mktemp -d); trap \'rm -rf "$TMP"\' EXIT; echo x > "$TMP/a"'), {**w.environ, **ON}).allow)
         d = judge(w.payload("trap 'rm -rf {HOME}/data' EXIT"), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("삭제", d.reasons[0])
@@ -231,9 +239,9 @@ class MainTest(_WorldCase):
         self.assertIn("JSONDecodeError", self.log_lines()[-1]["settings_errors"][0])
 
     def test_log_dynamic_kind(self):   # C5 항목 6: R_DYNAMIC 의 하위 사유(해석기 문구)를 shadow 관측용 필드로 — 출력은 그대로
-        for c, kind in (("curl -s x | $SHELL", "파이프 대상 명령을 확정할 수 없음"), ("curl -s x | bash", "파이프로 넘긴 코드를 확정할 수 없음"),
+        for c, kind in (("curl -s x | $SHELL", "명령 이름을 확정할 수 없음"), ("curl -s x | bash", "파이프로 넘긴 코드를 확정할 수 없음"),
                         ('bash -c "$c"', "셸 -c 문자열을 확정할 수 없음"), ("bash -q -c ls", "셸 옵션 -q 을 해석할 수 없음"),
-                        ("env $X ls", "래퍼 뒤 명령을 확정할 수 없음")):
+                        ("env $X ls", "명령 이름을 확정할 수 없음")):   # C6: 명령 이름 확정 한 곳의 문구
             r = self.run_main(w.payload(c), extra=ON)
             out = json.loads(r.stdout)["hookSpecificOutput"]
             self.assertEqual(out["permissionDecision"], "deny", c); self.assertIn("정적으로 알 수 없다", out["permissionDecisionReason"], c)
@@ -242,7 +250,7 @@ class MainTest(_WorldCase):
         for c in ("rm src/main.py", 'rm -rf "unterminated', "f() { f; }; f; cp a b"):   # R_DYNAMIC 이 아니면 필드 없음
             self.run_main(w.payload(c), extra=ON)
             self.assertNotIn("dynamic_kind", self.log_lines()[-1], c)
-        self.assertEqual(judge(w.payload("env $X ls"), {**w.environ, **ON}).dynamic_kind, "래퍼 뒤 명령을 확정할 수 없음")
+        self.assertEqual(judge(w.payload("env $X ls"), {**w.environ, **ON}).dynamic_kind, "명령 이름을 확정할 수 없음")
         self.assertIsNone(judge(w.payload("rm src/main.py"), {**w.environ, **ON}).dynamic_kind)
 
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로

@@ -1222,28 +1222,40 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
 
     맨 앞 접두 할당(bash 가 왼쪽부터 순차 확장)은 호출자가 먼저 벗긴다 — 여기서는 모두 래퍼 뒤 단어로 본다.
     """
+    last = ""   # 바로 앞에 벗긴 래퍼
     while w:
         while w and (a := _assign_of(w[0], env)) is not None:
             run_env[a[0]] = a[1]
             w = w[1:]
-        if not w or (rest := _strip_wrapper(w, run_env, env)) is None:
+        if not w:
             break
-        name = _cmd_name(w)
-        if names is not None:
-            names.append(name)
-        w = rest
-        if w and not _is_assign(w[0]) and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts):
-            # 래퍼가 받은 명령 자리가 확장 — 값을 모르면 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B)
-            if (v := _text(w[0].parts, env, split=True)) is not None:
-                w = [Word((Part(v, ""),)), *w[1:]]
-            elif _named_path(w[0], env):
-                pass   # 폴더만 모르고 이름은 리터럴 — 이름으로 판정한다(_cmd_name 은 basename)
-            elif name == "env" and "=" in w[0].literal():   # env 는 '=' 가 든 인자를 할당으로 받는다(이름 미확정)
+        if (r := resolve_command_name(w[0], env)) is None:
+            if last == "env" and "=" in w[0].literal():   # env 는 '=' 가 든 인자를 할당으로 받는다(이름 미확정)
                 _forget(run_env)
                 w = w[1:]
-            else:
-                raise CodeUnknown("래퍼 뒤 명령을 확정할 수 없음")
+                continue
+            raise CodeUnknown("명령 이름을 확정할 수 없음")   # 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B·C6)
+        w = [r, *w[1:]]
+        if last and _is_assign(r):   # 래퍼가 받는 확정 값이 할당 모양(`X='A=1'; env $X ls`) — 맨 앞 단어는 bash 도 명령으로 본다
+            continue
+        if (rest := _strip_wrapper(w, run_env, env)) is None:
+            break
+        last = _cmd_name(w)
+        if names is not None:
+            names.append(last)
+        w = rest
     return w
+
+
+def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> Word | None:
+    """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
+    확장이 없거나 값이 정해지면 그 단어, 폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename),
+    그 밖 None(확정 불가)."""
+    if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
+        return w
+    if v := _text(w.parts, env, split=True):   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
+        return Word((Part(v, ""),))
+    return w if _named_path(w, env) else None
 
 
 def _named_path(w: Word, env: Mapping[str, str | None]) -> bool:
@@ -1649,7 +1661,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
                 if sh.name not in SHELLS or _shell_code(sh, None) is not None:
                     continue
             except LexError:
-                continue   # 래퍼 뒤 명령·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정
+                continue   # 명령 이름·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정
             if (code := _shell_code(replace(sh, redirects=seg.redirects), pipe_prev)) is not None:
                 _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
     return None
@@ -1825,15 +1837,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             w = w[1:]
         if w and fn_args and len(w[0].parts) == 1 and w[0].parts[0].quote != "'" and w[0].parts[0].text in ("$@", "${@}"):
             w = [*fn_args[-1], *w[1:]]   # `"$@"` 명령 자리 = 호출 인자 단어들(`run() { "$@"; }; run make -j4`)
-        if w and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts):
-            v = _text(w[0].parts, unit_env, split=True)   # 변수로 부르는 명령 — 확정되면 그 이름, 아니면 전부 미확정(간접 호출, fail-closed)
-            if v:
-                w = [Word((Part(v, ""),))] + w[1:]
-            else:
-                st["cwd"] = None
-                state_env.pop("PWD", None)
-                state_env.pop(SHELL_CWD, None)
-                _forget(state_env)
+        if w and (r0 := resolve_command_name(w[0], unit_env)) is not None:   # 함수 조회도 확정된 이름으로(`c=g; $c`) — 모르면 _strip_all 이 거부
+            w = [r0, *w[1:]]
         if w and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출 — 래퍼를 벗기기 전에 본다(래퍼 이름을 가리는 함수도 함수가 우선)
             if not _harmless(r):   # 호출 단위의 리다이렉트가 실패하면 함수가 돌지 않는다 — 호출 전 상태가 실패 끝
                 elem["pre"] = now()
@@ -1841,7 +1846,17 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             return None
         wrappers: list[str] = []
         extra: dict[str, str | None] = {}
-        w = _strip_all(w, extra, unit_env, wrappers)
+        try:
+            w = _strip_all(w, extra, unit_env, wrappers)
+        except CodeUnknown:
+            if not fn_cur:
+                raise
+            # 함수 정의 본문은 정의만으로 돌지 않고 호출 때 인자로 다시 해석된다 — 여기서는 상태만 잊는다(간접 호출, fail-closed)
+            wrappers, extra = [], {}
+            st["cwd"] = None
+            state_env.pop("PWD", None)
+            state_env.pop(SHELL_CWD, None)
+            _forget(state_env)
         unit_cwd = _chdir(st["cwd"], extra)
         if extra.pop(_RESET, None):   # env -i·sudo·doas: 바깥 변수는 안쪽 명령에 없다 — 값을 모른다(fail-closed)
             run_env = {k: (v if k.startswith("\x00") else None) for k, v in run_env.items()}

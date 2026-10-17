@@ -48,6 +48,9 @@ class DeleteTest(_WorldCase):
                   "find . -exec bash -posix -c 'rm \"$1\"' _ {} \\;", "find . -exec bash -norc -c 'rm \"$1\"' _ {} \\;",   # C5 NB1: 한 대시 긴 옵션
                   "find . -exec nohup $X {} \\;"):   # C5 OOS-B: 래퍼 뒤 명령 자리를 모르면 삭제 여부도 모른다
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        for c in ("find . -exec $X -rf {} +", "find . -exec $X {} +", "find . -execdir \"$X\" {} \\;", "X=rm; find . -exec $X {} +"):   # C6: 명령 이름 확정 한 곳
+            self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("X=ls; find . -exec $X {} +"), [])
         self.assertEqual(ev("find . -exec sh -n -c 'rm \"$1\"' _ {} \\;"), [])   # 실행 안 함
         self.assertEqual(ev("find . -name '*.py' -exec /bin/rm {} +"), [("삭제", GIT_TRACKED)])   # 미리보기로 대상 확정
         self.assertEqual(ev("find . -name '*.o' -exec /usr/bin/rm -f {} \\;"), [])
@@ -641,8 +644,9 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
             self.assertTrue(w.judge_cmd(c).allow, c)
         for c in (
                   "f=nothing; g() { f=..; }; if t; then g; fi; rm -rf src/$f", "f=nothing; g() { read f; }; g; rm -rf src/$f",
-                  "f() { cd \"$1\"; }; f {SCRATCH}/missing; rm -rf ./*", "f() { :; }; $u; rm -rf ./*"):
+                  "f() { cd \"$1\"; }; f {SCRATCH}/missing; rm -rf ./*"):
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertFalse(w.judge_cmd("f() { :; }; $u; rm -rf ./*").allow)   # C6: 모르는 명령 이름은 확정 불가
         for c in ("f() { :; }; f() { cd /; }; f; rm -rf ./*", "f=nothing; g() { :; }; source ./lib.sh; g; rm -rf src/$f", "f() { f; }; f; rm -rf ./*"):
             d = w.judge_cmd(c)
             self.assertFalse(d.allow, c); self.assertIn("해석 한계", d.reasons[0], c)   # 모델링 불가(위험 단어와 무관하게 거부)
