@@ -1440,6 +1440,15 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
             self.assertEqual([s.name for s in r.segments][-1], want, c)
         self.assertEqual(targets('R=$D/rm; "$R" -rf ~/data'), [["/h/data"]])
 
+    def test_c7_s4_glob_command_word(self):   # S4: 따옴표 없는 글롭 글자가 든 명령 단어는 펼친 이름을 모른다(c7/real7.out: /usr/bin/ech? 실행)
+        for c in ("/bin/r? -rf ~/data", "/bin/r* -rf ~/data", "/bin/[r]m -rf ~/data", "sudo /bin/r? -rf ~/data", "echo ~/data | xargs /bin/r? -rf",
+                  "timeout 5 ./r*", "env A=1 /bin/r? x", "X=/bin; $X/r? -rf ~/data"):
+            self.assertTrue(dyn(c), c)
+        for c, want in (("[ -f x ] && ls", "ls"), ("[[ -f x ]] && ls", "ls"), ("ls *.py", "ls"), ("echo ? [a]", "echo"), ("'/bin/r?' x", "r?"),
+                        ("/bin/r\\? x", "r?"), ('x="$?"; echo "$x"', "echo")):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments][-1], want, c)
+
 
 if __name__ == "__main__":
     unittest.main()

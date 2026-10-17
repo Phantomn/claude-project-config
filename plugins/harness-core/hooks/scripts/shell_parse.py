@@ -958,6 +958,25 @@ def _cmd_extglob(w: Word) -> bool:
     return False
 
 
+def _cmd_glob(w: Word) -> bool:
+    """명령 자리 단어에 따옴표 없는 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭)가 있는가 — 펼친 이름을 모른다(C7 S4). 확장 안은 보지 않는다."""
+    s = []
+    for p in w.parts:
+        if p.quote:
+            s.append("\0")
+            continue
+        t, i = p.text, 0
+        while i < len(t):
+            if t[i] in "$`":
+                j = _skip_sub(t, i)
+                i = j + (j == i + 1 and t[i] == "$" and t[j : j + 1] in ("?", "*", "@", "#", "!", "$", "-"))   # `$?`·`$*` 는 확장
+            else:
+                s.append(t[i])
+                i += 1
+    x = "".join(s)
+    return "*" in x or "?" in x or "]" in x.partition("[")[2] or _EXTGLOB.search(x) is not None
+
+
 def _assign_of(w: Word, env: Mapping[str, str | None], shape: bool = False) -> tuple[str, str | None] | None:
     """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값`(누적)·`NAME[i]=값`(원소)은 미확정.
     shape 이면 값을 모를 때 마지막 경로 성분이 리터럴인 모양(`$(…)/bin/python`)을 _SHAPE 값으로 남긴다(상태 env 의 대입만)."""
@@ -1273,6 +1292,8 @@ def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] |
     결과는 그 자리를 채우는 단어들: 확장이 없거나 값이 정해지면 그 값(따옴표 없는 변수 하나는 bash 처럼 기본 IFS 로 나눈다),
     폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename), 변수 하나이고 그 대입이 그런 모양이면(_SHAPE)
     그 모양, 그 밖 None(확정 불가). IFS 가 바뀌었거나 모르면 따옴표 없는 확장은 나뉘는 기준을 몰라 확정 불가."""
+    if _cmd_glob(w):
+        return None
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
         return [w]
     unq = any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts)
