@@ -428,6 +428,8 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(k(str(d / "other")), PRESERVED)                 # 기록 없음 → 현행 보호
         self.assertFalse(judge(w.payload(f"rm -rf {d}/other"), env).allow)
         self.assertEqual(k(str(d / "mine/f.txt"), w.ctx(session_id="B")), PRESERVED)   # 다른 세션의 created 는 내 증거가 아니다
+        judge(w.payload("echo x > /dev/bash-guard-nonexistent"), env)                     # 장치 경로는 생성 기록을 남기지 않는다
+        self.assertEqual(Ledger(w.environ).entries("/dev/bash-guard-nonexistent"), [])
 
     def test_budget_checked_before_ledger(self):   # C1: 예산이 다했으면 장부를 열기 전에 끝낸다(읽을 수 없는 장부로 관측)
         if os.geteuid() == 0:

@@ -1256,7 +1256,7 @@ def created_targets(seg: Segment) -> list[str]:
     except _BadOption:
         pass
     out += [p for w in words for p in expand(w, seg) or ()]
-    new = [p for p in out if not os.path.lexists(p)]
+    new = [p for p in out if not os.path.lexists(p) and not p.startswith("/dev/")]   # 장치 경로는 파일 생성이 아니다
     if parents:
         for p in list(new):
             d = os.path.dirname(p)
