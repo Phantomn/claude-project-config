@@ -347,7 +347,7 @@ class Context:
     project_dir: str | None = None
     project: str | None = None
     cli: str = "docker"       # 띄운 CLI 이름(docker|podman|docker-compose) — podman 은 데몬이 없다(C3 I2-a)
-    daemon_set: bool = False   # 명령이 데몬을 직접 지정(-H/--host/-c/--context, DOCKER_HOST/DOCKER_CONTEXT 할당·해제) — 훅 env 의 소켓 부재는 증거 아님(C3 I2-c)
+    daemon_set: bool = False   # 명령이 데몬을 직접 지정(-H/--host/-c/--context/--config, DOCKER_HOST/CONTEXT/CONFIG 할당·해제·env 미확정) — 훅 env 의 소켓 부재는 증거 아님(C3 I2-c, C4 R-D)
 
 
 HOST = Context()
@@ -953,10 +953,13 @@ def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None]
 
 
 def _forget(env: dict[str, str | None]) -> None:
-    """모든 변수를 미확정으로(어느 변수를 바꿨는지 모르는 source·동적 이름·nameref). 내부 키(\\x00…)는 그대로."""
+    """모든 변수를 미확정으로(어느 변수를 바꿨는지 모르는 source·동적 이름·nameref). 내부 키(\\x00…)는 그대로.
+    없던 변수도 생길 수 있다 — 데몬 변수는 키로 남겨 훅 env 의 소켓 부재를 증거로 쓰지 않게 한다(C4 R-D)."""
     for k in env:
         if not k.startswith("\x00"):
             env[k] = None
+    for k in _DAEMON_VARS:
+        env[k] = None
 
 
 _READ_VALUE = {"read": "adinNptu", "mapfile": "dnOsuCc", "readarray": "dnOsuCc"}   # 값을 받는 한 글자 옵션
@@ -1441,7 +1444,7 @@ def _mounts(o: list[tuple[str, Word]], seg: Segment) -> tuple[Mount, ...] | None
     return tuple(out)
 
 
-_DAEMON_VARS = ("DOCKER_HOST", "DOCKER_CONTEXT")
+_DAEMON_VARS = ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")   # DOCKER_CONFIG: 다른 config 폴더의 currentContext
 
 
 def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None, run_env: Mapping[str, str | None]) -> None:
@@ -1453,7 +1456,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     daemon_set = any(k in run_env or k in seg.env for k in _DAEMON_VARS)   # 접두 할당·export·unset·env -u 는 상태 env 에 키로 남는다
     if not compose:
         i, gd = _opts(a, 1, _DOCKER_GLOBAL)
-        daemon_set |= any(k in ("-H", "--host", "-c", "--context") for k, _ in gd)
+        daemon_set |= any(k in ("-H", "--host", "-c", "--context", "--config") for k, _ in gd)
         if i < len(a) and a[i].literal() == "compose":
             compose, i = True, i + 1
         elif i < len(a) and a[i].literal() == "container":   # 관리 명령 형태

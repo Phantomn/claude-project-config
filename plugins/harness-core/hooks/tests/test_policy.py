@@ -421,7 +421,10 @@ class DockerPolicyTest(_WorldCase):
         nosock = {"DOCKER_HOST": "unix:///nonexistent.sock"}; rm = f"exec {c} rm -rf /app/src"
         for cmd in (f"podman {rm}", f"DOCKER_HOST=unix:///var/run/docker.sock docker {rm}", f"export DOCKER_HOST=unix:///var/run/docker.sock; docker {rm}",
                     f"env DOCKER_HOST=unix:///var/run/docker.sock docker {rm}", f"docker -H unix:///var/run/docker.sock {rm}", f"docker --host=unix:///x.sock {rm}",
-                    f"docker --context default {rm}", f"DOCKER_CONTEXT=default docker {rm}", f"unset DOCKER_HOST; docker {rm}", f"env -u DOCKER_HOST docker {rm}"):
+                    f"docker --context default {rm}", f"DOCKER_CONTEXT=default docker {rm}", f"unset DOCKER_HOST; docker {rm}", f"env -u DOCKER_HOST docker {rm}",
+                    # C4 R-D: 상태 env 를 확정 못 하는 문장(source·동적 이름 할당) 뒤, 다른 config 폴더
+                    f"source ./env.sh; docker {rm}", f"set -a; . ./.env; docker {rm}", f"export $(cat .env | xargs); docker {rm}",
+                    f'declare -x "$N=unix:///x"; docker {rm}', f"docker --config /other {rm}", f"DOCKER_CONFIG=/other docker {rm}"):
             ctx = w2.ctx(environ_extra=nosock); self.assertEqual(e(cmd, ctx=ctx), [("삭제", UNRESOLVED)], cmd); self.assertNotIn("container_no_daemon", ctx.stats)
         ctx = w2.ctx(environ_extra=nosock); self.assertEqual(e(f"docker {rm}", ctx=ctx), []); self.assertEqual(ctx.stats, {"container_no_daemon": 1})   # 대조군
         self.assertEqual(e(f"podman {rm}"), [("삭제", GIT_TRACKED)])   # 소켓이 있으면 조회(docker inspect)로 판정 — 현행

@@ -1216,6 +1216,16 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
         for c in (f"{U4} | bash ./build.sh", f"{U4} | bash /dev/null", f"{U4} | bash /dev/fd/3", "source ./env.sh", f"{U4} | bash /proc/cpuinfo"):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
+    def test_c4_daemon_set_when_env_unknown(self):   # R-D: I2-c·N3 — 상태 env 를 확정 못 하는 문장 뒤·--config·DOCKER_CONFIG 는 데몬 지정
+        rm = "exec c1 rm -rf /app/src"
+        for c in (f"source ./env.sh; docker {rm}", f". ~/.dockerrc && docker {rm}", f"set -a; source .env; docker {rm}",
+                  f"export $(cat .env | xargs); docker {rm}", f'declare -x "$N=unix:///x"; docker {rm}', f'read "$v" < f; docker {rm}',
+                  f"docker --config /other {rm}", f"docker --config=/other {rm}", f"DOCKER_CONFIG=/other docker {rm}",
+                  f"export DOCKER_CONFIG=/o; docker {rm}", f"source ./env.sh; bash -c 'docker {rm}'"):
+            self.assertEqual([s.context.daemon_set for s in ctx_of(c)], [True], c)
+        for c in (f"docker {rm}", f"X=1; docker {rm}", f"cd /w && docker {rm}"):   # 대조군: env 를 아는 경우
+            self.assertEqual([s.context.daemon_set for s in ctx_of(c)], [False], c)
+
 
 if __name__ == "__main__":
     unittest.main()
