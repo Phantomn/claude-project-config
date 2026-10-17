@@ -765,7 +765,7 @@ class Finding:
 2. 사용자 승인 후 **프로젝트별** settings(`<프로젝트>/.claude/settings.json` 의 `env`)에 `HARNESS_BASH_GUARD=shadow`
    1줄 → 최소 3일·Bash 호출 5,000회 이상 수집. 전역(`~/.claude/settings.json`)에는 두지 않는다(사용자 규칙: 모든 폴더에서
    걸리는 동작의 스위치는 프로젝트에 — 2026-10-14 재확인). 대상 목록은 전환 시점에 사용자와 확정한다. 후보(ask 발생 상위):
-   money, math, orca 작업공간(브랜치별 settings 파일이 따로 있음), phantomn.github.io, quant, bounty, tools, .agents.
+   money, math, orca 작업공간(브랜치별 settings 파일이 따로 있음), 개인 사이트(github.io) 저장소, quant, bounty, tools, .agents.
    홈(`~`)에서 연 세션도 스위치를 켠 저장소의 대상을 건드리면 그 저장소 값으로 판정된다(D10). 홈 자체의 파일은 대상 밖.
 3. 불일치 검토 → 판정기 수정 반복 → 기준 충족 시 사용자 승인 후 같은 프로젝트들에서 `on`.
 4. `on` 2주 무사고 후 사용자 승인으로 기존 로직·`t_auto_approve_rm.py` 제거와 각 프로젝트 settings 의 `HARNESS_RM_REPO_DIRS` 정리(별도 PR — 이번 변경 범위 밖). 이후
@@ -906,7 +906,7 @@ docker exec c sh -c 'echo x >> /etc/hosts && rm -rf /var/lib/x'(마운트 아님
 ```
 echo 'cleanup: rm -rf ~'                         grep -rn 'rm -rf' docs/
 rm -rf build 2>/dev/null(없는 폴더)               git clean -n
-rm -rf /tmp/claude-1000/<세션>/scratchpad/out     systemctl --user stop svc
+rm -rf /tmp/claude-<uid>/<세션>/scratchpad/out    systemctl --user stop svc
 ```
 
 ## 부록 D. 선행 사례 조사 요약 (2026-10-14, Exa)

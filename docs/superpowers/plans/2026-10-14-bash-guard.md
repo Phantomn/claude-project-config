@@ -1172,7 +1172,7 @@ exit 0
 ### Task 15: 죽은 등록 게이트 (`~/.claude/check-canon.sh`) — **실행 전 사용자 승인 필요(Ask first)**
 
 **Files:**
-- Modify: `/home/phantom/.claude/check-canon.sh` — 검사 함수 추가(`check_openspec_retired()` 정의 뒤), live 절의 `check_openspec_retired` 호출 다음 줄에 호출,
+- Modify: `~/.claude/check-canon.sh` — 검사 함수 추가(`check_openspec_retired()` 정의 뒤), live 절의 `check_openspec_retired` 호출 다음 줄에 호출,
   `--selftest` 절에 사례 2개(마지막 NEG18 이후 번호)
 
 **Interfaces:**
@@ -1190,8 +1190,8 @@ exit 0
 ### Task 16: 죽은 등록 제거 4곳 — **실행 전 사용자 승인 필요(Ask first)**
 
 **Files (각각 다른 저장소·브랜치):**
-- Modify: `/home/phantom/agent/.claude/settings.json`, `/home/phantom/bounty/.claude/settings.json`,
-  `/home/phantom/orca/workspaces/bounty/bounty-agoda/.claude/settings.json`, `/home/phantom/orca/workspaces/bounty/bounty-wordpress/.claude/settings.json`
+- Modify: `~/agent/.claude/settings.json`, `~/bounty/.claude/settings.json`,
+  `~/orca/workspaces/bounty/bounty-agoda/.claude/settings.json`, `~/orca/workspaces/bounty/bounty-wordpress/.claude/settings.json`
 
 - [ ] **Step 1: 사용자 승인과 상태 확인** — 각 저장소 `git -C <repo> status --short -- .claude/settings.json` 이 깨끗한지(미커밋 변경이 있으면 멈추고 보고).
 - [ ] **Step 2: 제거** — `hooks.PreToolUse[].hooks[]` 중 command 가 `auto-approve-readonly.sh` 를 가리키는 항목만 제거(그룹의 다른 훅 유지, 빈 그룹 제거),
