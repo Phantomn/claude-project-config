@@ -451,7 +451,7 @@ def _check_deadline() -> None:
         raise LexError("해석 시간 초과")
 
 
-SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+SHELLS = {"bash", "rbash", "sh", "zsh", "dash", "ksh"}   # rbash = bash 링크(제한 모드, 같은 옵션·실행 — c6/rbash.out)
 _MAX_DEPTH = 8
 # 셸 호출 옵션(C4 R-A, bash 5.2·dash 0.5.12 실측): 한 글자는 두 셸의 합집합, 그 밖(zsh 전용 등)은 확정 불가
 _SH_LETTERS = frozenset("abcefhiklmnprstuvxBCDEHIPTV")
@@ -1341,7 +1341,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         if x.startswith("--") or (lead and x.startswith("-")):
             name = x[2:] if x.startswith("--") else x[1:]
             if name in _SH_LONG or name in _SH_LONG_VALUE or name in _SH_LONG_EXIT:
-                if seg.name != "bash":
+                if seg.name not in ("bash", "rbash"):
                     raise CodeUnknown(f"셸 옵션 {x} 을 해석할 수 없음")
                 if name in _SH_LONG_EXIT:
                     return None

@@ -1364,6 +1364,14 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
         for c in (f"{U4} | bash \"$DIR/run.sh\"", f"{U4} | bash $D/run.sh", 'bash "$X"', "bash $D/stdin", 'source "$ENV_FILE"', 'sh "$S" arg'):   # 입력원 없음·리터럴 이름
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
 
+    def test_c6_rbash_is_bash(self):   # 항목 4: rbash 는 bash 링크 — 같은 옵션·실행(c6/rbash.out: -c·-posix·--posix·-norc·파이프 실행, -n·-help 안 함)
+        for c in ("rbash -c 'rm -rf ~/data'", "rbash -posix -c 'rm -rf ~/data'", "/bin/rbash --norc -c 'rm -rf ~/data'",
+                  "echo 'rm -rf ~/data' | rbash"):
+            self.assertEqual(inner_names(c), ["rm"], c)
+        self.assertTrue(dyn(f"{U4} | rbash -s"))
+        for c in ("rbash -n -c 'rm -rf ~/data'", "rbash -help -c 'rm -rf ~/data'"):
+            self.assertEqual(inner_names(c), [], c)
+
 
 if __name__ == "__main__":
     unittest.main()
