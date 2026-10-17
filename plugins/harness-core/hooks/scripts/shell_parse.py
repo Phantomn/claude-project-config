@@ -1319,9 +1319,10 @@ def find_exec_command(words: list[Word], env: Mapping[str, str | None]) -> list[
 
 def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] | None:
     """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
-    결과는 그 자리를 채우는 단어들: 확장이 없거나 값이 정해지면 그 값(따옴표 없는 변수 하나는 bash 처럼 기본 IFS 로 나눈다),
-    폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename), 변수 하나이고 그 대입이 그런 모양이면(_SHAPE)
-    그 모양, 그 밖 None(확정 불가). IFS 가 바뀌었거나 모르면 따옴표 없는 확장은 나뉘는 기준을 몰라 확정 불가."""
+    결과는 그 자리를 채우는 단어들. 확정은 모델 없이 사실로 보이는 좁은 경우만(C7):
+    글롭 글자가 없고(S4) 확장이 없으면 그 단어, 값이 정해지면 그 값 — 따옴표 없는 값은 안전 글자 단어 ≤16개·≤1024자만 나눠서(S2),
+    원문에 IFS 가 있거나 IFS 를 모르면 확정 불가(S1). 폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_named_path,
+    _cmd_name 은 basename), 따옴표 안 변수 하나(`"$PY"`)의 대입이 그런 모양이면(_SHAPE) 그 모양(S3). 그 밖 None(확정 불가)."""
     if _cmd_glob(w):
         return None
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
@@ -1337,11 +1338,10 @@ def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] |
         if not xs or len(xs) > _NAME_WORDS or (len(xs) > 1 and any(p.quote for p in w.parts)):
             return None
         return [Word((Part(x, ""),)) for x in xs]
-    t = "".join(p.text for p in w.parts)
-    ref = _SHAPE_REF.fullmatch(t) if all(p.quote != "'" for p in w.parts) else None
     if _named_path(w, env):
         return [w]
-    if ref and not unq and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
+    if not unq and (ref := _SHAPE_REF.fullmatch(w.literal())) and all(p.quote == '"' for p in w.parts) \
+            and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
         return [Word((Part(s[len(_SHAPE):], "'"),))]   # 대입 모양(`PY=$(…)/bin/python; "$PY"`) — 따옴표 안만(밖은 나뉜다, C7 S3)
     return None
 
@@ -1481,8 +1481,8 @@ def _dev_like(p: str) -> bool:
 def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirects: list[Redirect], pipe_prev: Segment | None) -> bool:
     """단어가 stdin 장치 경로인가 — 허용 목록(C5 D1·D2): /dev·/proc 를 지나는 경로는 깨끗한(확장·글롭·`..`·끝 / 없음) stdin 장치면
     True, 깨끗한 /dev/null 은 False(빈 코드), 그 밖(/proc/*/root·fd 링크·글롭·중괄호 등 변형)은 전부 CodeUnknown.
-    값 모르는 접두(`$D/stdin`·`$D`·`$D/fd/0`)는 이름이 리터럴 스크립트(`$DIR/run.sh`)가 아니면 입력원이 있을 때 CodeUnknown(C6 항목 3)
-    — 입력원이 없으면 장치여도 읽을 코드가 없다(깨끗한 /dev/stdin 과 같은 전제)."""
+    값 모르는 접두는 끝이 숫자(`$D/fd/3`)면 늘, 이름이 리터럴 스크립트(`$DIR/run.sh`)가 아니거나 끝이 stdin·null 이면 입력이 올 수
+    있을 때(_input_possible) CodeUnknown(C6 항목 3·C7 항목 2) — 입력이 없으면 장치여도 읽을 코드가 없다."""
     s = _text(w.parts, env)
     p = s if s is not None else w.literal()
     if not p.startswith("/") and cwd is not None:
