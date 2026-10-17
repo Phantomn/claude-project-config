@@ -8,7 +8,7 @@ import os
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 # subprocess·hashlib·datetime 은 쓰는 함수 안에서 import — 모든 Bash 호출의 기동 지연(약 5ms)을 조회가 필요할 때만 낸다
 from guard_mode import (  # noqa: F401 — 재수출(기존 import 경로 유지)
@@ -44,6 +44,7 @@ class Ctx:
     ledger: Ledger
     deadline: float  # time.monotonic() 기준
     clock_margin: float = CLOCK_MARGIN
+    stats: dict[str, int] = field(default_factory=dict)   # shadow 관측 지표(컨테이너 조회 실패·데몬 없음·임시 구멍 허용 건수)
 
     @functools.cached_property
     def session_start(self) -> float | None:
@@ -787,6 +788,25 @@ def docker_container_info(container: str, ctx: Ctx) -> tuple[tuple[Mount, ...], 
         return tuple(mounts), info["Config"]["WorkingDir"]
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
+
+
+def docker_daemon_absent(ctx: Ctx) -> bool:
+    """데몬이 없다는 긍정 증거만: docker 실행 파일 없음, DOCKER_HOST 의 unix 소켓 없음, (컨텍스트 미설정이면) 기본 소켓 없음.
+    증거가 없으면 False — 조회 실패를 '컨테이너 없음'으로 읽지 않는다(최종 리뷰 I2)."""
+    import shutil
+    if shutil.which("docker", path=ctx.environ.get("PATH")) is None:
+        return True
+    host = ctx.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix://"):
+        return not os.path.exists(host[len("unix://"):])
+    if host or ctx.environ.get("DOCKER_CONTEXT"):
+        return False
+    try:
+        with open(os.path.join(ctx.environ.get("HOME", ""), ".docker", "config.json"), encoding="utf-8") as f:
+            current = json.load(f).get("currentContext")
+    except (OSError, ValueError, AttributeError):
+        current = None
+    return not current and not os.path.exists("/var/run/docker.sock")
 
 
 def compose_container_id(service: str, project_dir: str, project: str | None, ctx: Ctx) -> str | None:

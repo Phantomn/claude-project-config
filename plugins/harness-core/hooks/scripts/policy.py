@@ -47,6 +47,7 @@ from target_class import (
     classify,
     compose_container_id,
     docker_container_info,
+    docker_daemon_absent,
     docker_volume_created,
     docker_volumes,
     find_preview,
@@ -988,11 +989,21 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
     elif cx.launcher in ("exec", "compose-exec"):
         cid = cx.container
         if cx.launcher == "compose-exec":
+            if cx.project_dir is None:
+                ctx.stats["compose_project_dir_none"] = ctx.stats.get("compose_project_dir_none", 0) + 1
             cid = compose_container_id(cx.container, cx.project_dir, cx.project, ctx) if cx.container and cx.project_dir else None
         info = docker_container_info(cid, ctx) if cid else None
         if info is None:
-            return [], []   # 조회 실패 = 컨테이너 안 경로 허용(spec §3.5 Docker)
-        mounts, workdir = info
+            # 이름 미확정·없는 이름·compose 폴더 모름·조회 실패는 '모름' — 안의 경로가 바인드 마운트인지 알 수 없다(최종 리뷰 I2).
+            # 데몬이 없다는 긍정 증거가 있을 때만 컨테이너가 존재할 수 없으므로 허용(기록)
+            if cid is not None and docker_daemon_absent(ctx):
+                ctx.stats["container_no_daemon"] = ctx.stats.get("container_no_daemon", 0) + 1
+                return [], []
+            if cx.project_dir is not None or cx.launcher == "exec":
+                ctx.stats["container_lookup_none"] = ctx.stats.get("container_lookup_none", 0) + 1
+            mounts = None   # 조회 실패·이름 미확정 — 마운트를 모른다
+        else:
+            mounts, workdir = info
     else:
         return [], []
     may_mount = mounts is None or partial or bool(mounts)

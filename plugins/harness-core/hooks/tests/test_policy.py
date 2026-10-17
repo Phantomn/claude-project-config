@@ -335,6 +335,26 @@ class DockerPolicyTest(_WorldCase):
         self.assertEqual(e(f'docker run --rm -v "$(pwd)":/app {d.image} rm -f /app/notes_presession.txt'), [("삭제", PRESERVED)])
         if d.compose: self.assertEqual(e(f"docker compose -p {d.project} exec web rm -rf /app/src/probe.ts", cwd="{OUT}"), [])
 
+    def test_container_lookup_failure_is_unresolved(self):   # 최종 리뷰 I2: 조회 실패·모름은 허용이 아니라 확정 불가, 데몬 없음만 허용+기록
+        w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
+        if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")
+        e = lambda cmd, cwd="{REPO}", ctx=None: [(f.op, f.kind) for f in w2.evaluate_all(w2.fmt(cmd), cwd, ctx)]
+        c, bad = d.container, f"{d.container}-nosuch"
+        for cmd in ('docker exec "$C" rm -rf /app/src', f"docker exec {bad} rm -rf /app/src",
+                    "cd {HOME} && cd - && docker compose exec web rm -rf /app/src", 'docker compose -f "$X" exec web rm -rf /app/src'):
+            self.assertEqual(e(cmd), [("삭제", UNRESOLVED)], cmd)
+        self.assertEqual(e('docker exec "$C" ls /app'), [])                                  # 안쪽에 판정 대상이 없으면 조회도 없다
+        self.assertEqual(e(f"docker exec {c} rm -rf /tmp/x"), [])                            # 컨테이너 안 경로는 현행대로 허용
+        self.assertEqual(e(f"docker exec {c} rm -rf /app/src"), [("삭제", GIT_TRACKED)])
+        if d.compose:
+            self.assertEqual(e(f"docker compose -f {{OUT}}/compose.yaml -p {d.project} exec web rm -rf /var/x", cwd="{HOME}"), [])
+        ctx = w2.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})             # 데몬 없음(소켓 부재) = 컨테이너가 있을 수 없다
+        self.assertEqual(e(f"docker exec {c} rm -rf /app/src", ctx=ctx), []); self.assertEqual(ctx.stats, {"container_no_daemon": 1})
+        self.assertEqual(e('docker exec "$C" rm -rf /app/src', ctx=ctx), [("삭제", UNRESOLVED)])   # 이름 미확정은 데몬과 무관하게 확정 불가
+        ctx = w2.ctx(); e('docker exec "$C" rm -rf /app/src', ctx=ctx); e(f"docker exec {bad} rm -rf /app/src", ctx=ctx)
+        e("cd {HOME} && cd - && docker compose exec web rm -rf /app/src", ctx=ctx)
+        self.assertEqual(ctx.stats, {"container_lookup_none": 2, "compose_project_dir_none": 1})
+
     def test_volume_ops(self):
         w2 = World(docker=True); self.addCleanup(w2.close); d = w2.docker
         if d is None: self.skipTest("docker 또는 sleep 이 도는 로컬 이미지 없음")

@@ -1349,8 +1349,8 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         project_dir = os.path.dirname(os.path.normpath(r[0])) if r and len(r) == 1 else None
     else:
         project_dir = seg.cwd
-    ctx = Context(
-        "container", a[i].literal(), ("compose-" if compose else "") + sub,
+    ctx = Context(   # 컨테이너 이름은 호스트 셸이 확장한 값 — 미확정(None)이면 조회할 수 없다(최종 리뷰 I2)
+        "container", _text(a[i].parts, seg.env), ("compose-" if compose else "") + sub,
         _mounts(o, seg) if sub == "run" else None,
         project_dir if compose else None,
         proj[-1] if proj else None,
