@@ -391,8 +391,20 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
     "time": (),
     "exec": ("-a",),
     "doas": ("-u", "-C"),
+    # 최종 리뷰 I6 — 이 호스트의 --help 실측(util-linux setsid/flock/su/runuser, strace 6.8, ltrace 0.7.3, procps watch 4.0.4)
+    "setsid": (),
+    "strace": ("-e", "-o", "-p", "-s", "-P", "-E", "-u", "-I", "-S", "-O", "-a", "-X", "-b", "-U", "--trace", "--signal", "--status",
+               "--trace-fds", "--trace-path", "--output", "--env", "--user", "--attach", "--columns", "--interruptible", "--detach-on",
+               "--string-limit", "--abbrev", "--verbose", "--raw", "--read", "--write", "--quiet", "--kvm", "--decode-fds", "--overhead",
+               "--summary-sort-by", "--summary-columns"),
+    "ltrace": ("-a", "-A", "-D", "-e", "-F", "-l", "-n", "-o", "-p", "-s", "-u", "-x"),
+    "watch": ("-n", "--interval", "-q", "--equexit"),
+    "runuser": ("-u", "--user", "-g", "--group", "-G", "--supp-group", "-w", "--whitelist-environment", "-s", "--shell"),
 }
 _WRAPPER_TAIL = {"timeout": 1, "flock": 1}  # 옵션 뒤에 소비할 위치 인자 수
+# `-c 코드`(watch 는 인자 전체)를 그 셸이 돌린다 — `sh -c 코드` 로 바꿔 안쪽을 해석한다(su·runuser 는 로그인 셸, flock·watch 는 sh)
+_CODE_WRAPPERS = ("su", "runuser", "flock", "watch")
+_CODE_OPTS = ("-c", "--command", "--session-command")
 _SIMPLE_WRAPPERS = ("builtin", "nohup", "chronic", "busybox")   # busybox <애플릿> …
 # 단위 맨 앞에서 벗기는 제어 예약어. `for`/`select` 머리는 명령이 아니라 단위를 내지 않는다.
 # `time` 은 예약어라 뒤에 복합 명령(`time if …`)이 올 수 있다 — 래퍼로 벗기면 `if` 가 명령 자리로 보이지 않는다(NB8)
@@ -1112,6 +1124,18 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
                 break
             if "v" in lit or "V" in lit:
                 return None
+    if name in ("su", "runuser"):
+        a = words[1:]
+        for n, x in enumerate(a):   # 옵션은 사용자 뒤에도 올 수 있다(getopt 순열, 실측 `su - root -c …`)
+            lit = x.literal()
+            if lit == "--":
+                break
+            if lit in _CODE_OPTS and n + 1 < len(a):
+                return _as_sh(a[n + 1])
+            if lit.startswith(("--command=", "--session-command=")):
+                return _as_sh(_drop(x, lit.index("=") + 1))
+        if name == "su" or not any(x.literal() in ("-u", "--user") or x.literal().startswith("--user=") for x in a):
+            return None   # 대화식 셸(su user)·runuser 의 su 호환 모양 — 실행할 명령이 없다
     if name not in _WRAPPER_VALUE_OPTS:
         return None
     reset = name in ("sudo", "doas")   # 기본 env_reset — 안쪽 명령은 바깥 변수를 물려받지 않는다(sudo -E 는 보존)
@@ -1132,7 +1156,18 @@ def _strip_wrapper(words: list[Word], run_env: dict[str, str | None], env: Mappi
         _reset_env(run_env)
     if i < len(words) and words[i].literal() == "--":
         i += 1
-    return words[i + _WRAPPER_TAIL.get(name, 0):]
+    rest = words[i + _WRAPPER_TAIL.get(name, 0):]
+    if name == "flock" and rest and rest[0].literal() in ("-c", "--command"):   # `flock [opts] <file> -c <코드>`
+        return _as_sh(rest[1]) if len(rest) > 1 else None
+    if name == "watch" and not any(x.literal() in ("-x", "--exec") for x in words[1:i]):
+        # watch 는 인자들을 공백으로 이어 `sh -c` 로 돌린다(-x 만 직접 실행) — 이은 한 단어를 코드로
+        parts = tuple(p for n, w in enumerate(rest) for p in ((Part(" ", "'"),) if n else ()) + w.parts)
+        return _as_sh(Word(parts)) if rest else None
+    return rest
+
+
+def _as_sh(code: Word) -> list[Word]:
+    return [Word((Part("sh", "'"),)), Word((Part("-c", "'"),)), code]
 
 
 _RESET = "\x00reset"   # 래퍼가 환경을 비웠다 — 호출자가 바깥 변수(run_env)도 미확정으로 바꾼다

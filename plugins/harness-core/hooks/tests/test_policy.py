@@ -51,6 +51,18 @@ class DeleteTest(_WorldCase):
         self.assertEqual(ev("busybox rm src/main.py"), [("삭제", GIT_TRACKED)])
 
 
+class WrapperTest(_WorldCase):
+    def test_new_wrappers(self):   # 최종 리뷰 I6: 명령을 받는 래퍼 목록 확장 — 위험 입력 거부·정상 허용
+        bad, ok, P = "rm -rf {HOME}/data", "rm -rf {SCRATCH}/s1", [("삭제", PRESERVED)]
+        for pre in ("setsid ", "setsid -f ", "strace -f -o /dev/null ", "strace -e trace=file ", "ltrace -f ", "ltrace -e malloc "):
+            self.assertEqual(ev(pre + bad), P, pre); self.assertEqual(ev(pre + ok), [], pre)
+        for c, want in ((f"su -c '{bad}'", P), (f"su - root -c '{bad}'", P), (f"su root -c '{ok}'", []), ("su root", []),
+                        (f"runuser -c '{bad}' root", P), (f"runuser -u root -- {bad}", P), (f"runuser -u root {ok}", []),
+                        (f"flock /tmp/l -c '{bad}'", P), (f"flock -w 5 /tmp/l {bad}", P), (f"flock /tmp/l -c '{ok}'", []),
+                        (f"watch -n 5 {bad}", P), (f"watch -x {bad}", P), (f"watch '{bad}'", P), (f"watch -n 1 {ok}", [])):
+            self.assertEqual(ev(c), want, c)
+
+
 class OverwriteTest(_WorldCase):
     def test_overwrite(self):
         self.assertEqual(ev("echo x > src/main.py"), []); self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])
@@ -61,6 +73,25 @@ class OverwriteTest(_WorldCase):
         self.assertEqual(ev("cp src/probe.ts {HOME}/data/"), []); self.assertEqual(ev("mv {HOME}/notes.md {SCRATCH}/s1/"), [])
         self.assertEqual(ev("truncate -s0 {HOME}/data/db.sqlite"), [("덮어쓰기", PRESERVED)]); self.assertEqual(ev("sed -i s/a/b/ {HOME}/notes.md"), [])
         self.assertEqual(ev("rsync -a --delete src/ {HOME}/data/"), [("삭제", PRESERVED)]); self.assertEqual(ev("rsync -a src/ {SCRATCH}/s1/"), [])
+
+    def test_ln_force_overwrites(self):   # 최종 리뷰 I5: ln -f/-sf/--force 는 기존 대상을 바꿔치기한다(coreutils 실측)
+        w.sh("cp {SCRATCH}/s1/x.txt {SCRATCH}/s1/a.txt")
+        for c in ("ln -sf src/probe.ts {HOME}/notes.md", "ln -f src/probe.ts {HOME}/notes.md", "ln --force -s src/probe.ts {HOME}/notes.md",
+                  "ln -sf {SCRATCH}/s1/a.txt {HOME}/data/", "ln -sf -t {HOME}/data {SCRATCH}/s1/a.txt", "ln -sfT src/probe.ts {HOME}/notes.md"):
+            self.assertEqual(ev(c), [("덮어쓰기", PRESERVED)], c)
+        for c in ("ln -s src/probe.ts {HOME}/notes.md", "ln -sf src/probe.ts {SCRATCH}/s1/link", "ln -sf {SCRATCH}/s1/x.txt src/main.py",
+                  "ln -sf src/probe.ts {HOME}/newlink", "ln src/probe.ts"):
+            self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev('ln -sf "$X" {HOME}/notes.md'), [("덮어쓰기", PRESERVED)]); self.assertEqual(ev('ln -sf x "$X"'), [("덮어쓰기", UNRESOLVED)])
+
+    def test_output_file_options(self):   # I5: curl -o·wget -O/-o·sort -o 는 기존 파일을 덮어쓴다(실측 2026-10-17)
+        for c in ("curl -s -o {HOME}/notes.md http://x", "curl --output={HOME}/notes.md http://x", "curl -sSLo {HOME}/notes.md http://x",
+                  "wget -qO {HOME}/notes.md http://x", "wget --output-document {HOME}/notes.md http://x", "wget -o {HOME}/notes.md http://x",
+                  "sort -o {HOME}/notes.md {HOME}/notes.md", "sort --output={HOME}/notes.md x"):
+            self.assertEqual(ev(c), [("덮어쓰기", PRESERVED)], c)
+        for c in ("curl -s http://x", "curl -o {SCRATCH}/s1/out http://x", "curl -o - http://x", "wget -O - http://x", "sort {HOME}/notes.md",
+                  "sort -o src/main.py src/main.py", "curl -O http://x/notes.md", "curl -o {HOME}/new.json http://x"):
+            self.assertEqual(ev(c), [], c)
 
     def test_git_output_overwrites(self):   # git log/diff/show 의 --output 은 그 파일을 덮어쓴다(git 2.43 실측)
         self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])

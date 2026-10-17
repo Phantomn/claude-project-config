@@ -138,6 +138,19 @@ class ParseTest(unittest.TestCase):
                   "builtin rm x", "ionice -c3 rm x", "chronic rm x", "X=1 rm -rf x", "timeout -s KILL 5 sudo nice rm x"]:
             self.assertEqual(names(c), ["rm"], c)
 
+    def test_more_wrappers(self):   # 최종 리뷰 I6: 실측(setsid·strace·ltrace·su·runuser·flock·watch --help) 문법
+        for c in ["setsid rm x", "setsid -fw rm x", "strace -f -e trace=file -o /dev/null rm x", "strace -p 1 -s 200 rm x",
+                  "ltrace -e malloc -o /dev/null rm x", "ltrace -f rm x", "runuser -u root -- rm x", "runuser -g g -u root rm x",
+                  "watch -x -n 1 rm x", "watch --exec rm x"]:
+            self.assertEqual(names(c), ["rm"], c)
+        for c in ["su -c 'rm x'", "su - root -c 'rm x'", "su root --command='rm x'", "runuser -c 'rm x' root", "runuser -l root -c 'rm x'",
+                  "flock /tmp/l -c 'rm x'", "flock -w 5 -n /tmp/l --command 'rm x'", "watch -n 2 'rm x'", "watch rm x", "watch -d -n 5 rm x"]:
+            self.assertEqual(names(c), ["sh", "rm"], c)   # 셸 코드 — sh -c 로 돌려 안쪽을 해석
+        for c in ["su root", "su -", "runuser root", "runuser -s /bin/sh root"]:
+            self.assertEqual(names(c)[0], c.split()[0], c)   # 대화식 셸 — 래퍼가 아니다
+        self.assertEqual(inner('X=/s1; export X; su -c "rm $X"'), [("rm", 1, "/w")])
+        self.assertIsNotNone(parse('su -c "$CODE"', "/w", {}).error)
+
     def test_wrapper_env_and_dir_options(self):   # 항목 8: busybox 애플릿, env -S·-C·sudo -D, env -i·-u·sudo env_reset
         self.assertEqual(names("busybox rm -rf x"), ["rm"])
         for c in ("env -S 'rm -rf x'", "env -S'rm x'", "env --split-string='rm x'", "env -iS 'rm x'"):

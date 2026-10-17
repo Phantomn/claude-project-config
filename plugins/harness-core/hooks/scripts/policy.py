@@ -167,6 +167,9 @@ _LONGS: dict[str, tuple[str, str, frozenset[str]]] = {
         "--backup", "--compare", "--debug", "--directory", "--group", "--mode", "--owner", "--preserve-timestamps",
         "--strip", "--strip-program", "--suffix", "--target-directory", "--no-target-directory", "--verbose",
         "--preserve-context", "--context", *_COMMON_LONGS))),
+    "ln": (OP_OVERWRITE, OVERWRITE, frozenset((   # -f/-sf/--force 는 기존 대상을 바꿔치기한다(coreutils 실측 2026-10-17, 최종 리뷰 I5)
+        "--backup", "--directory", "--force", "--interactive", "--logical", "--no-dereference", "--physical", "--relative",
+        "--symbolic", "--suffix", "--target-directory", "--no-target-directory", "--verbose", *_COMMON_LONGS))),
     "tee": (OP_OVERWRITE, OVERWRITE, frozenset(("--append", "--ignore-interrupts", "--output-error", *_COMMON_LONGS))),
     "truncate": (OP_OVERWRITE, OVERWRITE, frozenset(("--no-create", "--io-blocks", "--reference", "--size", *_COMMON_LONGS))),
 }
@@ -363,6 +366,8 @@ def _copy(seg: Segment, ctx: Ctx | None) -> list[Job]:
     flags, vals, ops = _args(seg, _COPY_VALUES if seg.name == "install" else _COPY_VALUES - {"-m", "-o", "-g"})
     if seg.name == "install" and flags & {"-d", "--directory"}:
         return []
+    if seg.name == "ln" and not flags & {"-f", "--force"}:
+        return []   # -f 없는 ln 은 기존 대상에서 실패한다(File exists)
     if seg.via_xargs:
         return [_xargs(OP_OVERWRITE, OVERWRITE)]
     tdir = vals.get("-t") or vals.get("--target-directory")
@@ -392,6 +397,34 @@ def _rsync(seg: Segment, ctx: Ctx | None) -> list[Job]:
         # --delete* 는 목적지 폴더에서 원본에 없는 것을 지운다 — 폴더째 삭제 규칙
         return [replace(_job(OP_DELETE, DELETE, ops[-1], seg, ctx), trailing=True)]
     return [_into(seg, ctx, ops[-1], ops[:-1], False, False, contents=True)]
+
+
+# 이름 붙은 파일을 덮어쓰는 출력 옵션 표(명령 → 옵션). 실측 2026-10-17: curl -o·wget -O(-o 는 로그 파일)·sort -o 는 기존 파일을
+# 비우고 쓴다(wget 은 받기 실패해도 0바이트로). `curl -O`(원격 이름)·strace/ltrace -o 는 표 밖 — LIMITS
+_OUT_OPTS: dict[str, tuple[str, ...]] = {
+    "curl": ("-o", "--output"), "wget": ("-O", "--output-document", "-o", "--output-file"), "sort": ("-o", "--output")}
+
+
+def _out_files(seg: Segment, ctx: Ctx | None) -> list[Job]:
+    opts, a, i, words = _OUT_OPTS[seg.name], seg.argv[1:], 0, []
+    while i < len(a):
+        w, x = a[i], a[i].literal()
+        i += 1
+        if x == "--":
+            break
+        for o in opts:
+            if o.startswith("--"):
+                if x == o and i < len(a):
+                    words.append(a[i]); i += 1
+                elif x.startswith(o + "="):
+                    words.append(_drop(w, len(o) + 1))
+            elif x.startswith("-") and not x.startswith("--") and o[1] in x[1:]:   # 묶음·붙은 값(-sSo F·-qO F·-oF)
+                n = x.index(o[1], 1) + 1
+                if n < len(x):
+                    words.append(_drop(w, n))
+                elif i < len(a):
+                    words.append(a[i]); i += 1
+    return [_job(OP_OVERWRITE, OVERWRITE, w, seg, ctx) for w in words if w.literal() != "-"]   # '-' 는 표준 출력
 
 
 def _tee(seg: Segment, ctx: Ctx | None) -> list[Job]:
@@ -691,8 +724,8 @@ HANDLERS: dict[str, Callable[[Segment, Ctx | None], list[Job]]] = {
     "rm": _delete(), "unlink": _delete(),
     "shred": _delete(frozenset({"-n", "--iterations", "-s", "--size", "--random-source"})),
     "find": _find,
-    "cp": _copy, "mv": _copy, "install": _copy, "rsync": _rsync,
-    "tee": _tee, "truncate": _truncate, "dd": _dd, "mkfs": _mkfs,
+    "cp": _copy, "mv": _copy, "install": _copy, "ln": _copy, "rsync": _rsync,
+    "tee": _tee, "truncate": _truncate, "dd": _dd, "mkfs": _mkfs, "curl": _out_files, "wget": _out_files, "sort": _out_files,
     "chmod": _perm, "chown": _perm, "chgrp": _perm,
     "git": _git_handler, "docker": _docker_handler, "podman": _docker_handler, "docker-compose": _docker_handler,
 }
@@ -1201,7 +1234,7 @@ def inplace_targets(seg: Segment) -> list[str]:
             words += _args(seg)[2]
         elif seg.name in ("sed", "perl"):
             words += _sed_perl_files(seg)
-        elif seg.name in ("truncate", "cp", "mv", "install", "rsync", "dd"):
+        elif seg.name in ("truncate", "cp", "mv", "install", "ln", "rsync", "dd", "curl", "wget", "sort"):
             out += [p for j in HANDLERS[seg.name](seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
         elif seg.name == "git":
             out += [p if j.rule == OVERWRITE else os.path.join(j.repo, p) for j in _git_handler(seg, None)
