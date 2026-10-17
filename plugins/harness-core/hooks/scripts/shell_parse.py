@@ -626,17 +626,25 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     if t.startswith("${", i):
         j = _skip_sub(t, i)
         inner = t[i + 2 : j - 1]
-        return (env.get(inner) if _NAME.fullmatch(inner) or inner.isdigit() or inner in ("#", "@", "*") else None), j
+        return (_var(env, inner) if _NAME.fullmatch(inner) or inner.isdigit() or inner in ("#", "@", "*") else None), j
     if (m := _NAME.match(t, i + 1)):
-        return env.get(m.group()), m.end()
+        return _var(env, m.group()), m.end()
     if t[i + 1 : i + 2] and t[i + 1] in "123456789#@*":   # 위치 매개변수 — 함수 인라인이 묶는다(없으면 미확정)
-        return env.get(t[i + 1]), i + 2
+        return _var(env, t[i + 1]), i + 2
     if t[i + 1 : i + 2] and t[i + 1] in "0?$!-":
         return None, i + 2
     return "$", i + 1
 
 
 HOLE = "\x00hole\x00"
+_SHAPE = "\x00shape\x00"   # 변수 값 자리: 값은 모르고 모양(마지막 경로 성분이 리터럴)만 안다 — 이름 확정에만 쓴다(C6 항목 2)
+_SHAPE_REF = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+
+
+def _var(env: Mapping[str, str | None], k: str) -> str | None:
+    """변수 값. 모양만 아는 값(_SHAPE)은 값으로는 모른다(None) — 값을 읽는 곳은 모두 이것을 거친다."""
+    v = env.get(k)
+    return None if v is not None and v.startswith(_SHAPE) else v
 BASE_HOLE = "\x00base\x00"   # `$(basename …)` 자리
 _HOLE_VAR = re.compile(r"\$(?:\$|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 _HOLE_DATE = re.compile(r"\+(?:[A-Za-z0-9_.:-]|%[YmdHMSsNFTjyuwGVz%])+")   # 공백을 낼 수 없는 형식만(%c·%e 등 제외)
@@ -679,7 +687,7 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
             continue
         t, active, i, start = p.text, p.quote == "", 0, 0
         if k == 0 and active and t.startswith("~"):
-            home = env.get("HOME")
+            home = _var(env, "HOME")
             if t.partition("/")[0] != "~" or ("/" not in t and len(parts) > 1) or not home:
                 return None  # ~user·~+ 등은 확정 불가
             out.append((home, False))
@@ -947,15 +955,22 @@ def _cmd_extglob(w: Word) -> bool:
     return False
 
 
-def _assign_of(w: Word, env: Mapping[str, str | None]) -> tuple[str, str | None] | None:
-    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값`(누적)·`NAME[i]=값`(원소)은 미확정."""
+def _assign_of(w: Word, env: Mapping[str, str | None], shape: bool = False) -> tuple[str, str | None] | None:
+    """`NAME=값` 단어면 (이름, 할당 시점에 확장한 값 | None=확정 불가). `NAME+=값`(누적)·`NAME[i]=값`(원소)은 미확정.
+    shape 이면 값을 모를 때 마지막 경로 성분이 리터럴인 모양(`$(…)/bin/python`)을 _SHAPE 값으로 남긴다(상태 env 의 대입만)."""
     if not _is_assign(w):
         return None
     m = _ASSIGN.match(w.parts[0].text)
     head, rest = m.group()[:-1], w.parts[0].text[m.end():]   # type: ignore[union-attr]
     if head.endswith(("+", "]")):
         return head.partition("[")[0].rstrip("+"), None
-    return head, _text(((Part(rest, ""),) if rest else ()) + w.parts[1:], env)
+    parts = ((Part(rest, ""),) if rest else ()) + w.parts[1:]
+    v = _text(parts, env)
+    if v is None and shape:   # 대입 값은 단어 분리되지 않는다 — 큰따옴표 안처럼 확장 자리를 표식으로
+        ch = _subst(tuple(Part(p.text, p.quote or '"') for p in parts), env, hole=True)
+        if ch is not None and _lit_tail(t := "".join(x for x, _ in ch)):
+            v = _SHAPE + t
+    return head, v
 
 
 def _forget(env: dict[str, str | None]) -> None:
@@ -1250,19 +1265,28 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
 def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> Word | None:
     """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
     확장이 없거나 값이 정해지면 그 단어, 폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename),
-    그 밖 None(확정 불가)."""
+    변수 하나이고 그 대입이 그런 모양이면(_SHAPE) 그 모양, 그 밖 None(확정 불가)."""
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
         return w
     if v := _text(w.parts, env, split=True):   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
         return Word((Part(v, ""),))
-    return w if _named_path(w, env) else None
+    if _named_path(w, env):
+        return w
+    t = "".join(p.text for p in w.parts)
+    if all(p.quote != "'" for p in w.parts) and (m := _SHAPE_REF.fullmatch(t)) and (s := env.get(m[1] or m[2]) or "").startswith(_SHAPE):
+        return Word((Part(s[len(_SHAPE):], "'"),))   # 대입 모양(`PY=$(…)/bin/python; $PY`) — basename 이 이름
+    return None
 
 
 def _named_path(w: Word, env: Mapping[str, str | None]) -> bool:
     """`$S/venv/bin/python` 처럼 확정 못 한 자리가 한 단어 표식(HOLE)으로 채워지고 마지막 경로 이름은 리터럴인가."""
     ch = _subst(w.parts, env, split=True, hole=True)
-    t = None if ch is None else "".join(x for x, _ in ch)
-    return t is not None and "/" in t and re.fullmatch(r"[\w.+-]+", t.rpartition("/")[2]) is not None
+    return ch is not None and _lit_tail("".join(x for x, _ in ch))
+
+
+def _lit_tail(t: str) -> bool:
+    """경로이고 마지막 성분이 확장 없는 리터럴 이름인가."""
+    return "/" in t and re.fullmatch(r"[\w.+-]+", t.rpartition("/")[2]) is not None
 
 
 def _cmd_name(w: list[Word]) -> str:
@@ -1819,7 +1843,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             state_env[m.group(1)] = None
         if w and all(_is_assign(x) for x in w):  # 할당만 있는 단위는 이후 단위에 반영
             for x in w:
-                k, v = _assign_of(x, state_env)  # type: ignore[misc]
+                k, v = _assign_of(x, state_env, shape=True)  # type: ignore[misc]
                 state_env[k] = v
                 if v is not None and _mktemp_dir(x):
                     state_env[_MADE + v] = "1"
@@ -1924,7 +1948,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                     continue
                 if exported or unexported:
                     state_env[_EXP + lit.partition("=")[0]] = "1" if exported else None
-                if (a := _assign_of(x, state_env)) is not None:
+                if (a := _assign_of(x, state_env, shape=True)) is not None:
                     state_env[a[0]] = a[1]
                     if a[1] is not None and _mktemp_dir(x):
                         state_env[_MADE + a[1]] = "1"
@@ -1977,7 +2001,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 opts = opts[1:]
             args = opts[1:] if opts and opts[0].literal() == "--" else opts   # `--` 뒤는 폴더 이름(재검토 3 OOS8)
             st["cwd"] = _resolve_dir(args[0], st["cwd"], unit_env) if args else (
-                state_env.get("HOME") if name == "cd" else None)
+                _var(state_env, "HOME") if name == "cd" else None)
             if st["cwd"] is not None:
                 state_env["PWD"] = state_env[SHELL_CWD] = st["cwd"]
                 # 있는 폴더·앞서 만든 폴더로의 cd 만 실패 경로가 없다 — 없는 폴더(`cd build && …`)는 실패 끝을 유지

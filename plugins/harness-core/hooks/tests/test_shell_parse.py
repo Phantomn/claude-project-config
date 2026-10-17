@@ -1340,6 +1340,22 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
                 self.assertEqual([s.name for s in r.segments][-1], want, c)
         self.assertIn("명령 이름을 확정할 수 없음", parse("run() { \"$@\"; }; run $X", "/w", {"HOME": "/h"}).error)   # 호출 때는 확정 불가(재해석 실패로 감싸인다)
 
+    def test_c6_assignment_shape(self):   # 항목 2: 값은 모르지만 마지막 경로 성분이 리터럴인 대입은 그 이름으로 — `$B/vitest` 규칙의 한 단계 확장
+        for c, want in (("PY=$(poetry env info -p)/bin/python; $PY script.py", "python"), ('export PY="$(x)/bin/python"; timeout 300 $PY -m pytest', "python"),
+                        ("BIN=$XDG/bin/tool; ${BIN} --help", "tool"), ("local_py=$V/bin/python3.12; \"$local_py\" x", "python3.12"),
+                        ("if t; then PY=$(x)/bin/python; else PY=$(x)/bin/python; fi; $PY", "python"),   # 갈래가 같은 모양
+                        ("R=$D/rm; $R -rf ~/data", "rm"), ("R=$(x)/sudo; $R rm -rf ~/data", "rm")):   # 위험 이름이면 그 이름으로 판정
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments][-1], want, c)
+        self.assertEqual(targets("R=$D/rm; $R -rf ~/data"), [["/h/data"]])
+        for c in ("PY=$(x)/bin/python; PY=$(y); $PY", "PY=$(x)/bin/python; source ./env.sh; $PY", "PY=$(x)/bin/python; read PY; $PY",
+                  "if t; then PY=$(x)/bin/python; else PY=$(y)/bin/rm; fi; $PY", "PY=$(x)/bin/$N; $PY", "PY=$(x); $PY", "PY=$(x)/bin/; $PY",
+                  "PY=$(x)/bin/python; for PY in a b; do :; done; $PY", "PY=$(x)/bin/python; $PY$Z", "PY=$(x)/bin/python; ${PY%/*}", "PY+=$(x)/bin/python; $PY"):   # 무효화·모양 아님
+            self.assertTrue(dyn(c), c)
+        # 모양은 이름 확정에만 쓴다 — 값으로 새지 않는다(대상·~ 는 여전히 모름)
+        self.assertEqual(targets("X=$(x)/bin/rm; rm -rf \"$X\""), [None])
+        self.assertEqual(targets("HOME=$(x)/h; rm -rf ~/data"), [None])
+
 
 if __name__ == "__main__":
     unittest.main()

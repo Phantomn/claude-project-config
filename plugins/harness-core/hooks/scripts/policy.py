@@ -27,6 +27,7 @@ from shell_parse import (
     _resolve_dir,
     _shell_code,
     _strip_all,
+    _var,
     expand,
     expand_hole,
     lex,
@@ -718,7 +719,7 @@ def _compose_project(g: list[tuple[str, Word]], seg: Segment, ctx: Ctx | None) -
     """compose 프로젝트명: -p, COMPOSE_PROJECT_NAME(줄 안 export 또는 실행 env), 없으면 프로젝트 폴더 이름
     (compose 정규화: 소문자, [a-z0-9_-] 만). 모르면 ''."""
     proj = [w.literal() for k, w in g if k in ("-p", "--project-name")]
-    env = seg.env.get("COMPOSE_PROJECT_NAME") or (ctx.environ.get("COMPOSE_PROJECT_NAME") if ctx else None)
+    env = _var(seg.env, "COMPOSE_PROJECT_NAME") or (ctx.environ.get("COMPOSE_PROJECT_NAME") if ctx else None)
     if proj or env:
         return proj[-1] if proj else env  # type: ignore[return-value]
     pdir = [w for k, w in g if k == "--project-directory"]
