@@ -447,7 +447,6 @@ def _check_deadline() -> None:
 
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _MAX_DEPTH = 8
-_SHELL_C = re.compile(r"-[a-zA-Z]*c[a-zA-Z]*")
 # 셸 호출 옵션(C4 R-A, bash 5.2·dash 0.5.12 실측): 한 글자는 두 셸의 합집합, 그 밖(zsh 전용 등)은 확정 불가
 _SH_LETTERS = frozenset("abcefhiklmnprstuvxBCDEHIPTV")
 _SH_LONG = frozenset({"--norc", "--noprofile", "--posix", "--login", "--restricted", "--verbose", "--noediting", "--pretty-print"})
@@ -458,7 +457,6 @@ _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
 # env 안의 셸 작업 폴더 — 변수 이름이 될 수 없는 키라 사용자 할당(PWD=…)으로 덮이지 않는다. `$(pwd)` 가 읽는다.
 SHELL_CWD = "\x00cwd"
-_STDIN_CODE = ("<<", "<<-", "<<<")
 _STDIN_OPS = ("<", "<>", "<&", "<<", "<<-", "<<<")   # fd 를 생략하면 stdin 에 거는 연산자
 _XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
@@ -1319,7 +1317,6 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
     return _stdin_code(seg.redirects, o.env, pipe_prev)
 
 
-_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 # stdin 장치(C4 R-C, bash 실측: //dev/stdin·/dev/./stdin·/proc/thread-self/fd/0·/proc/<pid>/fd/0 실행). /dev/fd/00 은 실측상 없는 경로지만 보수적으로 포함
 _STDIN_DEV = re.compile(r"/dev/stdin|/dev/fd/0+|/proc/[^/]+(?:/task/[^/]+)?/fd/0+")
 
