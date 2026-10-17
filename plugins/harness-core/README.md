@@ -38,7 +38,7 @@ bash-guard 가 그 밖에 읽는 환경 변수(설정 노브가 아니라 실행
 | `HOME` | 상태 폴더 기본값(없으면 장부 비활성 — 세션 생성 판정을 하지 않는 보호 쪽), `~` 확장, 저장소 판정에서 홈 저장소 제외, 임시 루트 `~/.cache`, Docker 컨텍스트 설정 `~/.docker/config.json` |
 | `TMPDIR` | 임시 루트 하나(설정 시). 명령 안에서 바꾼 `TMPDIR` 는 `mktemp` 결과 확정에 쓰지 않는다 |
 | `COMPOSE_PROJECT_NAME` | `docker compose down -v` 의 대상 볼륨 프로젝트명(명령의 `-p` 가 없을 때) |
-| `DOCKER_HOST`·`DOCKER_CONTEXT`·`XDG_RUNTIME_DIR` | 컨테이너 조회가 실패했을 때 데몬 부재의 긍정 증거 판정(소켓 부재만 증거 — `unix://` 소켓, 기본 `/var/run/docker.sock`, rootless `$XDG_RUNTIME_DIR/docker.sock`). 클라이언트가 `PATH` 에 있는지는 보지 않는다. 이 증거는 `docker exec`·`docker container exec`·`docker compose exec` 에만 쓴다 — `podman`(데몬이 없다)·독립 실행 `docker-compose` 와, 명령이 데몬을 직접 지정한 경우(전역 `-H`·`--host`·`-c`·`--context`, 또는 명령 안에서 `DOCKER_HOST`·`DOCKER_CONTEXT` 를 할당·`export`·`unset`·`env -u`)는 훅 env 의 소켓 부재가 증거가 아니라 확정 불가다(spec §3.5) |
+| `DOCKER_HOST`·`DOCKER_CONTEXT`·`XDG_RUNTIME_DIR` | 컨테이너 조회가 실패했을 때 데몬 부재의 긍정 증거 판정(소켓 부재만 증거 — `unix://` 소켓, 기본 `/var/run/docker.sock`, rootless `$XDG_RUNTIME_DIR/docker.sock`). 클라이언트가 `PATH` 에 있는지는 보지 않는다. 이 증거는 `docker exec`·`docker container exec`·`docker compose exec` 에만 쓴다 — `podman`(데몬이 없다)·독립 실행 `docker-compose` 와, 명령이 데몬을 직접 지정한 경우(전역 `-H`·`--host`·`-c`·`--context`·`--config`, 또는 명령 안에서 `DOCKER_HOST`·`DOCKER_CONTEXT`·`DOCKER_CONFIG` 를 할당·`export`·`unset`·`env -u`), 그리고 상태 env 를 확정할 수 없는 문장(`source`/`.`·동적 이름 할당 `export $(…)`·`declare -x "$N=…"`·`read "$v"`)이 앞에 있는 경우는 훅 env 의 소켓 부재가 증거가 아니라 확정 불가다(spec §3.5) |
 
 ## bash-guard
 
@@ -98,6 +98,7 @@ touch-ledger.py ─ PreToolUse `Write|Edit|NotebookEdit`(timeout 5초) 장부 �
 | `stats` | 판정 중 센 횟수(없으면 null): `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정), `compose_project_dir_none`(compose exec 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용 — `docker` CLI 이고 데몬 직접 지정이 없을 때만), `scratch_hole`(임시 폴더 아래 마지막 이름만 변수인 대상을 허용) |
 | `settings_errors` | 스위치 settings 파일을 읽다 난 오류(파일 없음 제외). 있으면 스위치가 조용히 `off` 로 떨어졌을 수 있다 |
 | `ledger_bytes` | 그 시점 장부 크기 |
+| `dynamic_kind` | 거부 사유가 "코드를 정적으로 알 수 없다"(`R_DYNAMIC`)일 때만 있는 키 — 해석기의 하위 사유 문구 그대로(목록은 spec §3.8 (가′) 표). 예: `명령 이름을 확정할 수 없음`·`단위 밖에서 오는 표준입력의 코드를 확정할 수 없음`·`표준입력 장치일 수 있는 경로를 확정할 수 없음`·`파이프로 넘긴 코드를 확정할 수 없음`·`셸 -c 문자열을 확정할 수 없음`·`셸 옵션 X 을 해석할 수 없음`(X 는 40자까지)·`이름 붙은 fd 입력 리다이렉트의 번호를 확정할 수 없음`·`fish 코드는 해석하지 않음`. 출력 사유에는 들어가지 않는다. `find -exec 의 명령 이름을 확정할 수 없음` 은 policy 경로에서 "대상을 확정할 수 없다" 로 나타나 이 키가 없다. 함수 호출 인라인 안의 이름 미확정은 "해석 한계"(`R_MODEL`)로 감싸져 이 키가 없다 |
 
 ### 배포 절차 (요약 — spec §11)
 
@@ -116,7 +117,11 @@ shadow 동안 볼 것과 그 출처(최종 리뷰 권고 목록 기준):
 |---|---|---|
 | 신·구 불일치 수와 방향 | 예 | `decision`·`old_decision`(shadow 불일치 줄) |
 | 거부 사유 종류 분포(확정 불가 비율·사유 상위, 구문 오류·해석 한계·동적 코드) | 예 | `reasons` |
-| 동적 코드 거부 중 "파이프 대상 명령을 확정할 수 없음"(`… \| $VAR` — 정직한 `$PAGER`·`$PYTHON` 까지 거부하는 과잉 거부, LIMITS O16) 건수 | 간접 | `reasons` 는 "코드를 정적으로 알 수 없다" 한 문구뿐이고 하위 사유는 기록하지 않는다. 그 줄의 `command` 를 `shell_parse.parse` 로 다시 해석해 결과의 `error` 문구로 센다 |
+| 동적 코드 거부의 하위 사유별 건수(LIMITS O16·O24~O30) | 예 | `dynamic_kind`(`R_DYNAMIC` 거부 줄에만) |
+| 정직한 패턴 과잉 거부 후보 ① — `$(…)` 로 대입한 변수를 따옴표 없이 명령으로(`PY=$(…)/bin/python; $PY …`·`B=$(…); $B/x`, C7 S3, LIMITS O24) | 간접 | `dynamic_kind` = `명령 이름을 확정할 수 없음` 인 줄 중, `command` 의 그 명령 자리 변수를 큰따옴표로 감싸(`"$PY"`·`"$B"/x`) `shell_parse.parse` 로 다시 해석하면 `error` 가 사라지는 줄(재해석) |
+| 후보 ② — 여러 줄 배열 리터럴 원소를 명령으로 읽음(`A=( [k]=v … )`·글롭 원소, C7 S4, LIMITS O25) | 간접 | `dynamic_kind` = `명령 이름을 확정할 수 없음` 이고 `command` 에 배열 리터럴 `=(` 가 있는 줄(문자열 검사 — 근사) |
+| 후보 ③ — 앞에 파이프·`<` 가 있는 명령의 `bash "$X"`·`source "$X"`(C7 항목 2, LIMITS O26) | 간접 | `dynamic_kind` = `표준입력 장치일 수 있는 경로를 확정할 수 없음` 인 줄 중, 그 셸 단위에 `< /dev/null` 을 붙여 다시 해석하면 `error` 가 사라지는 줄(재해석) |
+| 후보 ④ — 원문에 `IFS` 가 있는 명령(`while IFS= read …`)의 따옴표 없는 확장(C7 S1, LIMITS O27) | 간접 | 명령 이름이면 `dynamic_kind` = `명령 이름을 확정할 수 없음`, 대상이면 `reasons` 의 "대상을 확정할 수 없다" — 둘 다 `command` 에 `IFS` 글자가 있는 줄로 거른다. 재생에서는 대부분 대상 쪽이었다(14건 중 12) |
 | 판정 시간 p50·p99·최대, 시간 초과 건수 | 예(기록된 줄만) | `ms`·`budget_exhausted` |
 | 장부 크기 | 예 | `ledger_bytes` |
 | 내부 예외 폴백 건수와 명령 모양 | 예 | `error`·`fallback` |
@@ -126,6 +131,9 @@ shadow 동안 볼 것과 그 출처(최종 리뷰 권고 목록 기준):
 | 플랫폼의 훅 취소(10초 초과) | 아니오 | 세션 기록의 `hook_cancelled`(spec 부록 A) |
 | 장부 압축 횟수 | 아니오 | — |
 | 판정 대상 밖 모양(목록 밖 래퍼·덮어쓰기 도구)이 든 허용 명령 수 | 아니오 | 허용은 `stats` 가 있을 때만 남는다 — 세션 기록 검색으로 따로 센다 |
+
+동적 코드 거부의 안내 문구는 하나다: "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`bash_guard.R_DYNAMIC`).
+위 후보 ①·③ 의 더 좁은 해결(명령 자리 변수를 `"$PY"` 처럼 따옴표로 감싸기, 셸에 `< /dev/null` 붙이기)은 문구에 없다 — LIMITS O24·O26 에 적었고, 문구에 넣을지는 shadow 빈도를 본 뒤 정한다.
 
 ## 자기검증
 
