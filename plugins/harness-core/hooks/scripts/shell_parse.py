@@ -464,6 +464,7 @@ _BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 _HEREDOC = ("<<", "<<-")
 # env 안의 셸 작업 폴더 — 변수 이름이 될 수 없는 키라 사용자 할당(PWD=…)으로 덮이지 않는다. `$(pwd)` 가 읽는다.
 SHELL_CWD = "\x00cwd"
+FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 _STDIN_OPS = ("<", "<>", "<&", "<<", "<<-", "<<<")   # fd 를 생략하면 stdin 에 거는 연산자
 _XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
@@ -1636,6 +1637,21 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             _descend(inner, segments, None, env)
     elif seg.name in _CONTAINER_CLIS:
         _container(seg, segments, pipe_prev, run_env)
+    elif seg.name == "find":   # -exec 로 띄운 셸은 find 의 stdin(파이프·리다이렉트)을 물려받는다(C5 OOS-C) — -c 코드는 policy 가 본다
+        a = seg.argv
+        for i, x in enumerate(a):
+            if x.literal() not in FIND_EXEC:
+                continue
+            j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
+            try:
+                cmd = _strip_all(a[i + 1:j], {}, seg.env)
+                sh = Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env, seg.context, d)
+                if sh.name not in SHELLS or _shell_code(sh, None) is not None:
+                    continue
+            except LexError:
+                continue   # 래퍼 뒤 명령·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정
+            if (code := _shell_code(replace(sh, redirects=seg.redirects), pipe_prev)) is not None:
+                _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
     return None
 
 

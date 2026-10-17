@@ -12,6 +12,7 @@ from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
     BASE_HOLE,
+    FIND_EXEC,
     HOLE,
     SHELLS,
     LexError,
@@ -315,14 +316,13 @@ def _delete(values: frozenset[str] = frozenset()) -> Callable[[Segment, Ctx | No
     return h
 
 
-_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 _DELETERS = ("rm", "unlink", "shred")
 
 
 def _find_deletes(seg: Segment) -> bool:
     a = seg.argv[1:]
     for i, w in enumerate(a):
-        if w.literal() in _FIND_EXEC:
+        if w.literal() in FIND_EXEC:
             j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
             # /bin/rm·sudo rm·\rm·busybox rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
             try:

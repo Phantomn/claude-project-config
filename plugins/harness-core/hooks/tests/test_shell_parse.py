@@ -1303,6 +1303,16 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
         self.assertEqual(inner("bash {x}>out.txt -c 'rm -rf ~/data'"), [("rm", 1, "/w")])   # 이전: `{x}` 를 스크립트 파일로 봐 안쪽이 사라졌다
         self.assertEqual(names("ls {x} a{x}<b"), ["ls"])
 
+    def test_c5_find_exec_shell_inherits_stdin(self):   # OOS-C: -exec 로 띄운 셸은 find 의 stdin 을 물려받는다(c5/findstdin.out)
+        for c in (f"{U4} | find . -exec bash -s \\;", f"{U4} | find . -exec bash /dev/stdin \\;", f"{U4} | find . -execdir bash \\;",
+                  f"{U4} | find . -exec sudo bash -s {{}} +", "find . -exec sh \\; < evil.sh", f"{U4} | find . -ok dash -s \\;"):
+            self.assertTrue(dyn(c), c)
+        for c in ("echo 'rm -rf ~/data' | find . -exec bash -s \\;", "find . -exec bash \\; <<< 'rm -rf ~/data'"):
+            self.assertIn("rm", inner_names(c), c)
+        for c in (f"{U4} | find . -exec bash -c 'wc -l \"$1\"' _ {{}} \\;", f"{U4} | find . -exec bash {{}} \\;", "find . -exec bash -s \\;",
+                  f"{U4} | find . -exec sh -n -s \\;", f"{U4} | find . -name x -print", "find . -exec nohup $X {} \\;"):   # -c 코드·스크립트 파일·stdin 없음
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+
 
 if __name__ == "__main__":
     unittest.main()
