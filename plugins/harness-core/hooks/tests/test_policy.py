@@ -376,6 +376,12 @@ class DockerPolicyTest(_WorldCase):
         self.assertEqual(e(f"docker exec -u root {c} sh -c 'echo x >> /etc/hosts && rm -rf /var/lib/x'"), [])
         self.assertEqual(e(f"docker exec {c} rm -rf /app/src"), [("삭제", GIT_TRACKED)])                 # main.py 추적 + probe.ts 세션
         self.assertEqual(e(f"docker exec {c} rm -rf src"), [("삭제", GIT_TRACKED)])                      # WorkingDir /app
+        # C3 I2-b: 관리 명령 형태 `docker container exec|run|create` 는 exec|run 과 같다(`docker container --help` 실측)
+        self.assertEqual(e(f"docker container exec {c} rm -rf /app/src"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(e(f"docker container exec -u root {c} sh -c 'rm -rf /var/lib/x'"), [])
+        self.assertEqual(e(f"docker container run --rm -v {{REPO}}:/w {d.image} rm -f /w/notes_presession.txt"), [("삭제", PRESERVED)])
+        self.assertEqual(e(f"docker container create -v {{REPO}}:/w {d.image} rm -f /w/notes_presession.txt"), [("삭제", PRESERVED)])   # start 때 돈다
+        self.assertEqual(e(f"docker container start {c}"), []); self.assertEqual(e(f"podman container exec {c} rm -rf /app/src"), [("삭제", GIT_TRACKED)])
         self.assertIn(e(f"docker exec {c} sh -c 'rm -rf /app'")[0][1], (PROTECTED_NAME, PRESERVED))         # Destination 자체 = {REPO} 전체
         self.assertEqual(e(f"docker exec {c} rm -rf /data/x"), [("삭제", "OLD_VOLUME")])
         self.assertEqual(e(f'docker run --rm -v "$(pwd)":/app {d.image} rm -f /app/notes_presession.txt'), [("삭제", PRESERVED)])
@@ -404,6 +410,14 @@ class DockerPolicyTest(_WorldCase):
             self.assertEqual(e(cmd, ctx=ctx), [("삭제", UNRESOLVED)], cmd); self.assertNotIn("container_no_daemon", ctx.stats)
         self.assertTrue(docker_daemon_absent(w2.ctx(environ_extra={"DOCKER_HOST": "unix:///nonexistent.sock"})))
         self.assertFalse(docker_daemon_absent(w2.ctx(environ_extra={"DOCKER_HOST": "tcp://127.0.0.1:1"})))   # 연결 불가는 모름
+        # C3 I2-a: podman 은 데몬이 없다 — docker 소켓 부재는 증거가 아니다. I2-c: 명령이 데몬을 직접 지정하면 훅 env 의 소켓 부재는 증거가 아니다
+        nosock = {"DOCKER_HOST": "unix:///nonexistent.sock"}; rm = f"exec {c} rm -rf /app/src"
+        for cmd in (f"podman {rm}", f"DOCKER_HOST=unix:///var/run/docker.sock docker {rm}", f"export DOCKER_HOST=unix:///var/run/docker.sock; docker {rm}",
+                    f"env DOCKER_HOST=unix:///var/run/docker.sock docker {rm}", f"docker -H unix:///var/run/docker.sock {rm}", f"docker --host=unix:///x.sock {rm}",
+                    f"docker --context default {rm}", f"DOCKER_CONTEXT=default docker {rm}", f"unset DOCKER_HOST; docker {rm}", f"env -u DOCKER_HOST docker {rm}"):
+            ctx = w2.ctx(environ_extra=nosock); self.assertEqual(e(cmd, ctx=ctx), [("삭제", UNRESOLVED)], cmd); self.assertNotIn("container_no_daemon", ctx.stats)
+        ctx = w2.ctx(environ_extra=nosock); self.assertEqual(e(f"docker {rm}", ctx=ctx), []); self.assertEqual(ctx.stats, {"container_no_daemon": 1})   # 대조군
+        self.assertEqual(e(f"podman {rm}"), [("삭제", GIT_TRACKED)])   # 소켓이 있으면 조회(docker inspect)로 판정 — 현행
         ctx = w2.ctx(); e('docker exec "$C" rm -rf /app/src', ctx=ctx); e(f"docker exec {bad} rm -rf /app/src", ctx=ctx)
         e("cd {HOME} && cd - && docker compose exec web rm -rf /app/src", ctx=ctx)
         self.assertEqual(ctx.stats, {"container_lookup_none": 2, "compose_project_dir_none": 1})

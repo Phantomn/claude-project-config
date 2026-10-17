@@ -1061,7 +1061,8 @@ def _container_jobs(seg: Segment, ctx: Ctx) -> tuple[list[Job], list[Finding]]:
         if info is None:
             # 이름 미확정·없는 이름·compose 폴더 모름·조회 실패는 '모름' — 안의 경로가 바인드 마운트인지 알 수 없다(최종 리뷰 I2).
             # 데몬이 없다는 긍정 증거가 있을 때만 컨테이너가 존재할 수 없으므로 허용(기록)
-            if cid is not None and docker_daemon_absent(ctx):
+            # podman 은 데몬이 없고(I2-a), 명령이 데몬을 직접 지정하면 훅 env 의 소켓은 그 데몬이 아니다(I2-c) — 둘 다 증거로 쓰지 않는다
+            if cid is not None and cx.cli == "docker" and not cx.daemon_set and docker_daemon_absent(ctx):
                 ctx.stats["container_no_daemon"] = ctx.stats.get("container_no_daemon", 0) + 1
                 return [], []
             if cx.project_dir is not None or cx.launcher == "exec":

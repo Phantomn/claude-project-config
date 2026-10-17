@@ -346,6 +346,8 @@ class Context:
     mounts: tuple[Mount, ...] | None = None  # run 계열: 인자에서 / exec 계열: None(조회)
     project_dir: str | None = None
     project: str | None = None
+    cli: str = "docker"       # 띄운 CLI 이름(docker|podman|docker-compose) — podman 은 데몬이 없다(C3 I2-a)
+    daemon_set: bool = False   # 명령이 데몬을 직접 지정(-H/--host/-c/--context, DOCKER_HOST/DOCKER_CONTEXT 할당·해제) — 훅 env 의 소켓 부재는 증거 아님(C3 I2-c)
 
 
 HOST = Context()
@@ -1375,21 +1377,31 @@ def _mounts(o: list[tuple[str, Word]], seg: Segment) -> tuple[Mount, ...] | None
     return tuple(out)
 
 
-def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None) -> None:
-    """docker/podman exec|run, compose exec|run 의 안쪽 명령을 container 문맥 단위로 (spec §3.6)."""
+_DAEMON_VARS = ("DOCKER_HOST", "DOCKER_CONTEXT")
+
+
+def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None, run_env: Mapping[str, str | None]) -> None:
+    """docker/podman [container] exec|run|create, compose exec|run 의 안쪽 명령을 container 문맥 단위로 (spec §3.6).
+    `docker container --help` 실측(C3 I2-b): create 는 run 과 같은 인자로 컨테이너를 만들고 start 때 그 명령을 돌린다."""
     a = seg.argv
     compose = seg.name == "docker-compose"
     i = 1
+    daemon_set = any(k in run_env or k in seg.env for k in _DAEMON_VARS)   # 접두 할당·export·unset·env -u 는 상태 env 에 키로 남는다
     if not compose:
-        i, _ = _opts(a, 1, _DOCKER_GLOBAL)
+        i, gd = _opts(a, 1, _DOCKER_GLOBAL)
+        daemon_set |= any(k in ("-H", "--host", "-c", "--context") for k, _ in gd)
         if i < len(a) and a[i].literal() == "compose":
             compose, i = True, i + 1
+        elif i < len(a) and a[i].literal() == "container":   # 관리 명령 형태
+            i += 1
     g: list[tuple[str, Word]] = []
     if compose:
         i, g = _opts(a, i, _COMPOSE_GLOBAL)
     sub = a[i].literal() if i < len(a) else ""
-    if sub not in ("exec", "run"):
+    if sub not in ("exec", "run") and not (sub == "create" and not compose):
         return
+    if sub == "create":
+        sub = "run"
     table = (_COMPOSE_RUN if sub == "run" else _COMPOSE_EXEC) if compose else (_RUN if sub == "run" else _EXEC)
     i, o = _opts(a, i + 1, table)
     if i >= len(a):
@@ -1409,6 +1421,8 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None)
         _mounts(o, seg) if sub == "run" else None,
         project_dir if compose else None,
         proj[-1] if proj else None,
+        seg.name,
+        daemon_set,
     )
     wd = [w for k, w in o if k in ("-w", "--workdir")]
     r = _expand(wd[-1], seg.env, None) if wd else None  # 컨테이너 경로라 호스트 cwd 로 잇지 않는다
@@ -1507,7 +1521,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             segments.append(inner)
             _descend(inner, segments, None, env)
     elif seg.name in _CONTAINER_CLIS:
-        _container(seg, segments, pipe_prev)
+        _container(seg, segments, pipe_prev, run_env)
     return None
 
 
