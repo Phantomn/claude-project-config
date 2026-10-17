@@ -1290,13 +1290,18 @@ def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] |
     ref = _SHAPE_REF.fullmatch(t) if all(p.quote != "'" for p in w.parts) else None
     if _named_path(w, env):
         return [w]
-    if ref and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
-        return [Word((Part(s[len(_SHAPE):], "'"),))]   # 대입 모양(`PY=$(…)/bin/python; $PY`) — basename 이 이름
+    if ref and not unq and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
+        return [Word((Part(s[len(_SHAPE):], "'"),))]   # 대입 모양(`PY=$(…)/bin/python; "$PY"`) — 따옴표 안만(밖은 나뉜다, C7 S3)
     return None
 
 
 def _named_path(w: Word, env: Mapping[str, str | None]) -> bool:
-    """`$S/venv/bin/python` 처럼 확정 못 한 자리가 한 단어 표식(HOLE)으로 채워지고 마지막 경로 이름은 리터럴인가."""
+    """`$S/venv/bin/python` 처럼 확정 못 한 자리가 한 단어 표식(HOLE)으로 채워지고 마지막 경로 이름은 리터럴인가.
+    따옴표 없는 자리가 이 명령에서 값을 모르게 대입된 변수(`B=$(…); $B/ls`)면 아니다 — 값이 나뉠 수 있다(C7 S3).
+    대입 없이 물려받은 변수는 공백이 없다고 본다(정직한 실수 모델 §1.5)."""
+    if any(env.get(m[1] or m[2], "") is None or (env.get(m[1] or m[2]) or "").startswith(_SHAPE)
+           for p in w.parts if p.quote == "" for m in _SHAPE_REF.finditer(p.text)):
+        return False
     ch = _subst(w.parts, env, split=True, hole=True)
     return ch is not None and _lit_tail("".join(x for x, _ in ch))
 

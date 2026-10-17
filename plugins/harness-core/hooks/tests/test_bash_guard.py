@@ -91,9 +91,17 @@ class JudgeTest(_WorldCase):
         for c in ("X=ls; $X -la", "$B/vitest run", "command -v $X", "echo $X", "ls $X"):
             self.assertTrue(judge(w.payload(c), {**w.environ, **ON}).allow, c)
         # 항목 2 할당 모양 추적: 정직한 `PY=$(…)/bin/python; $PY` 는 허용, 위험 이름으로 끝나는 대입은 그 이름으로 거부
-        self.assertTrue(judge(w.payload("PY=$(poetry env info -p)/bin/python; timeout 300 $PY -m pytest"), {**w.environ, **ON}).allow)
-        for c in ("R=/bin/rm; $R -rf {HOME}/data", "R=$D/rm; $R -rf {HOME}/data"):
+        self.assertTrue(judge(w.payload('PY=$(poetry env info -p)/bin/python; timeout 300 "$PY" -m pytest'), {**w.environ, **ON}).allow)
+        for c in ("R=/bin/rm; $R -rf {HOME}/data", 'R=$D/rm; "$R" -rf {HOME}/data'):
             d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn("삭제", d.reasons[0], c)
+
+    def test_c7_narrowed_confirmation_denied(self):   # C7: 확정 면적을 되돌린 모양은 끝단에서 거부(c6rr 재검토 New #1~#8·OOS), 대조군은 허용
+        sub = "$(echo rm -rf {HOME}/data .)"
+        for c in (f"X={sub}/ls; $X", f"X={sub}/x; find . -exec $X {{}} +", f"X={sub}/x; docker exec c1 $X",
+                  "PY=$(poetry env info -p)/bin/python; timeout 300 $PY -m pytest"):
+            self.assertFalse(judge(w.payload(c), {**w.environ, **ON}).allow, c)
+        for c in ("X=ls; $X", 'G="git -C /x"; $G status', 'PY=$(x)/bin/python; "$PY" script.py', "$B/vitest run"):
+            self.assertTrue(judge(w.payload(c), {**w.environ, **ON}).allow, c)
 
     def test_trap_cleanup_pattern(self):   # 최종 리뷰 I4: 정리 패턴은 허용, 보호 대상을 지우는 trap 은 거부
         self.assertTrue(judge(w.payload('TMP=$(mktemp -d); trap \'rm -rf "$TMP"\' EXIT; echo x > "$TMP/a"'), {**w.environ, **ON}).allow)
