@@ -86,6 +86,10 @@ def kind_of(reason: str) -> str:
         return "PARSE"
     if reason == bash_guard.R_TIMEOUT:
         return "TIMEOUT"
+    if reason == bash_guard.R_MODEL:
+        return "MODEL"
+    if reason == bash_guard.R_DYNAMIC:
+        return "DYNAMIC"
     return next((k for t, k in _KIND_BY_TEXT.items() if t in reason), "OTHER")
 
 

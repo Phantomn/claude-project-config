@@ -71,6 +71,17 @@ class JudgeTest(_WorldCase):
             d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c); self.assertIn(w.fmt("{HOME}/notes.md"), d.reasons[0], c)
         self.assertTrue(judge(w.payload("env -C {SCRATCH}/s1 cp x.txt y.txt"), {**w.environ, **ON}).allow)
 
+    def test_dynamic_code_denied_without_danger_words(self):   # 최종 묶음 C 항목 7: bash 가 돌리지만 정적으로 알 수 없는 코드 = 모델링 불가
+        for c in ('bash -c "$c"', 'sh -c "$x"', 'eval "$x"', 'sh <<< "$x"', "sh <<EOF\n$x\nEOF", 'echo a | xargs sh -c "$y"',
+                  'trap "$c" EXIT', 'docker run --bogus-opt img ls'):
+            d = judge(w.payload(c), {**w.environ, **ON}); self.assertFalse(d.allow, c)
+            self.assertIn("정적으로 알 수 없다" if "bogus" not in c else "해석 한계", d.reasons[0], c)
+        self.assertTrue(judge(w.payload('c="ls -la"; bash -c "$c"'), {**w.environ, **ON}).allow)                  # 한 번 감싼 리터럴은 확정
+        d = judge(w.payload('c="rm -rf {HOME}/data"; bash -c "$c"'), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("삭제", d.reasons[0])
+        self.assertTrue(judge(w.payload('ssh host "$cmd"'), {**w.environ, **ON}).allow)                              # 원격 실행은 이 호스트 밖
+        self.assertTrue(judge(w.payload('python3 -c "$code"'), {**w.environ, **ON}).allow)                           # 셸 코드가 아니다
+        self.assertTrue(judge(w.payload('echo "unterminated'), {**w.environ, **ON}).allow)                           # 구문 오류는 현행 (가)
+
     def test_trap_cleanup_pattern(self):   # 최종 리뷰 I4: 정리 패턴은 허용, 보호 대상을 지우는 trap 은 거부
         self.assertTrue(judge(w.payload('TMP=$(mktemp -d); trap \'rm -rf "$TMP"\' EXIT; echo x > "$TMP/a"'), {**w.environ, **ON}).allow)
         d = judge(w.payload("trap 'rm -rf {HOME}/data' EXIT"), {**w.environ, **ON}); self.assertFalse(d.allow); self.assertIn("삭제", d.reasons[0])

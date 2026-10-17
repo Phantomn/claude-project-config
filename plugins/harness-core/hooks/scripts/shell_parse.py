@@ -19,7 +19,12 @@ class LexError(ValueError):
 
 class ModelError(LexError):
     """해석기가 모델링하지 못하는 구문(함수 재귀·재정의·갈래 정의 뒤 호출·source/eval 정의·unset -f·함수 안 함수·인라인 상한·break 모양·
-    heredoc 슬라이스) — bash 가 돌리는 명령이라 위험 단어와 무관하게 거부한다. 구문 오류(LexError)는 spec §3.8 (가)."""
+    heredoc 슬라이스·목록 밖 docker 옵션·재귀 깊이) — bash 가 돌리는 명령이라 위험 단어와 무관하게 거부한다. 구문 오류(LexError)는 spec §3.8 (가)."""
+
+
+class CodeUnknown(ModelError):
+    """bash 가 돌리지만 정적으로 알 수 없는 셸 코드(변수·치환으로 만든 `-c` 문자열·eval·trap·heredoc·`<<<`) — 최종 묶음 C 항목 7.
+    사유가 다르다: 리터럴로 쓰거나 스크립트 파일로 실행하라."""
 
 
 @dataclass(frozen=True)
@@ -372,6 +377,7 @@ class ParseResult:
     error: str | None = None
     log_len: int = 0   # 최상위 해석의 쓰기 로그 길이(비용 상한 테스트용)
     unmodeled: bool = False   # error 가 모델링 불가(ModelError) — bash 는 돌리므로 fail-closed
+    dynamic: bool = False     # 그중 정적으로 알 수 없는 코드(CodeUnknown) — 사유 문구가 다르다
 
 
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
@@ -1222,7 +1228,7 @@ def _heredoc_text(r: Redirect, env: Mapping[str, str | None]) -> str | None:
     if r.body is None or r.target is None or r.target.is_quoted():
         return r.body
     if (t := _text((Part(r.body, '"'),), env)) is None:
-        raise LexError("heredoc 본문을 확정할 수 없음")
+        raise CodeUnknown("heredoc 본문을 확정할 수 없음")
     return t
 
 
@@ -1257,7 +1263,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             if i + 1 >= len(a):
                 return None
             if (code := _text(a[i + 1].parts, o.env, split=True)) is None:
-                raise LexError("셸 -c 문자열을 확정할 수 없음")
+                raise CodeUnknown("셸 -c 문자열을 확정할 수 없음")
             return code
         if not x.startswith(("-", "+")) or x in ("-", "--"):
             break
@@ -1270,7 +1276,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             return _heredoc_text(r, o.env)
         if r.op == "<<<" and r.target is not None:
             if (code := _text(r.target.parts, o.env)) is None:
-                raise LexError("<<< 문자열을 확정할 수 없음")
+                raise CodeUnknown("<<< 문자열을 확정할 수 없음")
             return code
     return _pipe_text(pipe_prev) if pipe_prev is not None else None
 
@@ -1306,7 +1312,7 @@ def _opts(a: list[Word], i: int, table: tuple[set[str], set[str]]) -> tuple[int,
                     got.append((k, a[i + 1]))
                     i += 1
             elif k not in flags:
-                raise LexError(f"알 수 없는 옵션 {k}")
+                raise ModelError(f"알 수 없는 옵션 {k}")
             i += 1
             continue
         for n in range(1, len(x)):
@@ -1320,7 +1326,7 @@ def _opts(a: list[Word], i: int, table: tuple[set[str], set[str]]) -> tuple[int,
                     i += 1
                 break
             if o not in flags:
-                raise LexError(f"알 수 없는 옵션 {o}")
+                raise ModelError(f"알 수 없는 옵션 {o}")
         i += 1
     return i, got
 
@@ -1443,7 +1449,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     elif seg.name == "eval":
         vals = [_text(w.parts, seg.env) for w in seg.argv[1:]]
         if None in vals:
-            raise LexError("eval 인자를 확정할 수 없음")
+            raise CodeUnknown("eval 인자를 확정할 수 없음")
         return _parse(" ".join(vals), seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)  # type: ignore[arg-type]
     elif seg.name == "trap":
         # `trap [-lp] [--] <코드> <시그널>…` — 코드는 bash 가 나중에 현재 셸에서 돌린다(실측 I4). 인자 하나(`trap EXIT`)·'-'·'' 은 재설정
@@ -1458,7 +1464,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
         if len(a) >= 2 and a[0].literal() not in ("-", ""):
             code = _text(a[0].parts, seg.env)
             if code is None:
-                raise LexError("trap 코드를 확정할 수 없음")
+                raise CodeUnknown("trap 코드를 확정할 수 없음")
             _parse(code, seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)
     elif seg.name == "xargs":
         a, i, repl = seg.argv, 1, None
@@ -1508,6 +1514,8 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     _deadline[0] = deadline
     try:
         _parse(command, cwd, state_env, context, 0, segments)
+    except CodeUnknown as e:
+        return ParseResult([], str(e), unmodeled=True, dynamic=True)
     except ModelError as e:
         return ParseResult([], str(e), unmodeled=True)
     except LexError as e:
@@ -1591,7 +1599,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
            segments: list[Segment], via_xargs: bool = False) -> tuple[str | None, dict[str, str | None]]:
     """segments 에 단위를 덧붙이고 끝 상태(cwd, env)를 돌려준다. 오류는 LexError."""
     if depth > _MAX_DEPTH:
-        raise LexError("재귀 깊이 초과")
+        raise ModelError("재귀 깊이 초과")
     _check_deadline()
     toks = lex(command)
     state_env = _Env(state_env)   # 쓰기 로그(합류 비용) — 호출자의 dict 는 그대로 둔다
@@ -2124,7 +2132,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 add_word(t.word)   # 예약어로 벗겨지고 뒤 리다이렉트는 case 전체에 붙는다
             elif t.kind == "word" and cur["pat"] in (0, 2):
                 if _word_subs(t.word):
-                    raise LexError("case 패턴 안 치환은 지원하지 않음")
+                    raise ModelError("case 패턴 안 치환은 지원하지 않음")
                 cur["pat"] = 1
             elif t.kind == "op" and t.op == "|" and cur["pat"] == 1:
                 cur["pat"] = 2
