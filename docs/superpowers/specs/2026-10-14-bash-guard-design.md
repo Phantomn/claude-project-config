@@ -262,15 +262,20 @@ class Segment:
    - `trap [-lp] [--] CODE SIG…` → CODE(최종 리뷰 I4 — bash 가 나중에 현재 셸에서 돌린다). 조회(`-l`·`-p`)·재설정(인자 하나·`-`·`''`)은 무해.
      CODE 는 **trap 을 정의한 시점**의 cwd·변수로 해석한다(실행 시점 상태가 아니다 — LIMITS)
    - 셸의 stdin 코드(셸에 heredoc·`<<<`·파이프로 넘기는 코드): heredoc 본문, `<<<` 문자열, 파이프 앞 단위가 리터럴 `echo`·`printf`·`cat <<EOF`(본문)면
-     그 텍스트를 해석. `source`·`.` 의 `/dev/stdin` 도 같은 규칙. 입력원이 없으면(`bash -s` 단독) 해석할 코드가 없다.
+     그 텍스트를 해석. 스크립트 자리가 stdin 장치 경로(`/dev/stdin`·`/dev/fd/0`·`/proc/self/fd/0` — `shell_parse._STDIN_PATHS`)여도 stdin 코드다.
+     `source`·`.` 도 같은 경로 집합에 같은 규칙(앞의 `--` 는 건너뛴다). 옵션 끝 `-`·`--` 뒤 단어가 스크립트 자리다(`bash -- <(…)` 는 프로세스 치환).
+     입력원이 없으면(`bash -s` 단독) 해석할 코드가 없다. `< /dev/null` 은 빈 코드, `-n`(옵션 묶음 안의 `n` 포함 — 구문 검사만)은 실행하지 않으므로 해석할 코드가 없다(C3).
    - 위 코드 자리의 텍스트를 **정적으로 확정할 수 없으면** 모델링 불가의 한 종류(`CodeUnknown`, §3.8 (가′)) — `-c` 문자열·`eval` 인자·`trap` 코드·
      heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력(`curl … | sh`·`cat f | bash`·`base64 -d | sh`), `bash < 파일`,
      프로세스 치환(`bash <(…)`·`source <(…)`·`. <(…)`). 래퍼(env·command·exec·sudo 등)를 벗긴 셸에도 같다(최종 묶음 C 항목 7·C2 (3)).
+     C3 추가: 파이프 입력이 있는데 대상 명령 이름을 확정할 수 없음(`… | $SHELL`·`| "$PAGER"`·`| $(which sh)` — 셸일 수 있다. 같은 명령 안에서
+     리터럴로 대입한 이름은 확정), `xargs … sh -c`(코드 인자 없음 — 첫 입력 항목이 코드가 된다).
      같은 명령 안에서 리터럴로 대입한 변수(`c='…'; bash -c "$c"`)는 확정이라 해석된다.
      원격·다른 해석기(`ssh host "$cmd"`·`python -c "$code"`)는 이 호스트의 셸 코드가 아니라 대상이 아니다(§13).
    - `xargs [옵션] CMD …` → CMD 를 단위로 만들되 대상은 **미확정**(입력을 모름).
    - `find … -exec CMD … {} [;+]` / `-execdir` / `-delete` → §3.5 find 규칙.
-   - `docker exec|run`, `docker compose exec|run`, `podman` 동일 → 뒤 명령을 `context=container` 로 해석(§3.6).
+   - `docker [container] exec|run|create`, `docker compose exec|run`, `podman` 동일 → 뒤 명령을 `context=container` 로 해석(§3.6).
+     `create` 는 `run` 과 같은 인자로 컨테이너를 만들고 `start` 때 그 명령을 돌리므로 `run` 과 같은 표로 본다(C3, `docker container --help` 실측). `start` 는 명령이 없어 해석 대상 아님.
 8. **명령 치환·백틱**: `$(…)`·`` `…` `` 는 안쪽을 별도 단위로 재귀 해석(안쪽의 파괴 작업도 판정). 치환 결과가 들어간
    인자는 미확정. 단 `$(pwd)`·`` `pwd` ``·`$PWD` 는 그 단위의 cwd 로 확정한다(Docker `-v "$(pwd)":/app` 처럼 흔함).
    큰따옴표 토큰 안의 `$(`·백틱도 같은 규칙으로 안쪽을 해석한다.
@@ -405,6 +410,8 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 이 대상들은 장부에도 `>` 와 같은 제자리 쓰기로 기록한다.
 긴 옵션 약어(`getopt_long` 규칙)는 명령마다의 긴 옵션 표로 정식 이름으로 바꾼 뒤 판정한다(`cp`·`mv`·`ln` 등·git·wget·sort 공통 — `wget --output-do F` 는
 `--output-document`). 둘 이상에 맞는 모호한 약어(`wget --o`)와 모르는 긴 옵션은 확정 불가(C2 I5-R).
+`wget` 의 `--no-X` 는 X 가 그 긴 옵션 표에 **정확한 이름으로** 있을 때만 X 의 부정으로 인정한다(`--no-continue`·`--no-quiet` — wget 1.21.4 실측. 약어 `--no-cont`·
+없는 `--no-foo` 는 확정 불가). 부정형은 출력 옵션 판정을 바꾸지 않는다(C3).
 `/dev/null` `/dev/stdout` `/dev/stderr` `/dev/tty` `/dev/fd/*` 와 bash 네트워크 가상 경로 `/dev/tcp/*` `/dev/udp/*` 는 제외(허용). 장치 경로 대상은 아래 디스크 규칙만 따른다.
 
 | 분류 | 판정 |
@@ -474,6 +481,20 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
   모두 없고 기본 소켓 `/var/run/docker.sock` 과 rootless `$XDG_RUNTIME_DIR/docker.sock` 이 둘 다 없음(`target_class.docker_daemon_absent`).
   클라이언트 실행 파일이 `PATH` 에 없는 것은 증거가 아니다(절대경로·좁은 훅 `PATH` 로도 docker 는 돈다). `tcp://` 등 다른 연결·설정된 컨텍스트는
   소켓을 확인하지 않으므로 증거 없음 → 확정 불가. 이 허용과 조회 실패는 기록 `stats` 에 센다(§3.9).
+  C3 로 좁힘 — 이 증거는 다음일 때만 쓴다(`policy._container_jobs`):
+  - 띄운 CLI 가 `docker` 일 때(`Context.cli`). `podman` 은 데몬이 없으므로 docker 소켓 부재가 컨테이너 부재의 증거가 아니다 — 조회 실패 = 확정 불가.
+  - 명령이 데몬을 직접 지정하지 않았을 때(`Context.daemon_set`): 전역 `-H`·`--host`·`-c`·`--context`, 또는 `DOCKER_HOST`·`DOCKER_CONTEXT` 의 할당·해제(접두 할당·
+    `export`·`unset`·`env -u`·`env X=`)가 있으면 그 데몬은 훅 env 의 소켓과 다르므로 증거 없음 → 확정 불가.
+
+| 컨테이너 호출 형태(§3.3 단계 7) | 마운트 표 | 데몬 부재 증거 |
+|---|---|---|
+| `docker [전역 옵션] [container] exec …` | `docker inspect` 조회 | 조회 실패 시 위 조건으로 씀 |
+| `docker [전역 옵션] [container] run\|create …` | `-v`·`--mount` 인자 | 쓰지 않음(인자에서 얻는다) |
+| `docker compose exec …` | `docker compose ps -q` → `docker inspect` 조회 | 조회 실패 시 위 조건으로 씀 |
+| `docker compose run …` | 인자(부분 — §3.6) | 쓰지 않음 |
+| `docker-compose exec\|run …`(독립 실행 파일) | 위 compose 와 같음 | **쓰지 않음**(CLI 이름이 `docker` 가 아님) |
+| `podman [container] exec\|run\|create …` | 위 docker 와 같음(조회도 `docker inspect`) | **쓰지 않음** |
+| `docker container start` 등 명령 없는 하위명령 | — | 해석 대상 아님 |
 
 ### 3.6 컨테이너 문맥
 
@@ -510,7 +531,9 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
   잠금 없는 추가는 압축의 읽기와 다시 쓰기 사이에 끼어든 줄을 잃는다(재감사 rootcause-r1-s1-006).
 - 기록 주체:
   1. `touch-ledger`(PreToolUse 매처 `Write|Edit|NotebookEdit`, 대상 = `tool_input.file_path` 또는 `notebook_path`): 경로가 없으면 `created`.
-     있으면 생성 시각 < 세션 시작이면 `pre-session`, 추적 파일이고 이 세션의 `touched` 가 아직 없는데 이미 수정 상태면 `pre-dirty`.
+     있으면 생성 시각 < 세션 시작이면 `pre-session`, **생성 시각을 읽지 못하고(drvfs) 이 세션의 created 증거(아래 조회)도 없으면 `pre-session`**(C3 K-c —
+     유령 기록 경로에 옛 mtime 으로 나타난 파일이 첫 제자리 수정으로 mtime 이 갱신돼 세션 것이 되지 않게. 이후 조회에서 `pre-session` 이 우선한다),
+     추적 파일이고 이 세션의 `touched` 가 아직 없는데 이미 수정 상태면 `pre-dirty`.
      그리고 `touched`. 항상 출력 없음, 종료 0. **스위치와 무관하게 항상 기록**한다(D14) — 기록 시점에 꺼져 있던 파일도 나중에 켜진 판정이 정확히 본다.
   2. 판정기: 해석한 단위가 아래 닫힌 목록의 제자리 수정이면 그 대상에 같은 규칙(`created` 제외)을 적용해 장부에 기록한다 — 쓰기·추가 리다이렉트(`>` `>|` `&>` `>>` `&>>`) 대상, `tee`(`-a` 포함)의 파일 인자, `sed -i|--in-place`, `perl -i|-pi`, `truncate`, `cp`·`mv`·`install`·`rsync`·`dd of=` 의 기존 목적지 파일, `git checkout [--] <경로>`, `git restore <경로>`. 목록 밖(`patch`, `git apply`, 스크립트 내부)은 기록하지 않는다(§13).
      `ln -f`·`wget -O|-o`·`sort -o`(§3.5 덮어쓰기 표)의 기존 목적지도 같은 제자리 수정으로 기록한다.
@@ -523,6 +546,8 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
     **생성 시각을 못 읽는 경로**(drvfs 의 `/mnt/c` 는 birth 0)에서는 'created 증거'가 생성 시각을 대신한다: S 의 `created` 기록 e 가 있고 파일의
     mtime(`lstat`) ≥ e.ts − `CLOCK_MARGIN` 이면 생성 시각 조건을 만족한 것으로 본다(나머지 두 조건은 그대로). 생성 시각을 읽을 수 있으면 생성 시각이
     우선이다(created 를 보지 않는다). mtime 조건은 판정만 거친 명령의 목적지를 외부가 나중에 만든 세션 전 파일(mtime 이 기록보다 과거)을 거른다(C2 K-R).
+    이 조건(`created_evidence(p) = ∃ S 의 created 기록 e: lstat(p).mtime ≥ e.ts − CLOCK_MARGIN`, 파일이 없으면 거짓)은 `target_class.created_evidence` 한 곳이
+    정하고 `SESSION_NEW` 조회와 기록 주체의 `pre-session` 판정(위 1·2)이 같이 쓴다. 정상 생성 흐름(세션이 만들고 고침)은 증거가 있어 `pre-session` 을 남기지 않는다.
     장부가 비활성이면(상태 폴더가 절대경로가 아님 — `HOME` 없음) `pre-session` 을 볼 수 없으므로 `SESSION_NEW` 를 어떤 경로에도 적용하지 않는다(보호 쪽, 최종 리뷰 M5)
   - 이번 세션 변경 = 수정 시각 ≥ S 시작 ∧ S 의 `pre-dirty` 없음 ∧ S 시작 이후 다른 세션의 `touched` 없음
 - 조회 추가: 분류 1a — 경로 자신·상위·(폴더면) 하위 경로에 `moved-in` 이 있으면 보호.
@@ -547,7 +572,7 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 | 상황 | 판정 |
 |---|---|
 | (가) 해석 실패 — **구문 오류·입력 불량만**(닫히지 않은 따옴표·백틱·heredoc·그룹, 짝 없는 `do`/`esac`/`)`, 대상 없는 리다이렉트, 해석할 수 없는 문자, 끝 백슬래시, 명령 자리 확장 글롭, 함수 본문 모양 — bash 도 돌리지 못하는 것). 최종 묶음 C 항목 7 개정: 내용을 확정하지 못하는 코드·목록 밖 docker 옵션·재귀 깊이 초과·case 패턴 안 치환은 bash 가 돌리므로 (가) 가 아니라 (가′) | 원문에 삭제·덮어쓰기·git 파괴 관련 단어(`rm` `unlink` `shred` `truncate` `dd` `mkfs*`(`mkfs.ext4` 등 포함) `-delete` `reset` `clean` `restore` `checkout` `push` `volume` `prune` `>`)가 **단어 경계로**(앞뒤 글자가 영숫자·`_`·`-`·`.` 가 아님. `>` 는 위치 무관) 있으면 거부("명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"), 없으면 허용 |
-| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`·목록 밖 docker/compose 옵션·재귀 깊이(8) 초과·case 패턴 안 치환). 그 하위 종류 **정적으로 알 수 없는 코드**(`CodeUnknown`, 최종 묶음 C 항목 7·C2 (3)): 셸·`eval`·`trap`·`source` 가 돌릴 코드 텍스트를 확정할 수 없음 — `-c` 문자열·`eval` 인자·`trap` 코드·heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력·`< 파일`·프로세스 치환(§3.3 단계 7) | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**. 모델링 불가는 "해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"(`R_MODEL`), 정적으로 알 수 없는 코드는 "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`R_DYNAMIC`). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 미확정 코드도 같은 성질이고, 무관한 `>/dev/null` 하나로 거부가 갈리던 것도 닫힌다(재생 새 거부 35+1건 = 0.036%). 구현 `ModelError`·`CodeUnknown`·`ParseResult.unmodeled`·`.dynamic`·`bash_guard.R_MODEL`·`R_DYNAMIC` |
+| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`·목록 밖 docker/compose 옵션·재귀 깊이(8) 초과·case 패턴 안 치환). 그 하위 종류 **정적으로 알 수 없는 코드**(`CodeUnknown`, 최종 묶음 C 항목 7·C2 (3)): 셸·`eval`·`trap`·`source` 가 돌릴 코드 텍스트를 확정할 수 없음 — `-c` 문자열·`eval` 인자·`trap` 코드·heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력·`< 파일`·프로세스 치환, stdin 장치 경로(`/dev/stdin`·`/dev/fd/0`·`/proc/self/fd/0`, `source --` 포함)·옵션 끝 `-`/`--` 뒤 `<(…)`·파이프 입력이 있는데 대상 명령 이름 미확정(`… \| $VAR`)·`xargs … sh -c`(코드 인자 없음)(§3.3 단계 7, C3). 예외(실행할 코드 없음 → 허용): `-n`(구문 검사만)·`< /dev/null` | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**. 모델링 불가는 "해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"(`R_MODEL`), 정적으로 알 수 없는 코드는 "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`R_DYNAMIC`). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 미확정 코드도 같은 성질이고, 무관한 `>/dev/null` 하나로 거부가 갈리던 것도 닫힌다(재생 새 거부 35+1건 = 0.036%). 구현 `ModelError`·`CodeUnknown`·`ParseResult.unmodeled`·`.dynamic`·`bash_guard.R_MODEL`·`R_DYNAMIC` |
 | (나) 대상 확정 불가 | 해당 작업의 `UNRESOLVED` 규칙(거부 + 대안) |
 | (다) 판정기 내부 예외 | 오류 기록(§3.9, 모드와 무관 — 필드 `error` 와 `fallback: true`. shadow 에서 폴백 발생 수를 센다). 출력: 세션 env 값과 cwd 저장소 값 중 강한 모드(계산 실패 시 `off`)가 `on` 이면 `on` 모드의 내부 예외 폴백도 ask 를 내지 않도록 **OLD ∪ 위험 단어** 로 판정한다 — (가) 의 위험 단어 규칙을 원문에 적용한 결과와 OLD 중 하나라도 거부(OLD 는 `ask`·`deny`)면 거부("판정기 오류 — 단순한 형태로 나눠 실행하라"), 둘 다 허용일 때만 허용(최종 리뷰 I3 — 예외가 OLD 수준 보호를 깎지 않게. 위험 단어 목록에 없는 `cp`·`mv`·`tee` 덮어쓰기도 OLD 가 막던 것은 막는다). `off`·`shadow` 면 OLD 그대로(재감사 rootcause-r1-s2-003). 입구 스크립트는 파이썬이 뜨지 않거나 출력이 비면 OLD 를 출력한다(이때만 `on` 에서도 OLD 의 ask 가 나올 수 있다 — §13) |
 | 시간 예산 초과(내부 마감 5초) | 그때까지 **판정 대상 작업**(§3.5 표에서 판정 행에 해당하는 단위: 삭제·덮어쓰기·디스크·시스템·재귀 권한, git 의 판정 행 하위명령, docker 볼륨 삭제, 컨테이너 문맥 단위)을 만났으면 거부("판정 시간 초과 — 범위를 좁혀라"), 아니면 허용. 끊긴 자리 뒤에 남은 단위 중 판정 대상이 있어도 '만난' 것으로 본다. **해석 도중** 마감이 지나 해석을 멈췄으면 위험 단어와 무관하게 거부(구현 중 추가 — 그러지 않으면 큰 입력 뒤의 `cp a b` 가 허용된다). 외부 명령(git·stat·docker·find)은 개별 `timeout=2`초, 경로 묶음 분류는 경로마다 예산을 본다 |
@@ -572,7 +597,7 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
   - `fallback`(bool): 내부 예외 폴백(§3.8 (다))으로 낸 판정. `error` 에 예외 이름·메시지.
   - `budget_exhausted`(bool): 사유에 "판정 시간 초과" 가 있음.
   - `stats`(객체 또는 null): 판정 중 센 횟수 — `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정 → 확정 불가),
-    `compose_project_dir_none`(compose exec 의 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용), `scratch_hole`(임시 폴더 표식 예외(§3.4)로 허용).
+    `compose_project_dir_none`(compose exec 의 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용 — `docker` CLI 이고 데몬 직접 지정이 없을 때만, §3.5), `scratch_hole`(임시 폴더 표식 예외(§3.4)로 허용).
   - `settings_errors`(목록 또는 null): 스위치 settings 파일을 읽다 난 오류(`.claude/<파일>: <예외 이름>`, 파일 없음은 제외 — 스위치가 조용히 `off` 로
     떨어진 것을 본다, `guard_mode.read_failures`).
   - `ledger_bytes`(정수 또는 null): 그 시점 장부 파일 크기.
@@ -845,6 +870,7 @@ class Finding:
 | 2026-10-17 | §3.5 | `ln -f`, 출력 옵션 표(`wget`·`sort`, `curl -o` 제외), 긴 옵션 약어 해소·모호 약어 확정 불가, push 의 URL 원격·`--force-with-lease` 명시, find 미리보기 rc≠0, **Docker '조회 실패 = 허용' → 미확정은 `UNRESOLVED`, 데몬 부재의 긍정 증거(소켓 부재)만 허용 + 기록** | 최종 리뷰 I2·I5·I7·I8·M6, C 재검토 I2-R(클라이언트 PATH 를 데몬 증거로 써서 절대경로 docker 가 허용됨)·I5-R(wget 약어) |
 | 2026-10-17 | §3.4·§3.7 | 판정기의 Bash `created` 기록, birth 0 경로의 created 증거(mtime ≥ 기록 시각 − 여유), 장부 비활성이면 `SESSION_NEW` 없음, 장부 읽기 캐시·분류 입구 예산, 모든 잠금 = 상한 있는 헬퍼 하나(기록 포함) | `/mnt/c` 세션 폴더가 늘 거부되던 것(최종 묶음 C 항목 8)과 그 유령 기록(C 재검토 K-R), 최종 리뷰 C1(장부 재읽기로 훅 10초 초과 → 판정 없이 실행)·I1(기록 잠금 무한 대기)·M5 |
 | 2026-10-17 | §3.8 | (가) 를 구문 오류만으로 좁힘, (가′) 에 목록 밖 docker 옵션·재귀 깊이·case 패턴 치환과 정적으로 알 수 없는 코드(`R_DYNAMIC`), (다) 폴백 = OLD ∪ 위험 단어 + 기록 `fallback` | 최종 리뷰 I3(예외 폴백이 `cp`·`mv` 덮어쓰기 허용), 설계 판정(모델링 불가 = 거부 원칙을 미확정 코드까지) |
+| 2026-10-17 | §3.3·§3.5·§3.7·§3.8 (C3) | `docker container exec\|run\|create`(create = run), 데몬 부재 증거는 `docker` CLI·데몬 직접 지정 없음일 때만(podman·`-H`/`--context`·`DOCKER_HOST`/`DOCKER_CONTEXT` 할당·해제 = 확정 불가), wget `--no-X` 정확한 이름만, 동적 stdin 확장(stdin 장치 경로·`source --`·`-- <(…)`·파이프 대상 미확정·`xargs sh -c`)과 허용 예외(`-n`·`< /dev/null`), birth 를 모르고 created 증거 없는 기존 파일의 제자리 수정 → `pre-session`(`created_evidence`) | C2 독립 점검: podman·데몬 직접 지정이 소켓 부재로 허용(I2-a·c), 관리 명령 형태 미인식(I2-b), 동적 stdin 잔여(D1–D5)와 과잉 거부(O1·O2), wget 부정형 과잉 거부(I5-a), 유령 기록 경로의 첫 제자리 수정으로 세션 것이 됨(K-c F1·F3) |
 | 2026-10-17 | §3.9 | 기록 필드 `fallback`·`budget_exhausted`·`stats`·`settings_errors`·`ledger_bytes`, `stats`·`settings_errors` 가 있으면 허용도 기록, 기록 잠금 상한 | 최종 리뷰 권고 4(shadow 관측 지표)·M4(스위치 조용한 off)·I1 |
 
 ---
