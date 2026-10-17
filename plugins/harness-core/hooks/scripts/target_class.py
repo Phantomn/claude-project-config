@@ -300,7 +300,13 @@ def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None
         rows = ctx.ledger.entries_for(paths)
 
     def _created_here(p: str) -> bool:
-        return any(e.kind == KIND_CREATED and e.session_id == sid for e in rows.get(p, ()))   # type: ignore[union-attr]
+        try:
+            mtime = os.lstat(p).st_mtime
+        except OSError:
+            return False
+        # 기록보다 오래된 파일은 기록 뒤에 생긴 것이 아니다 — 판정만 거친 명령의 목적지(유령 기록)를 외부가 나중에 만들어도 세션 전으로(C2 K-R)
+        return any(e.kind == KIND_CREATED and e.session_id == sid and mtime >= e.ts - ctx.clock_margin
+                   for e in rows.get(p, ()))   # type: ignore[union-attr]
 
     # 생성 시각을 못 읽는 파일 시스템(drvfs 의 /mnt/c 는 birth 0)에서는 이 세션의 created 기록(Write·Bash 의 mkdir/리다이렉트/
     # 복사 목적지)이 birth 와 같은 증거다. 기록도 없으면 현행 보호(최종 묶음 C 항목 8)

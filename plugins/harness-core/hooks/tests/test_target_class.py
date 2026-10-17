@@ -419,7 +419,10 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(stat_birth(str(d)), 0.0)                       # drvfs 는 birth 를 주지 않는다
         (d / "other").mkdir()                                           # 판정기 밖에서 만든 폴더 — 증거 없음
         from bash_guard import judge
-        env = {**w.environ, "HARNESS_BASH_GUARD": "on"}
+        from target_class import CLOCK_MARGIN_ENV
+        # drvfs 의 mtime 은 윈도 쪽 시계라 time.time() 과 수십 ms 어긋난다 — 이 시나리오는 운영 여유(2초)에 가까운 1초로
+        env = {**w.environ, "HARNESS_BASH_GUARD": "on", CLOCK_MARGIN_ENV: "1.0"}
+        k = lambda p, ctx=None: classify(w.fmt(p), ctx or w.ctx(environ_extra={CLOCK_MARGIN_ENV: "1.0"})).kind
         self.assertTrue(judge(w.payload(f"mkdir -p {d}/mine/sub"), env).allow); (d / "mine/sub").mkdir(parents=True)
         self.assertTrue(judge(w.payload(f"echo x > {d}/mine/f.txt"), env).allow); (d / "mine/f.txt").write_text("x")
         self.assertTrue(judge(w.payload(f"cp {{SCRATCH}}/s1/x.txt {d}/mine/sub/"), env).allow); shutil.copy(w.fmt("{SCRATCH}/s1/x.txt"), d / "mine/sub")
@@ -428,6 +431,14 @@ class ClassifyTest(_WorldCase):
         self.assertEqual(k(str(d / "other")), PRESERVED)                 # 기록 없음 → 현행 보호
         self.assertFalse(judge(w.payload(f"rm -rf {d}/other"), env).allow)
         self.assertEqual(k(str(d / "mine/f.txt"), w.ctx(session_id="B")), PRESERVED)   # 다른 세션의 created 는 내 증거가 아니다
+        # C2 K-R: 판정만 거친 명령의 목적지(유령 기록)를 외부가 나중에 만들어도, 파일의 mtime 이 기록 시각보다 앞이면 세션 전 것
+        self.assertTrue(judge(w.payload(f"cp {{SCRATCH}}/s1/x.txt {d}/ghost.txt"), env).allow)   # 실행하지 않는다
+        (d / "ghost.txt").write_text("outside"); t = time.time() - 120; os.utime(d / "ghost.txt", (t, t))
+        self.assertEqual(k(str(d / "ghost.txt")), PRESERVED); self.assertFalse(judge(w.payload(f"rm -f {d}/ghost.txt"), env).allow)
+        self.assertTrue(judge(w.payload(f"mkdir {d}/ghost2"), env).allow); (d / "ghost2").mkdir()      # 정상 흐름: 기록 뒤 생성(mtime ≥ 기록)
+        self.assertEqual(k(str(d / "ghost2")), SESSION_NEW)
+        ctx = w.ctx(environ_extra={CLOCK_MARGIN_ENV: "1.0"}); ctx.ledger.record(w.fmt("{HOME}/notes.md"), KIND_CREATED, ctx.session_id)   # birth 가 있는 FS 는 birth 가 우선
+        self.assertEqual(k("{HOME}/notes.md", ctx), PRESERVED)
         judge(w.payload("echo x > /dev/bash-guard-nonexistent"), env)                     # 장치 경로는 생성 기록을 남기지 않는다
         self.assertEqual(Ledger(w.environ).entries("/dev/bash-guard-nonexistent"), [])
 
