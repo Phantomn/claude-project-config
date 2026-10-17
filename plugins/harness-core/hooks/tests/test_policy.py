@@ -84,14 +84,14 @@ class OverwriteTest(_WorldCase):
             self.assertEqual(ev(c), [], c)
         self.assertEqual(ev('ln -sf "$X" {HOME}/notes.md'), [("덮어쓰기", PRESERVED)]); self.assertEqual(ev('ln -sf x "$X"'), [("덮어쓰기", UNRESOLVED)])
 
-    def test_output_file_options(self):   # I5: curl -o·wget -O/-o·sort -o 는 기존 파일을 덮어쓴다(실측 2026-10-17)
-        for c in ("curl -s -o {HOME}/notes.md http://x", "curl --output={HOME}/notes.md http://x", "curl -sSLo {HOME}/notes.md http://x",
-                  "wget -qO {HOME}/notes.md http://x", "wget --output-document {HOME}/notes.md http://x", "wget -o {HOME}/notes.md http://x",
-                  "sort -o {HOME}/notes.md {HOME}/notes.md", "sort --output={HOME}/notes.md x"):
+    def test_output_file_options(self):   # I5: wget -O/-o·sort -o 는 기존 파일을 덮어쓴다(실측 2026-10-17). curl -o 는 표 밖(LIMITS — 재생 468건 과잉 거부)
+        for c in ("wget -qO {HOME}/notes.md http://x", "wget --output-document {HOME}/notes.md http://x", "wget -o {HOME}/notes.md http://x",
+                  "wget -O{HOME}/notes.md http://x", "sort -o {HOME}/notes.md {HOME}/notes.md", "sort --output={HOME}/notes.md x", "sort -uo {HOME}/notes.md x"):
             self.assertEqual(ev(c), [("덮어쓰기", PRESERVED)], c)
-        for c in ("curl -s http://x", "curl -o {SCRATCH}/s1/out http://x", "curl -o - http://x", "wget -O - http://x", "sort {HOME}/notes.md",
-                  "sort -o src/main.py src/main.py", "curl -O http://x/notes.md", "curl -o {HOME}/new.json http://x"):
+        for c in ("wget -O - http://x", "wget -O {SCRATCH}/s1/out http://x", "wget -O {HOME}/new.json http://x", "sort {HOME}/notes.md",
+                  "sort -o src/main.py src/main.py", "curl -s -o {HOME}/notes.md http://x", "curl -O http://x/notes.md"):
             self.assertEqual(ev(c), [], c)
+        self.assertEqual(ev('wget -O "$X" http://x'), [("덮어쓰기", UNRESOLVED)])
 
     def test_git_output_overwrites(self):   # git log/diff/show 의 --output 은 그 파일을 덮어쓴다(git 2.43 실측)
         self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])

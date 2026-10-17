@@ -402,10 +402,10 @@ def _rsync(seg: Segment, ctx: Ctx | None) -> list[Job]:
     return [_into(seg, ctx, ops[-1], ops[:-1], False, False, contents=True)]
 
 
-# 이름 붙은 파일을 덮어쓰는 출력 옵션 표(명령 → 옵션). 실측 2026-10-17: curl -o·wget -O(-o 는 로그 파일)·sort -o 는 기존 파일을
-# 비우고 쓴다(wget 은 받기 실패해도 0바이트로). `curl -O`(원격 이름)·strace/ltrace -o 는 표 밖 — LIMITS
-_OUT_OPTS: dict[str, tuple[str, ...]] = {
-    "curl": ("-o", "--output"), "wget": ("-O", "--output-document", "-o", "--output-file"), "sort": ("-o", "--output")}
+# 이름 붙은 파일을 덮어쓰는 출력 옵션 표(명령 → 옵션). 실측 2026-10-17: wget -O(-o 는 로그 파일)·sort -o 는 기존 파일을 비우고
+# 쓴다(wget 은 받기 실패해도 0바이트로). 표 밖 — LIMITS: `curl -o`(실측은 덮어쓰지만 전수 재생에서 미확정 대상의 내려받기 루프
+# 468건을 새로 거부해 뺐다 — 최종 묶음 C 보고), `curl -O`(원격 이름), strace/ltrace -o
+_OUT_OPTS: dict[str, tuple[str, ...]] = {"wget": ("-O", "--output-document", "-o", "--output-file"), "sort": ("-o", "--output")}
 
 
 def _out_files(seg: Segment, ctx: Ctx | None) -> list[Job]:
@@ -728,7 +728,7 @@ HANDLERS: dict[str, Callable[[Segment, Ctx | None], list[Job]]] = {
     "shred": _delete(frozenset({"-n", "--iterations", "-s", "--size", "--random-source"})),
     "find": _find,
     "cp": _copy, "mv": _copy, "install": _copy, "ln": _copy, "rsync": _rsync,
-    "tee": _tee, "truncate": _truncate, "dd": _dd, "mkfs": _mkfs, "curl": _out_files, "wget": _out_files, "sort": _out_files,
+    "tee": _tee, "truncate": _truncate, "dd": _dd, "mkfs": _mkfs, "wget": _out_files, "sort": _out_files,
     "chmod": _perm, "chown": _perm, "chgrp": _perm,
     "git": _git_handler, "docker": _docker_handler, "podman": _docker_handler, "docker-compose": _docker_handler,
 }
@@ -1229,7 +1229,7 @@ def inplace_targets(seg: Segment) -> list[str]:
             words += _args(seg)[2]
         elif seg.name in ("sed", "perl"):
             words += _sed_perl_files(seg)
-        elif seg.name in ("truncate", "cp", "mv", "install", "ln", "rsync", "dd", "curl", "wget", "sort"):
+        elif seg.name in ("truncate", "cp", "mv", "install", "ln", "rsync", "dd", "wget", "sort"):
             out += [p for j in HANDLERS[seg.name](seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
         elif seg.name == "git":
             out += [p if j.rule == OVERWRITE else os.path.join(j.repo, p) for j in _git_handler(seg, None)
