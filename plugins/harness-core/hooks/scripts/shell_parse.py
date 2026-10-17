@@ -1410,6 +1410,21 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
         if None in vals:
             raise LexError("eval 인자를 확정할 수 없음")
         return _parse(" ".join(vals), seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)  # type: ignore[arg-type]
+    elif seg.name == "trap":
+        # `trap [-lp] [--] <코드> <시그널>…` — 코드는 bash 가 나중에 현재 셸에서 돌린다(실측 I4). 인자 하나(`trap EXIT`)·'-'·'' 은 재설정
+        a = [w for w in seg.argv[1:]]
+        while a and a[0].literal().startswith("-") and a[0].literal() != "-":
+            if a[0].literal() == "--":
+                a = a[1:]
+                break
+            if "l" in a[0].literal() or "p" in a[0].literal():
+                return None   # 조회
+            a = a[1:]
+        if len(a) >= 2 and a[0].literal() not in ("-", ""):
+            code = _text(a[0].parts, seg.env)
+            if code is None:
+                raise LexError("trap 코드를 확정할 수 없음")
+            _parse(code, seg.cwd, dict(run_env), seg.context, d, segments, seg.via_xargs)
     elif seg.name == "xargs":
         a, i, repl = seg.argv, 1, None
         while i < len(a) and a[i].literal().startswith("-"):

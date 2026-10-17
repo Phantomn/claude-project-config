@@ -508,7 +508,8 @@ class PathSetTest(unittest.TestCase):   # fix-brief-4: 구문별 실행 경로 �
             self.assertEqual(last(c).cwd, cwd, c)
         self.assertEqual(last("v={D}/missing; f() { cd \"$v\"; }; v={D}/ex f; rm y").env.get("v"), f"{d}/missing")   # 접두 할당은 호출 동안만
         self.assertEqual(last("f() { x=${10}; }; f 1 2 3 4 5 6 7 8 9 ten; rm $x").env.get("x"), "ten")
-        self.assertIn("rm", names("f() { :; }; f; f() { rm x; }; trap f EXIT"))   # NB7 unknown 정의의 본문 판정은 남는다
+        self.assertIn("rm", names("f() { :; }; f; f() { rm x; }; echo"))   # NB7 unknown 정의의 본문 판정은 남는다
+        self.assertTrue(parse("f() { :; }; f; f() { rm x; }; trap f EXIT", "/w", {}).unmodeled)   # I4: trap 코드의 재정의 함수 호출 = 모델링 불가
 
     def test_function_shadows_wrapper_and_variable_command_names(self):   # 6-3 OOS1·OOS2
         d, last = self._world()
@@ -731,6 +732,16 @@ class RecursionTest(unittest.TestCase):
 
     def test_eval_changes_current_shell(self):
         self.assertEqual(rm_cwd("eval cd /usr; rm y"), "/usr")
+
+    def test_trap_code_is_parsed(self):   # 최종 리뷰 I4: trap 의 코드 문자열은 bash 가 나중에 돌린다 — eval 처럼 재귀 해석
+        self.assertEqual(inner("trap 'rm -rf ~/data' EXIT"), [("rm", 1, "/w")])
+        self.assertEqual(targets("trap 'rm -rf ~/data' EXIT INT"), [["/h/data"]])
+        self.assertEqual(targets("trap \"rm -rf '$HOME/x'\" EXIT"), [["/h/x"]])             # 바깥 셸이 먼저 확장
+        self.assertEqual(targets("T=$(mktemp -d); trap 'rm -rf \"$T\"' EXIT")[0][0][:5], "/tmp/")   # 정리 패턴: mktemp 모델링으로 확정
+        for c in ("trap - EXIT", "trap -p", "trap '' INT", "trap -l", "trap EXIT", "trap -- - EXIT"):
+            self.assertEqual(inner(c), [], c)
+        self.assertEqual(inner("trap -- 'rm -rf ~/data' EXIT"), [("rm", 1, "/w")])
+        self.assertIsNotNone(parse('trap "$CLEANUP" EXIT', "/w", {}).error)   # 코드를 모르면 해석 실패(eval 과 같다)
 
     def test_depth_limit(self):
         self.assertIsNotNone(parse("eval " * 20 + "rm x", "/w", {}).error)
