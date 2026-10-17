@@ -325,7 +325,10 @@ def _find_deletes(seg: Segment) -> bool:
         if w.literal() in _FIND_EXEC:
             j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
             # /bin/rm·sudo rm·\rm·busybox rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
-            cmd = _strip_all(a[i + 1:j], {}, seg.env)
+            try:
+                cmd = _strip_all(a[i + 1:j], {}, seg.env)
+            except LexError:   # 래퍼 뒤 명령 자리를 모른다(C5 OOS-B) — 삭제 여부도 모른다
+                return True
             if _cmd_name(cmd) in _DELETERS or (_cmd_name(cmd) in SHELLS and _shell_deletes(cmd, seg)):
                 return True
     return False

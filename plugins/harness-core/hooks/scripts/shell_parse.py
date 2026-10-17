@@ -396,7 +396,7 @@ _WRAPPER_VALUE_OPTS: dict[str, tuple[str, ...]] = {
     "ionice": ("-c", "-n", "-p"),
     "stdbuf": ("-i", "-o", "-e"),
     "flock": ("-w", "-E"),
-    "time": (),
+    "time": ("-f", "-o", "--format", "--output"),   # GNU time 1.9 `--help` 실측(C5) — /usr/bin/time -f FORMAT 명령
     "exec": ("-a",),
     "doas": ("-u", "-C"),
     # 최종 리뷰 I6 — 이 호스트의 --help 실측(util-linux setsid/flock/su/runuser, strace 6.8, ltrace 0.7.3, procps watch 4.0.4)
@@ -1221,10 +1221,29 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
             w = w[1:]
         if not w or (rest := _strip_wrapper(w, run_env, env)) is None:
             break
+        name = _cmd_name(w)
         if names is not None:
-            names.append(_cmd_name(w))
+            names.append(name)
         w = rest
+        if w and not _is_assign(w[0]) and any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w[0].parts):
+            # 래퍼가 받은 명령 자리가 확장 — 값을 모르면 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B)
+            if (v := _text(w[0].parts, env, split=True)) is not None:
+                w = [Word((Part(v, ""),)), *w[1:]]
+            elif _named_path(w[0], env):
+                pass   # 폴더만 모르고 이름은 리터럴 — 이름으로 판정한다(_cmd_name 은 basename)
+            elif name == "env" and "=" in w[0].literal():   # env 는 '=' 가 든 인자를 할당으로 받는다(이름 미확정)
+                _forget(run_env)
+                w = w[1:]
+            else:
+                raise CodeUnknown("래퍼 뒤 명령을 확정할 수 없음")
     return w
+
+
+def _named_path(w: Word, env: Mapping[str, str | None]) -> bool:
+    """`$S/venv/bin/python` 처럼 확정 못 한 자리가 한 단어 표식(HOLE)으로 채워지고 마지막 경로 이름은 리터럴인가."""
+    ch = _subst(w.parts, env, split=True, hole=True)
+    t = None if ch is None else "".join(x for x, _ in ch)
+    return t is not None and "/" in t and re.fullmatch(r"[\w.+-]+", t.rpartition("/")[2]) is not None
 
 
 def _cmd_name(w: list[Word]) -> str:

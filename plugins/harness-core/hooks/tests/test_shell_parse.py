@@ -1274,6 +1274,26 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
                   "source ./env.sh", "bash ./scripts/*.sh"):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
 
+    def test_c5_wrapper_command_position_unknown(self):   # OOS-B: 래퍼 뒤 명령 자리를 모르면 안쪽을 판정할 수 없다 — '안쪽 없음 = 허용' 금지
+        for c in ("env $X rm -rf ~/data", "env $(cat .env) rm -rf ~/data", "env $(cat .env) docker exec c1 rm -rf /app/src",
+                  "env A=1 $X", "sudo $X", "nohup $X", "command $X", "nice -n 5 $X rm x", "timeout 5 $X", "exec $X", "setsid \"$@\"",
+                  "env -i PATH=/bin $X", "sudo -u root $(which rm) -rf ~/data"):
+            self.assertTrue(dyn(c), c)
+        for c, want in (("env A=1 ls", ["ls"]), ("env -i PATH=/bin ls", ["ls"]), ('env "$K=v" ls', ["ls"]), ("env FOO=$X ls", ["ls"]),
+                        ("X=rm; sudo $X -rf ~/data", ["rm"]), ("X=ls; nohup $X", ["ls"]), ("X='A=1'; env $X ls", ["ls"]),
+                        ('sudo -u "$U" ls', ["ls"]), ("command -v $X", ["command"]), ("$X rm x", ["$X"])):   # 래퍼가 아닌 명령 자리는 이 규칙 밖
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments if s.depth == 0][-1:], want, c)
+        self.assertEqual(targets("X=rm; sudo $X -rf ~/data"), [["/h/data"]])
+        # 확정 가능: 폴더만 변수이고 마지막 이름이 리터럴(정직한 `timeout 600 $B/vitest`·`nohup $S/venv/bin/python`) — 이름으로 판정
+        for c, want in (("timeout 600 $B/vitest run", "vitest"), ('nohup "$S"/venv/bin/python x.py', "python"), ("env -u K $D/rm -rf ~/data", "rm"),
+                        ("/usr/bin/time -f \"$p: %e\" bash -c 'ls'", "bash"), ("/usr/bin/time -o out.txt ls", "ls")):   # GNU time -f/-o 는 값 옵션
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments if s.depth == 0][-1], want, c)
+        self.assertEqual(targets("env -u K $D/rm -rf ~/data"), [["/h/data"]])
+        for c in ("timeout 60 $c", "env $U timeout 120 claude -p", "timeout 5 $(dirname x)/run.sh", "nohup $D/$N"):   # 이름 자체를 모른다
+            self.assertTrue(dyn(c), c)
+
 
 if __name__ == "__main__":
     unittest.main()
