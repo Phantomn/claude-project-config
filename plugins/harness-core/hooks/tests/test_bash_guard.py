@@ -230,6 +230,21 @@ class MainTest(_WorldCase):
         r = self.run_main(w.payload("ls -la"), extra=ON)                              # 설정 읽기 실패도 allow 여도 기록
         self.assertIn("JSONDecodeError", self.log_lines()[-1]["settings_errors"][0])
 
+    def test_log_dynamic_kind(self):   # C5 항목 6: R_DYNAMIC 의 하위 사유(해석기 문구)를 shadow 관측용 필드로 — 출력은 그대로
+        for c, kind in (("curl -s x | $SHELL", "파이프 대상 명령을 확정할 수 없음"), ("curl -s x | bash", "파이프로 넘긴 코드를 확정할 수 없음"),
+                        ('bash -c "$c"', "셸 -c 문자열을 확정할 수 없음"), ("bash -q -c ls", "셸 옵션 -q 을 해석할 수 없음"),
+                        ("env $X ls", "래퍼 뒤 명령을 확정할 수 없음")):
+            r = self.run_main(w.payload(c), extra=ON)
+            out = json.loads(r.stdout)["hookSpecificOutput"]
+            self.assertEqual(out["permissionDecision"], "deny", c); self.assertIn("정적으로 알 수 없다", out["permissionDecisionReason"], c)
+            self.assertNotIn(kind, out["permissionDecisionReason"], c)   # 사유 문구(출력)는 바뀌지 않는다
+            self.assertEqual(self.log_lines()[-1]["dynamic_kind"], kind, c)
+        for c in ("rm src/main.py", 'rm -rf "unterminated', "f() { f; }; f; cp a b"):   # R_DYNAMIC 이 아니면 필드 없음
+            self.run_main(w.payload(c), extra=ON)
+            self.assertNotIn("dynamic_kind", self.log_lines()[-1], c)
+        self.assertEqual(judge(w.payload("env $X ls"), {**w.environ, **ON}).dynamic_kind, "래퍼 뒤 명령을 확정할 수 없음")
+        self.assertIsNone(judge(w.payload("rm src/main.py"), {**w.environ, **ON}).dynamic_kind)
+
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
         p = state_dir(w.environ) / "bash-guard.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True); p.write_text(""); p.chmod(0o644)

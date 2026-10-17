@@ -47,6 +47,7 @@ class Decision:
         self.mode = mode             # 이 명령의 모드
         self.error = error
         self.stats: dict[str, int] = {}   # 관측 지표(Ctx.stats)
+        self.dynamic_kind: str | None = None   # R_DYNAMIC 의 하위 사유(해석기 문구) — 기록 전용, 출력에는 안 쓴다
 
 
 def _env_mode(environ: Mapping[str, str]) -> str:
@@ -137,7 +138,9 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
         if ctx.remaining() <= 0:   # 마감이 지나 해석을 멈춘 것 — 위험 단어와 무관하게 fail-closed
             return Decision(False, [R_TIMEOUT], _strongest(modes))
         if res.unmodeled:   # bash 는 돌리는데 해석기가 모델링 못 하는 구문 — 위험 단어와 무관하게 fail-closed(구문 오류와 구분)
-            return Decision(False, [R_DYNAMIC if res.dynamic else R_MODEL], _strongest(modes))
+            d = Decision(False, [R_DYNAMIC if res.dynamic else R_MODEL], _strongest(modes))
+            d.dynamic_kind = res.error if res.dynamic else None
+            return d
         bad = FAIL_WORDS.search(command) is not None
         return Decision(not bad, [R_PARSE] if bad else [], _strongest(modes))
     reasons: list[str] = []
@@ -289,7 +292,8 @@ def main(argv: list[str] | None = None) -> int:
                            "decision": "allow" if d.allow else "deny", "old_decision": old_dec, "reasons": d.reasons,
                            "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error, "fallback": fallback,
                            "budget_exhausted": R_TIMEOUT in d.reasons, "stats": d.stats or None,
-                           "settings_errors": read_failures or None, "ledger_bytes": _ledger_bytes(environ)}, environ)
+                           "settings_errors": read_failures or None, "ledger_bytes": _ledger_bytes(environ),
+                           **({"dynamic_kind": d.dynamic_kind} if d.dynamic_kind else {})}, environ)
             except Exception:  # noqa: BLE001, S110 — 기록 실패가 판정 출력을 막으면 안 된다
                 pass
     except Exception:  # noqa: BLE001 — 폴백 자체가 실패하면 입구가 OLD 를 내는 것과 같게
