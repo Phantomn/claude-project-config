@@ -295,7 +295,8 @@ def _nearest_git(path: str, cache: dict[str, str | None]) -> str | None:
 
 def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None = None) -> set[str]:
     start = ctx.session_start
-    if start is None or not paths:
+    # 장부가 없으면(HOME 없음) 세션 전 기록(pre-session)을 볼 수 없다 — 바꿔치기 저장된 세션 전 파일이 세션 것으로 보이지 않게 보호 쪽(M5)
+    if start is None or not paths or ctx.ledger.path is None:
         return set()
     b = births(paths, ctx)
     sid = ctx.session_id

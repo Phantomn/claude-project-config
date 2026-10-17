@@ -13,7 +13,7 @@ import time
 from collections.abc import Mapping
 
 # policy·shell_parse·target_class·ledger(와 dataclasses)는 판정이 필요할 때만 import — 이 훅은 모든 Bash 호출에 돈다
-from guard_mode import MODE_RANK, switch_mode
+from guard_mode import MODE_RANK, read_failures, switch_mode
 
 TYPE_CHECKING = False   # typing import(약 3ms)도 피한다 — 타입 검사기는 이 이름을 typing.TYPE_CHECKING 처럼 다룬다
 if TYPE_CHECKING:
@@ -46,6 +46,7 @@ class Decision:
         self.reasons = reasons
         self.mode = mode             # 이 명령의 모드
         self.error = error
+        self.stats: dict[str, int] = {}   # 관측 지표(Ctx.stats)
 
 
 def _env_mode(environ: Mapping[str, str]) -> str:
@@ -143,12 +144,11 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
     errors: list[str] = []
     seen_judged = False
     for i, seg in enumerate(res.segments):
-        judged = policy.is_judged_op(seg) or seg.context.kind != "host"
         if ctx.remaining() <= 0:   # spec §3.8 시간 예산 — 끊긴 자리 뒤에 남은 판정 대상도 '만난' 것으로 본다
             if seen_judged or any(policy.is_judged_op(s) or s.context.kind != "host" for s in res.segments[i:]):
                 reasons.append(R_TIMEOUT)
             break
-        findings, targets = policy.assess(seg, ctx)
+        findings, targets, judged = policy.assess(seg, ctx)   # 판정 대상 여부도 같은 한 번의 작업 목록에서(M3)
         # 저장소 config 의 git alias 처럼 명령 모양만으로는 못 알아보는 판정 대상도 조회 결과로 잡는다
         judged = judged or bool(findings) or bool(targets)
         seen_judged |= judged
@@ -161,7 +161,9 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
             _record(seg, ctx)
         except Exception as e:  # noqa: BLE001 — 장부 기록은 부가 작업, 실패해도 판정은 유지
             errors.append(f"장부 기록 실패: {type(e).__name__}: {e}")
-    return Decision(not reasons, _cap(reasons), _strongest(modes), "; ".join(errors) or None)
+    d = Decision(not reasons, _cap(reasons), _strongest(modes), "; ".join(errors) or None)
+    d.stats = ctx.stats
+    return d
 
 
 def render(d: Decision) -> str:
@@ -215,6 +217,14 @@ def log_event(record: dict, environ: Mapping[str, str], max_bytes: int = LOG_MAX
             os.close(lock)
 
 
+def _ledger_bytes(environ: Mapping[str, str]) -> int | None:
+    from ledger import state_dir
+    try:
+        return os.path.getsize(state_dir(environ) / "ledger.tsv")
+    except OSError:
+        return None
+
+
 def _old_decision(old: str) -> str | None:
     try:
         v = json.loads(old)["hookSpecificOutput"]["permissionDecision"]
@@ -266,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             d.error = "; ".join(filter(None, [d.error, "출력 실패"]))
         out = ""
         old_allow = old_dec not in ("ask", "deny")
-        if d.error or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
+        if d.error or d.stats or read_failures or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
             p = payload if isinstance(payload, dict) else {}
             ti = p.get("tool_input")
             command = ti.get("command") if isinstance(ti, dict) else None
@@ -277,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
                            "agent_id": p.get("agent_id"), "cwd": p.get("cwd"),
                            "command": command[:2000] if isinstance(command, str) else None,
                            "decision": "allow" if d.allow else "deny", "old_decision": old_dec, "reasons": d.reasons,
-                           "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error, "fallback": fallback}, environ)
+                           "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error, "fallback": fallback,
+                           "budget_exhausted": R_TIMEOUT in d.reasons, "stats": d.stats or None,
+                           "settings_errors": read_failures or None, "ledger_bytes": _ledger_bytes(environ)}, environ)
             except Exception:  # noqa: BLE001, S110 — 기록 실패가 판정 출력을 막으면 안 된다
                 pass
     except Exception:  # noqa: BLE001 — 폴백 자체가 실패하면 입구가 OLD 를 내는 것과 같게

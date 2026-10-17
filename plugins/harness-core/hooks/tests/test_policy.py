@@ -161,6 +161,14 @@ def judged(c):
     return [policy.is_judged_op(s) for s in parse(w.fmt(c), w.fmt("{REPO}"), w.environ).segments]
 
 
+class AssessTest(_WorldCase):
+    def test_assess_reports_judged_in_one_pass(self):   # 최종 리뷰 M3: 판정 대상 여부는 assess 가 함께 돌려준다(_host_jobs 1회)
+        seg = lambda c: parse(w.fmt(c), w.fmt("{REPO}"), w.environ).segments[0]
+        self.assertEqual(policy.assess(seg("ls"), w.ctx()), ([], [], False))
+        f, t, judged = policy.assess(seg("rm -rf {SCRATCH}/s1"), w.ctx()); self.assertEqual((f, judged), ([], True)); self.assertTrue(t)
+        f, t, judged = policy.assess(seg("docker volume prune"), w.ctx()); self.assertTrue(judged)
+
+
 class ReviewFixTest(_WorldCase):
     def test_find_exec_variants(self):                 # 리뷰 1: -exec 뒤 명령 이름 정규화
         self.assertEqual({k for _, k in ev("find {HOME}/data -exec /bin/rm {} +")}, {PRESERVED})   # 미리보기 형태(항목 8)

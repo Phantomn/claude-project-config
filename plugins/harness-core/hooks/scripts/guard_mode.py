@@ -6,6 +6,8 @@ import os
 from collections.abc import Mapping
 
 MODE_RANK = {"off": 0, "shadow": 1, "on": 2}
+# 설정 파일은 있는데 못 읽은 경우(깨진 JSON·권한) — 조용한 off 가 shadow 에서 '켰는데 안 켜짐'으로 보이지 않게 기록에 싣는다(최종 리뷰 M4)
+read_failures: list[str] = []
 
 
 def repo_root(path: str, environ: Mapping[str, str]) -> str | None:
@@ -31,7 +33,9 @@ def switch_mode(path: str | None, environ: Mapping[str, str]) -> str:
         try:
             with open(os.path.join(root, ".claude", name), encoding="utf-8") as f:
                 env = json.load(f).get("env")
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError) as e:
+            if not isinstance(e, FileNotFoundError):
+                read_failures.append(f".claude/{name}: {type(e).__name__}")
             continue
         if isinstance(env, dict) and "HARNESS_BASH_GUARD" in env:
             v = env["HARNESS_BASH_GUARD"]

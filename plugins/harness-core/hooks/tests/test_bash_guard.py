@@ -214,6 +214,21 @@ class MainTest(_WorldCase):
         self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertEqual([x["decision"] for x in self.log_lines()], ["deny"])   # 잠금 없이도 한 줄은 남는다(O_APPEND 한 번 쓰기)
 
+    def test_log_observation_fields(self):   # 최종 묶음 C 항목 12: shadow 관측 필드
+        Ledger(w.environ).record("/x", KIND_PRE_SESSION, "s")
+        r = self.run_main(w.payload("rm src/main.py"), extra=ON); self.assertEqual(r.returncode, 0)
+        rec = self.log_lines()[-1]
+        self.assertEqual((rec["decision"], rec["budget_exhausted"], rec["fallback"], rec["stats"]), ("deny", False, False, None))
+        self.assertIsInstance(rec["ledger_bytes"], int); self.assertIn("settings_errors", rec)
+        r = self.run_main(w.payload("rm -rf {HOME}/data/*.bak {HOME}/data"), extra={**ON, "HARNESS_BASH_GUARD_X": "1"})
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        r = self.run_main(w.payload('rm -rf {SCRATCH}/s1/out-$UNSET_NAME.log'), extra=ON)   # 임시 구멍 허용은 allow 여도 기록(stats)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(self.log_lines()[-1]["stats"], {"scratch_hole": 1})
+        (w.repo / ".claude").mkdir(exist_ok=True); (w.repo / ".claude/settings.json").write_text("{bad")
+        r = self.run_main(w.payload("ls -la"), extra=ON)                              # 설정 읽기 실패도 allow 여도 기록
+        self.assertIn("JSONDecodeError", self.log_lines()[-1]["settings_errors"][0])
+
     def test_log_mode_fixed_on_existing(self):   # 이전 버전이 0644 로 만든 로그도 0600 으로
         p = state_dir(w.environ) / "bash-guard.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True); p.write_text(""); p.chmod(0o644)

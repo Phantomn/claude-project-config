@@ -257,7 +257,10 @@ def _scratch_hole(word: Word, seg: Segment, ctx: Ctx) -> list[str] | None:
         return None
     if whole and classify(os.path.dirname(nd), ctx, True).kind != SCRATCH:   # 임시 루트 자체는 UNRESOLVED 로 분류된다
         return None
-    return [target] if classify(d, ctx, True).kind == SCRATCH else None
+    if classify(d, ctx, True).kind != SCRATCH:
+        return None
+    ctx.stats["scratch_hole"] = ctx.stats.get("scratch_hole", 0) + 1   # Ruling H 의 잔여 위험 — shadow 에서 센다
+    return [target]
 
 
 def _job(op: str, rule: str, word: Word, seg: Segment, ctx: Ctx | None, advice: str = ADV_UNRESOLVED) -> Job:
@@ -1163,21 +1166,17 @@ def _targets(jobs: list[Job]) -> list[str]:
     return [p for j in jobs for p in j.paths or ()] + [j.repo for j in jobs if j.repo]
 
 
-def assess(seg: Segment, ctx: Ctx) -> tuple[list[Finding], list[str]]:
-    """(판정, 판정 대상 경로) — 작업 목록(find 미리보기·docker 조회)을 한 번만 만든다."""
+def assess(seg: Segment, ctx: Ctx) -> tuple[list[Finding], list[str], bool]:
+    """(판정, 판정 대상 경로, 판정 대상 작업이 있었는가) — 작업 목록(find 미리보기·docker 조회)을 한 번만 만든다(M3: is_judged_op 중복 없이)."""
     if seg.context.kind != "host":
         jobs, found = _container_jobs(seg, ctx)
-        return found + _judge(jobs, ctx, host=False), _targets(jobs)
+        return found + _judge(jobs, ctx, host=False), _targets(jobs), True
     jobs = _host_jobs(seg, ctx)
-    return _judge(jobs, ctx), _targets(jobs)
+    return _judge(jobs, ctx), _targets(jobs), bool(jobs)
 
 
 def evaluate(seg: Segment, ctx: Ctx) -> list[Finding]:
     return assess(seg, ctx)[0]
-
-
-def judged_targets(seg: Segment, ctx: Ctx) -> list[str]:
-    return _targets(_container_jobs(seg, ctx)[0] if seg.context.kind != "host" else _host_jobs(seg, ctx))
 
 
 def is_judged_op(seg: Segment) -> bool:

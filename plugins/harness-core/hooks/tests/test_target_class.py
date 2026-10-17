@@ -284,6 +284,14 @@ class SwitchTest(_WorldCase):
                             w.fmt("{REPO}/src/x")], capture_output=True, text=True, timeout=10, check=True)
         self.assertEqual(json.loads(r.stdout), [None, "on"])
 
+    def test_broken_settings_is_counted(self):   # 최종 리뷰 M4: 깨진 settings JSON 은 조용한 off 가 아니라 기록된다
+        import guard_mode
+        (w.repo / ".claude").mkdir(exist_ok=True); (w.repo / ".claude/settings.json").write_text("{not json")
+        n = len(guard_mode.read_failures)
+        self.assertEqual(switch_mode(w.fmt("{REPO}/x"), w.environ), "off")
+        self.assertEqual(len(guard_mode.read_failures), n + 1); self.assertIn("JSONDecodeError", guard_mode.read_failures[-1])
+        self.assertEqual(switch_mode(w.fmt("{HOME}/data/a.txt"), w.environ), "off"); self.assertEqual(len(guard_mode.read_failures), n + 1)   # 파일 없음은 정상
+
     def test_switch_mode(self):
         self.assertEqual(switch_mode(w.fmt("{REPO}/src/main.py"), w.environ), "off")
         w.set_repo_switch("shadow"); self.assertEqual(switch_mode(w.fmt("{REPO}/src/main.py"), w.environ), "shadow")
@@ -371,6 +379,12 @@ class ClassifyTest(_WorldCase):
 
     def test_session_start_missing_disables_session_new(self):
         self.assertEqual(k("{REPO}/src/probe.ts", w.ctx(transcript=None)), PRESERVED)
+
+    def test_no_ledger_means_not_session_new(self):   # 최종 리뷰 M5: HOME 없음 → 장부 비활성 → 세션 전 기록을 못 보니 보호 쪽
+        env = {k_: v for k_, v in w.environ.items() if k_ not in ("HOME", "XDG_STATE_HOME")}
+        ctx = make_ctx({"transcript_path": w.transcript, "session_id": w.session_id}, env, 5.0)
+        self.assertIsNone(ctx.ledger.path); self.assertEqual(k("{REPO}/src/probe.ts", ctx), PRESERVED)
+        self.assertEqual(k("{REPO}/src/probe.ts"), SESSION_NEW)
 
     def test_git_helpers(self):
         ctx = w.ctx(); repo = w.fmt("{REPO}")

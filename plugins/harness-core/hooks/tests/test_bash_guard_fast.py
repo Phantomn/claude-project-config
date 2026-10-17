@@ -75,7 +75,7 @@ class EquivalenceTest(WorldCase):
             for seg in res.segments:
                 self.assertEqual((seg.context.kind, seg.via_xargs), ("host", False), cmd)
                 self.assertFalse(policy.is_judged_op(seg), cmd)
-                self.assertEqual(policy.assess(seg, ctx), ([], []), cmd)
+                self.assertEqual(policy.assess(seg, ctx), ([], [], False), cmd)
                 self.assertEqual(policy.inplace_targets(seg), [], cmd)
                 self.assertNotEqual(seg.name, "mv", cmd)
             # 단위 cwd 가 스위치 on 저장소여도 판정 대상이 없으니 모드는 세션 env·훅 cwd 값
