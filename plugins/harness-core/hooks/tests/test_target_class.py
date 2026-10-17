@@ -447,6 +447,15 @@ class ClassifyTest(_WorldCase):
         (d / "sed.txt").write_text("a"); os.utime(d / "sed.txt", (t, t)); self.assertEqual(k(str(d / "sed.txt")), PRESERVED)
         self.assertTrue(judge(w.payload(f"sed -i s/a/b/ {d}/sed.txt"), env).allow); (d / "sed.txt").write_text("b")
         self.assertEqual(k(str(d / "sed.txt")), PRESERVED)
+        # C4 R-E: mtime 만 바꾸는 touch·truncate 도 제자리 수정 — 유령 기록 → 외부가 옛 mtime 으로 생성 → 세션 touch 뒤에도 세션 전
+        for cmd, do in ((f"touch {d}/tch.txt", lambda f: os.utime(f)), (f"touch -m -d now {d}/tch2.txt", lambda f: os.utime(f)),
+                        (f"truncate -s 0 {d}/trn.txt", lambda f: os.truncate(f, 0))):
+            f = Path(cmd.split()[-1])
+            self.assertTrue(judge(w.payload(f"cp {{SCRATCH}}/s1/x.txt {f}"), env).allow)            # 판정만(유령 created)
+            f.write_text("old"); os.utime(f, (t, t)); self.assertEqual(k(str(f)), PRESERVED)
+            # 세션의 mtime 갱신 — truncate 는 그 자체가 세션 전 파일 덮어쓰기라 거부(사용자가 승인해 실행했다고 본다)
+            self.assertEqual(judge(w.payload(cmd), env).allow, cmd.startswith("touch"), cmd); do(f)
+            self.assertEqual(k(str(f)), PRESERVED, cmd); self.assertFalse(judge(w.payload(f"rm -f {f}"), env).allow, cmd)
         self.assertTrue(judge(w.payload(f"echo x > {d}/fresh.txt"), env).allow); (d / "fresh.txt").write_text("x")   # 정상 생성 흐름은 수정 뒤에도 세션 것
         self.assertTrue(judge(w.payload(f"echo y >> {d}/fresh.txt"), env).allow)
         with open(d / "fresh.txt", "a") as fh: fh.write("y")

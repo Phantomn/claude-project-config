@@ -1256,7 +1256,7 @@ def _sed_perl_files(seg: Segment) -> list[Word]:
 
 
 def inplace_targets(seg: Segment) -> list[str]:
-    """제자리 수정의 닫힌 목록(리다이렉트·tee·sed -i·perl -i·truncate·cp/mv/install/rsync/dd 목적지·git checkout/restore)."""
+    """제자리 수정의 닫힌 목록(리다이렉트·tee·sed -i·perl -i·touch·truncate·cp/mv/install/rsync/dd 목적지·git checkout/restore)."""
     words = [r.target for r in seg.redirects if r.target is not None and r.op in (">", ">|", "&>", ">>", "&>>")]
     out: list[str] = []
     try:
@@ -1264,6 +1264,8 @@ def inplace_targets(seg: Segment) -> list[str]:
             words += _args(seg)[2]
         elif seg.name in ("sed", "perl"):
             words += _sed_perl_files(seg)
+        elif seg.name == "touch":   # mtime 만 바꿔도 세션 것으로 보이게 된다(C4 R-E) — 값 옵션은 coreutils touch --help 실측
+            words += _args(seg, frozenset({"-d", "--date", "-r", "--reference", "-t", "--time"}))[2]
         elif seg.name in ("truncate", "cp", "mv", "install", "ln", "rsync", "dd", "wget", "sort"):
             out += [p for j in HANDLERS[seg.name](seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
         elif seg.name == "git":
