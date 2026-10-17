@@ -1348,7 +1348,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
                 i += 2 if name in _SH_LONG_VALUE else 1
                 continue
             if x.startswith("--"):
-                raise CodeUnknown(f"셸 옵션 {x} 을 해석할 수 없음")
+                raise CodeUnknown(f"셸 옵션 {x[:40]} 을 해석할 수 없음")   # 사용자 단어 — 기록(dynamic_kind) 한 줄 크기를 묶는다
         if len(x) < 2 or x[0] not in "-+":
             break
         on, j, lead = x[0] == "-", i + 1, False

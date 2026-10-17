@@ -1372,6 +1372,11 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
         for c in ("rbash -n -c 'rm -rf ~/data'", "rbash -help -c 'rm -rf ~/data'"):
             self.assertEqual(inner_names(c), [], c)
 
+    def test_c6_dynamic_kind_word_bounded(self):   # 항목 5: 하위 사유 문구(dynamic_kind 로 기록)는 사용자 단어를 40자까지만 담는다
+        r = parse("bash --token=" + "s" * 200 + " -c ls", "/w", {"HOME": "/h"})
+        self.assertTrue(r.dynamic)
+        self.assertEqual(r.error, "셸 옵션 --token=" + "s" * 32 + " 을 해석할 수 없음")
+
 
 if __name__ == "__main__":
     unittest.main()
