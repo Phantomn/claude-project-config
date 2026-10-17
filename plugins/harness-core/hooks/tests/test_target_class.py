@@ -5,11 +5,13 @@ import io
 import json
 import multiprocessing
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -395,6 +397,24 @@ class ClassifyTest(_WorldCase):
         payload = {**w.payload("rm " + " ".join(files)), "transcript_path": tr}
         t0 = time.monotonic(); d = judge(payload, {**w.environ, "HARNESS_BASH_GUARD": "on"}); dt = time.monotonic() - t0
         self.assertFalse(d.allow); self.assertLess(dt, 5.5); self.assertIn("세션 전부터 있던 유일본", d.reasons[0])
+
+    def test_ledger_created_stands_in_for_birth(self):   # 최종 묶음 C 항목 8(K): 생성 시각이 0인 파일 시스템(drvfs)에서는 장부 created 가 증거
+        base = Path("/mnt/c/Users/Public")
+        if not base.is_dir() or not os.access(base, os.W_OK):
+            self.skipTest("/mnt/c 를 쓸 수 없다")
+        d = base / f"bash-guard-k-{uuid.uuid4().hex[:8]}"; d.mkdir(); self.addCleanup(shutil.rmtree, d, True)
+        self.assertEqual(stat_birth(str(d)), 0.0)                       # drvfs 는 birth 를 주지 않는다
+        (d / "other").mkdir()                                           # 판정기 밖에서 만든 폴더 — 증거 없음
+        from bash_guard import judge
+        env = {**w.environ, "HARNESS_BASH_GUARD": "on"}
+        self.assertTrue(judge(w.payload(f"mkdir -p {d}/mine/sub"), env).allow); (d / "mine/sub").mkdir(parents=True)
+        self.assertTrue(judge(w.payload(f"echo x > {d}/mine/f.txt"), env).allow); (d / "mine/f.txt").write_text("x")
+        self.assertTrue(judge(w.payload(f"cp {{SCRATCH}}/s1/x.txt {d}/mine/sub/"), env).allow); shutil.copy(w.fmt("{SCRATCH}/s1/x.txt"), d / "mine/sub")
+        self.assertEqual(k(str(d / "mine/f.txt")), SESSION_NEW); self.assertEqual(k(str(d / "mine")), SESSION_NEW)
+        self.assertTrue(judge(w.payload(f"rm -rf {d}/mine"), env).allow)
+        self.assertEqual(k(str(d / "other")), PRESERVED)                 # 기록 없음 → 현행 보호
+        self.assertFalse(judge(w.payload(f"rm -rf {d}/other"), env).allow)
+        self.assertEqual(k(str(d / "mine/f.txt"), w.ctx(session_id="B")), PRESERVED)   # 다른 세션의 created 는 내 증거가 아니다
 
     def test_budget_checked_before_ledger(self):   # C1: 예산이 다했으면 장부를 열기 전에 끝낸다(읽을 수 없는 장부로 관측)
         if os.geteuid() == 0:

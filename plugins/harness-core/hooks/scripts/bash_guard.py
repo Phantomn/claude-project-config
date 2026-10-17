@@ -87,12 +87,16 @@ def _note_moves(seg: Segment, ctx: Ctx) -> None:
 def _record(seg: Segment, ctx: Ctx) -> None:
     # 거부될 명령도 기록한다 — 기록은 '처음 손대기 직전 상태'라 실행 여부와 무관하게 참이다
     import policy
-    from target_class import note_touch
+    from ledger import KIND_CREATED
+    from target_class import normalize, note_touch
 
     if seg.context.kind != "host" or seg.via_xargs:
         return   # shortcut: 컨테이너 안 제자리 수정·mv 는 기록하지 않는다 — 바인드 마운트 대상 오분류가 나오면 호스트 경로로 사상해 기록
     for p in policy.inplace_targets(seg):
         note_touch(p, ctx, None)
+    # 생성 기록 — birth 를 못 읽는 파일 시스템의 증거. 거부·실패한 명령의 기록은 그 경로를 남이 만들면 세션 것으로 보이게 한다(LIMITS)
+    for p in policy.created_targets(seg):
+        ctx.ledger.record(normalize(p, False), KIND_CREATED, ctx.session_id)
     if seg.name == "mv":
         _note_moves(seg, ctx)
 

@@ -1245,6 +1245,32 @@ def inplace_targets(seg: Segment) -> list[str]:
     return [p for p in out if os.path.lexists(p) and not os.path.isdir(p)]
 
 
+def created_targets(seg: Segment) -> list[str]:
+    """이 명령이 새로 만들 경로(지금 없는 것만): mkdir 피연산자(-p 면 없는 조상까지)·리다이렉트 대상·cp/mv/install 목적지.
+    생성 시각을 못 읽는 파일 시스템에서 '세션이 만든 것'의 장부 증거(spec §3.7 created, 최종 묶음 C 항목 8)."""
+    words = [r.target for r in seg.redirects if r.target is not None and r.op in (">", ">|", "&>", ">>", "&>>")]
+    out: list[str] = []
+    parents = False
+    try:
+        if seg.name == "mkdir":
+            flags, _, ops = _args(seg, frozenset({"-m", "--mode", "--context"}))
+            words += ops
+            parents = bool(flags & {"-p", "--parents"})
+        elif seg.name in ("cp", "mv", "install"):
+            out += [p for j in _copy(seg, None) if j.rule == OVERWRITE for p in j.paths or ()]
+    except _BadOption:
+        pass
+    out += [p for w in words for p in expand(w, seg) or ()]
+    new = [p for p in out if not os.path.lexists(p)]
+    if parents:
+        for p in list(new):
+            d = os.path.dirname(p)
+            while d and not os.path.lexists(d) and d not in new:
+                new.append(d)
+                d = os.path.dirname(d)
+    return new
+
+
 def mv_moves(seg: Segment) -> list[tuple[str, str]]:
     """mv 의 (원본, 목적지) 쌍. 확정할 수 없으면 생략."""
     try:

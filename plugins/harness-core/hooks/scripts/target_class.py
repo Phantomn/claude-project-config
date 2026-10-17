@@ -298,13 +298,17 @@ def _session_new(paths: list[str], ctx: Ctx, rows: dict[str, list[Entry]] | None
     if start is None or not paths:
         return set()
     b = births(paths, ctx)
-    cand = {p for p in paths if p in b and not before_session(b[p], ctx)}
-    if not cand:
-        return set()
+    sid = ctx.session_id
     # 장부는 묶음당 한 번만 읽는다 — entries() 를 항목마다 부르면 폴더 순회에서 항목 수만큼 파일 전체를 읽는다
     if rows is None:
-        rows = ctx.ledger.entries_for(cand)
-    sid = ctx.session_id
+        rows = ctx.ledger.entries_for(paths)
+
+    def _created_here(p: str) -> bool:
+        return any(e.kind == KIND_CREATED and e.session_id == sid for e in rows.get(p, ()))   # type: ignore[union-attr]
+
+    # 생성 시각을 못 읽는 파일 시스템(drvfs 의 /mnt/c 는 birth 0)에서는 이 세션의 created 기록(Write·Bash 의 mkdir/리다이렉트/
+    # 복사 목적지)이 birth 와 같은 증거다. 기록도 없으면 현행 보호(최종 묶음 C 항목 8)
+    cand = {p for p in paths if (p in b and not before_session(b[p], ctx)) or (p not in b and _created_here(p))}
     return {p for p in cand if not any((e.kind == KIND_PRE_SESSION and e.session_id == sid)
                                        or (e.kind == KIND_CREATED and e.session_id != sid) for e in rows.get(p, ()))}
 
