@@ -35,9 +35,10 @@ bash-guard 가 그 밖에 읽는 환경 변수(설정 노브가 아니라 실행
 | 변수 | 쓰임 |
 |---|---|
 | `XDG_STATE_HOME` | 상태 폴더 위치. 절대경로가 아니면 `$HOME/.local/state` |
-| `HOME` | 상태 폴더 기본값, `~` 확장, 저장소 판정에서 홈 저장소 제외, 임시 루트 `~/.cache` |
+| `HOME` | 상태 폴더 기본값(없으면 장부 비활성 — 세션 생성 판정을 하지 않는 보호 쪽), `~` 확장, 저장소 판정에서 홈 저장소 제외, 임시 루트 `~/.cache`, Docker 컨텍스트 설정 `~/.docker/config.json` |
 | `TMPDIR` | 임시 루트 하나(설정 시). 명령 안에서 바꾼 `TMPDIR` 는 `mktemp` 결과 확정에 쓰지 않는다 |
 | `COMPOSE_PROJECT_NAME` | `docker compose down -v` 의 대상 볼륨 프로젝트명(명령의 `-p` 가 없을 때) |
+| `DOCKER_HOST`·`DOCKER_CONTEXT`·`XDG_RUNTIME_DIR` | 컨테이너 조회가 실패했을 때 데몬 부재의 긍정 증거 판정(소켓 부재만 증거 — `unix://` 소켓, 기본 `/var/run/docker.sock`, rootless `$XDG_RUNTIME_DIR/docker.sock`). 클라이언트가 `PATH` 에 있는지는 보지 않는다 |
 
 ## bash-guard
 
@@ -62,28 +63,68 @@ touch-ledger.py ─ PreToolUse `Write|Edit|NotebookEdit`(timeout 5초) 장부 �
 
 | 모드 | 출력 | 기록 |
 |---|---|---|
-| `off`(기본) | OLD 를 바이트 그대로 | 판정기 내부 예외만 |
-| `shadow` | OLD 를 바이트 그대로 | 새 판정과 OLD 가 다르면 한 줄 |
-| `on` | 새 판정: `allow` 또는 `deny`+사유. **`ask` 를 내지 않는다** | 거부마다 한 줄 |
+| `off`(기본) | OLD 를 바이트 그대로(종료 코드 포함) | 아래 '모드 무관' 만 |
+| `shadow` | OLD 를 바이트 그대로(종료 코드 포함) | 새 판정과 OLD 가 다르면 한 줄 + 모드 무관 |
+| `on` | 새 판정: `allow` 또는 `deny`+사유. **`ask` 를 내지 않는다** | 거부마다 한 줄 + 모드 무관 |
+
+모드 무관 기록: 판정기 내부 예외(`error`·`fallback`), 그리고 `stats`·`settings_errors` 가 있는 판정(허용이어도 — 아래 필드).
 
 스위치와 무관하게 모든 Bash 호출에서 파이썬 판정이 돈다(모드를 정하려면 대상 경로가 필요하다). `on` 에서도 파이썬 기동이
-실패하면 입구 폴백으로 OLD(그 `ask` 포함)가 나간다.
+실패하면 입구 폴백으로 OLD(그 `ask` 포함)가 나간다. `on` 에서 판정기 내부 예외가 나면 OLD ∪ 위험 단어로 판정한다(OLD 가 `ask`·`deny` 이거나
+원문에 위험 단어가 있으면 거부 — spec §3.8 (다)).
 
 ### 장부와 기록 (상태 폴더 `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/`)
 
 - `ledger.tsv` — 모든 세션이 공유하는 장부. 행 `<realpath>\t<kind>\t<session_id>\t<epoch>`, kind = `pre-session`·`pre-dirty`·`created`·`touched`·`moved-in`.
   `touch-ledger.py` 와 판정기가 **스위치와 무관하게 항상** 기록한다. 5MB 를 넘으면 7일 지난 줄을 뺀다(`moved-in` 은 경로가 있는 동안 유지). 권한 0600.
-- `bash-guard.jsonl` — 판정 기록(`on` 거부, `shadow` 불일치, 내부 예외). 10MB 를 넘으면 `.1` 로 한 번 순환. 권한 0600.
+  판정기는 해석한 Bash 의 생성 목적지(`mkdir` 피연산자·`-p` 의 없는 조상, 리다이렉트 대상, `cp`·`mv`·`install` 목적지 중 지금 없는 것, `/dev/` 제외)도
+  `created` 로 남긴다 — `/mnt/c` 처럼 생성 시각을 못 읽는 곳에서 세션 생성의 증거(파일 mtime 이 기록 시각 − 시각 여유 이후일 때만).
+- `bash-guard.jsonl` — 판정 기록(위 모드 표). 10MB 를 넘으면 `.1` 로 한 번 순환. 권한 0600.
   **명령 원문이 들어 있다 — 저장소·PR 에 옮기지 않는다.**
+- 잠금: 장부·기록 모두 `ledger.lock_file`(비차단 재시도 + 마감) 하나를 쓴다. 못 잠그면 기록을 포기하지 않고 잠금 없이 한 줄 추가한다
+  (장부: 판정 예산 마감·`touch-ledger` 3초, 기록: 1초).
+
+`bash-guard.jsonl` 한 줄의 필드:
+
+| 필드 | 뜻 |
+|---|---|
+| `ts`·`mode`·`session_id`·`agent_id`·`cwd` | 시각(UTC), 정해진 모드, 세션·서브에이전트, 훅 cwd |
+| `command` | 명령 원문(최대 2,000자) |
+| `decision`·`old_decision` | 새 판정(`allow`·`deny`), OLD(`allow`·`ask`·`deny`) |
+| `reasons` | 거부 사유 줄. 해석 단계 사유로 종류를 가른다: "명령을 해석하지 못했다"(구문 오류), "해석 한계"(모델링 불가), "코드를 정적으로 알 수 없다"(변수·치환으로 만든 셸 코드), "판정 시간 초과", "판정기 오류" |
+| `ms` | 판정 시간(밀리초) |
+| `error`·`fallback` | 내부 예외 메시지(또는 출력 실패), 내부 예외 폴백으로 낸 판정이면 `true` |
+| `budget_exhausted` | 사유에 판정 시간 초과가 있으면 `true` |
+| `stats` | 판정 중 센 횟수(없으면 null): `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정), `compose_project_dir_none`(compose exec 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용), `scratch_hole`(임시 폴더 아래 마지막 이름만 변수인 대상을 허용) |
+| `settings_errors` | 스위치 settings 파일을 읽다 난 오류(파일 없음 제외). 있으면 스위치가 조용히 `off` 로 떨어졌을 수 있다 |
+| `ledger_bytes` | 그 시점 장부 크기 |
 
 ### 배포 절차 (요약 — spec §11)
 
 1. PR 병합 → 운영 clone `git pull --ff-only`. 스위치가 없으므로 출력은 이전과 같다.
 2. 사용자 승인 뒤 대상 프로젝트들 `.claude/settings.json` 의 `env` 에 `"HARNESS_BASH_GUARD": "shadow"` 한 줄(orca 작업공간은 브랜치별 파일).
 3. 최소 3일·Bash 5,000회 뒤 `bash-guard.jsonl` 의 불일치를 검토 → 판정기 오판은 재구성 테스트를 더해 고친다(새 PR).
-   LIMITS.md 의 "shadow 관측 지표" 절이 볼 것을 정한다.
+   LIMITS.md 의 "shadow 관측 지표" 절이 볼 것을 정한다(아래 표).
 4. 사용자 승인 → 같은 프로젝트들 `on`. 2주 무사고 뒤 기존 로직·`t_auto_approve_rm.py`·`HARNESS_RM_REPO_DIRS` 제거 PR.
+   `on` 전환 때 사용자가 정할 것(LIMITS): `push --force-with-lease` 를 기본 브랜치에 허용할지, `curl -o` 를 덮어쓰기 표에 넣을지,
+   `/mnt/c` 세션 폴더 처리, 세션 저장소의 `filter-repo`.
 - 되돌리기: 스위치를 `off` 로(코드 되돌림 불필요). 스위치로 안 되는 결함은 PR revert.
+
+shadow 동안 볼 것과 그 출처(최종 리뷰 권고 목록 기준):
+
+| 볼 것 | 기록되나 | 출처 |
+|---|---|---|
+| 신·구 불일치 수와 방향 | 예 | `decision`·`old_decision`(shadow 불일치 줄) |
+| 거부 사유 종류 분포(확정 불가 비율·사유 상위, 구문 오류·해석 한계·동적 코드) | 예 | `reasons` |
+| 판정 시간 p50·p99·최대, 시간 초과 건수 | 예(기록된 줄만) | `ms`·`budget_exhausted` |
+| 장부 크기 | 예 | `ledger_bytes` |
+| 내부 예외 폴백 건수와 명령 모양 | 예 | `error`·`fallback` |
+| 컨테이너 조회 실패·compose 프로젝트 폴더 모름·데몬 부재 허용 | 예 | `stats` |
+| 임시 폴더 표식 예외로 허용한 건수 | 예 | `stats.scratch_hole` |
+| 스위치 settings 읽기 실패 | 예 | `settings_errors` |
+| 플랫폼의 훅 취소(10초 초과) | 아니오 | 세션 기록의 `hook_cancelled`(spec 부록 A) |
+| 장부 압축 횟수 | 아니오 | — |
+| 판정 대상 밖 모양(목록 밖 래퍼·덮어쓰기 도구)이 든 허용 명령 수 | 아니오 | 허용은 `stats` 가 있을 때만 남는다 — 세션 기록 검색으로 따로 센다 |
 
 ## 자기검증
 
@@ -102,4 +143,4 @@ jq empty plugins/harness-core/hooks/hooks.json
 
 Docker 테스트는 Docker 와 `sh -c 'sleep'` 이 도는 로컬 이미지가 없으면 사유를 출력하고 건너뛴다. 전수 재생
 (`tests/tools/replay_corpus.py --projects ~/.claude/projects --out <저장소 밖 폴더>`)은 로컬 세션 기록을 쓰는 수동 시험이다 —
-결과에 명령 원문이 있으므로 저장소 안 `--out` 은 도구가 거부한다.
+결과에 명령 원문이 있으므로 저장소 안 `--out` 은 도구가 거부한다. 거부 종류(`deny_by_kind`)는 사유로 가른다(`MODEL`·`DYNAMIC` 포함).
