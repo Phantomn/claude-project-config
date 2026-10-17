@@ -44,6 +44,14 @@ class Word:
         return any(p.quote for p in self.parts)
 
 
+class NameUnknown(CodeUnknown):
+    """명령 이름을 확정할 수 없음 — 확정 못 한 단어를 담는다(함수 정의 본문의 위치 매개변수 예외가 본다, C7 항목 5)."""
+
+    def __init__(self, word: Word) -> None:
+        super().__init__("명령 이름을 확정할 수 없음")
+        self.word = word
+
+
 @dataclass(frozen=True)
 class Token:
     kind: str  # "word" | "op" | "redir"
@@ -941,6 +949,7 @@ def _is_assign(w: Word) -> bool:
 
 
 _EXTGLOB = re.compile(r"[!@+*?]\(")
+_POSITIONAL = re.compile(r"\$(?:[1-9*@]|\{[1-9*@]\})")
 
 
 def _cmd_extglob(w: Word) -> bool:
@@ -1274,7 +1283,7 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
                 _forget(run_env)
                 w = w[1:]
                 continue
-            raise CodeUnknown("명령 이름을 확정할 수 없음")   # 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B·C6)
+            raise NameUnknown(w[0])   # 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B·C6)
         w = [*r, *w[1:]]
         if last and _is_assign(r[0]):   # 래퍼가 받는 확정 값이 할당 모양(`X='A=1'; env $X ls`) — 맨 앞 단어는 bash 도 명령으로 본다
             continue
@@ -1948,10 +1957,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         extra: dict[str, str | None] = {}
         try:
             w = _strip_all(w, extra, unit_env, wrappers)
-        except CodeUnknown:
-            if not fn_cur:
+        except NameUnknown as e:
+            if not fn_cur or any(p.quote == "'" for p in e.word.parts) or not _POSITIONAL.fullmatch(e.word.literal()):
                 raise
-            # 함수 정의 본문은 정의만으로 돌지 않고 호출 때 인자로 다시 해석된다 — 여기서는 상태만 잊는다(간접 호출, fail-closed)
+            # 정의 본문의 위치 매개변수(`$1`·`"$@"`)는 호출 인자로 정해진다 — 인라인 호출 때 다시 해석하고 여기서는 상태만 잊는다.
+            # 그 밖(`$X`·`$(…)`)은 export -f·trap 처럼 인라인하지 않는 호출이 있어 정의 시점에 거부한다(C7 항목 5)
             wrappers, extra = [], {}
             st["cwd"] = None
             state_env.pop("PWD", None)

@@ -1469,6 +1469,15 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
         self.assertEqual(inner_names("env 'A=1' sh -c 'rm -rf ~/data'"), ["rm"])
         self.assertEqual(names("env $X=1 ls"), ["ls"])   # 이름 모를 할당(§1.5) 뒤 다음 단어는 다시 확정
 
+    def test_c7_function_body_positional_only(self):   # 항목 5: 정의 본문의 미확정 명령 자리는 위치 매개변수일 때만 넘긴다 — export -f 로 인라인 없이 불린다(c7/real7.out)
+        for c in ("f() { $(echo rm) -rf ~/data; }; export -f f; find . -maxdepth 0 -exec bash -c f \\;", "f() { $X -rf ~/data; }",
+                  "f() { sudo $X; }", "f() { `echo rm` x; }", "function f { $CMD; }", "f() { $10 x; }"):
+            self.assertTrue(dyn(c), c)
+        for c in ("f() { $1 x; }", 'f() { "$@"; }', 'f() { "$1" x; }', "f() { ${1} x; }", "f() { $* ; }", 'f() { sudo "$@"; }',
+                  'f() { timeout 5 "$2" x; }'):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+        self.assertEqual(names('run() { "$@"; }; run make -j4')[-1], "make")
+
 
 if __name__ == "__main__":
     unittest.main()
