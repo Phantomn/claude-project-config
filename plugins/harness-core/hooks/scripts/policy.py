@@ -11,7 +11,6 @@ from fnmatch import fnmatch
 from shell_parse import (
     _COMPOSE_GLOBAL,
     _DOCKER_GLOBAL,
-    _SHELL_C,
     BASE_HOLE,
     HOLE,
     SHELLS,
@@ -25,6 +24,7 @@ from shell_parse import (
     _expand,
     _opts,
     _resolve_dir,
+    _shell_code,
     _strip_all,
     expand,
     expand_hole,
@@ -333,12 +333,12 @@ def _find_deletes(seg: Segment) -> bool:
 
 def _shell_deletes(cmd: list[Word], seg: Segment) -> bool:
     """`sh -c '<코드>'` 의 코드에 삭제 명령 이름이 단어로 있는가(자리 무관 — 보수). 코드를 못 읽으면 True."""
-    k = next((n for n, w in enumerate(cmd) if _SHELL_C.fullmatch(w.literal())), None)
-    if k is None or k + 1 >= len(cmd):
-        return False
-    # parse 가 아니라 lex — parse 는 해석기 전역(마감·함수 표)을 다시 세팅한다
+    # 셸 옵션 해석은 해석기 한 곳(_shell_code, C4 R-A). parse 가 아니라 lex — parse 는 해석기 전역(마감·함수 표)을 다시 세팅한다
     try:
-        toks = lex(cmd[k + 1].literal())
+        code = _shell_code(Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env), None)
+        if code is None:
+            return False
+        toks = lex(code)
     except LexError:
         return True
     return any(t.word is not None and os.path.basename(t.word.literal()) in _DELETERS for t in toks)

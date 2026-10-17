@@ -43,8 +43,10 @@ class DeleteTest(_WorldCase):
 
     def test_find_exec_shell_busybox(self):   # 항목 8(Task 7 deferred): -exec 셸·busybox 안의 삭제, -exec /bin/rm 미리보기
         for c in ("find . -name '*.o' -exec sh -c 'rm \"$1\"' _ {} \\;", "find . -type f -exec bash -c 'rm -- \"$@\"' _ {} +",
-                  "find . -exec busybox rm {} +", "find . -exec sh -c 'rm \"$(' _ {} \\;"):
+                  "find . -exec busybox rm {} +", "find . -exec sh -c 'rm \"$(' _ {} \\;",
+                  "find . -exec sh -c -x 'rm \"$1\"' _ {} \\;", "find . -exec bash -euo pipefail -c 'rm \"$1\"' _ {} \\;"):   # C4 R-A: 셸 옵션 해석 한 곳
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
+        self.assertEqual(ev("find . -exec sh -n -c 'rm \"$1\"' _ {} \\;"), [])   # 실행 안 함
         self.assertEqual(ev("find . -name '*.py' -exec /bin/rm {} +"), [("삭제", GIT_TRACKED)])   # 미리보기로 대상 확정
         self.assertEqual(ev("find . -name '*.o' -exec /usr/bin/rm -f {} \\;"), [])
         self.assertEqual(ev("find . -name '*.py' -exec sh -c 'wc -l \"$1\"' _ {} \\;"), [])

