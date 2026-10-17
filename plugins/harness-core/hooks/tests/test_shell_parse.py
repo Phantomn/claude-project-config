@@ -1396,5 +1396,18 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
         self.assertEqual(r.error, "셸 옵션 --token=" + "s" * 32 + " 을 해석할 수 없음")
 
 
+class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 — 모델 없이 사실로 보이는 좁은 경우만 확정(c7/real7.out, c6rr 재검토)
+    def test_c7_s1_ifs_in_text(self):   # S1: 'IFS' 글자가 명령 어디에든 있으면 따옴표 없는 확장의 단어 분리를 확정하지 않는다(산술·trap·let 모두)
+        for c in (": $((IFS=5)); X=rm5-rf; $X ~/data", "((IFS=5)); X=rm5-rf; $X ~/data", "Y=$((IFS=5)); X=rm5-rf; $X ~/data",
+                  "[[ $((IFS=5)) ]]; X=rm5-rf; $X ~/data", "case $((IFS=5)) in *) ;; esac; X=rm5-rf; $X ~/data",
+                  ": $[IFS=5]; X=rm5-rf; $X ~/data", "for ((IFS=5;0;)); do :; done; X=rm5-rf; $X ~/data",
+                  "trap 'IFS=5' DEBUG; X=rm5-rf; $X ~/data", "let IFS=5; X=ls; $X", "bash -c ': $((IFS=5)); X=ls; $X'",
+                  "X=ls; docker exec c1 sh -c ': $((IFS=5)); $X'", "cat <<EOF\n$((IFS=5))\nEOF\nX=ls; $X"):
+            self.assertTrue(dyn(c), c)
+        self.assertEqual(targets(": $((IFS=/)); X=a/b; rm -rf $X"), [None])   # 대상 단어 분리도(C6 LIMITS 의 IFS 대상 잔여)
+        self.assertEqual(names("X=ls; $X"), ["ls"])   # 대조: IFS 글자가 없으면 그대로
+        self.assertEqual(targets('while IFS= read -r f; do rm -rf "$f"; done < l; X=/h/a; rm -rf "$X"'), [["/h/a"]])   # 따옴표 안은 분리 없음
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -438,6 +438,7 @@ fn_called: set[str] = set()   # 인라인된 함수 이름 — 그 정의 시점
 fn_def_segs: list[tuple[str, int, int]] = []   # (이름, 정의 본문 단위의 segments 구간)
 _for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
 _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 지나면 루프를 묶지 않는다
+_ifs_text = [False]   # 명령 원문 어디에든 'IFS' 가 있다 — 산술·trap·let 등 바꾸는 길을 모델링하지 않고 단어 분리를 확정하지 않는다(C7 S1)
 
 
 def _late() -> bool:
@@ -699,8 +700,8 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
                 val, j = _dollar(t, i, env)
                 if val is None and (not hole or (val := _hole_mark(t[i:j], p.quote == '"')) is None):
                     return None
-                if split and active and any(x.isspace() or x in "*?[" for x in val):
-                    return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다
+                if split and active and (any(x.isspace() or x in "*?[" for x in val) or (val and _ifs_text[0])):
+                    return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다(IFS 가 바뀌었을 수 있으면 어느 값이든)
                 out += [(t[start:i], active), (val, False)]
                 i = start = j
             elif active and c in "<>" and t[i + 1 : i + 2] == "(":
@@ -1266,7 +1267,7 @@ def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] |
     그 모양, 그 밖 None(확정 불가). IFS 가 바뀌었거나 모르면 따옴표 없는 확장은 나뉘는 기준을 몰라 확정 불가."""
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
         return [w]
-    if "IFS" in env and any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts):
+    if ("IFS" in env or _ifs_text[0]) and any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts):
         return None
     if v := _text(w.parts, env, split=True):   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
         return [Word((Part(v, ""),))]
@@ -1713,6 +1714,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     fn_called.clear()
     fn_def_segs.clear()
     _deadline[0] = deadline
+    _ifs_text[0] = "IFS" in command
     try:
         _parse(command, cwd, state_env, context, 0, segments)
     except CodeUnknown as e:
