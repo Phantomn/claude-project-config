@@ -60,6 +60,8 @@ _PLAIN = re.compile(r"[^ \t\n;&|()<>'\"\\$`]+")
 _DQ_STOP = re.compile(r"[\"\\$`]")
 _BLANK = re.compile(r"[ \t]+")
 _REDIR_OPS = ("<<<", "<<-", "&>>", ">>", ">|", ">&", "&>", "<<", "<>", "<&", ">", "<")
+NAMED_FD = -1   # `{var}<…` 이름 붙은 fd(bash) — 번호는 변수 값이라 모른다(C5 OOS-A)
+_NAMED_FD_WORD = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 _OPS = (";;&", ";;", ";&", "&&", "||", "|&", ";", "|", "&", "(", ")")
 
 
@@ -302,9 +304,13 @@ def lex(src: str) -> list[Token]:
                 if (
                     toks and toks[-1].kind == "word" and last_word_end == i
                     and len(toks[-1].word.parts) == 1 and toks[-1].word.parts[0].quote == ""
-                    and toks[-1].word.literal().isdigit()
                 ):
-                    fd = int(toks.pop().word.literal())
+                    lit = toks[-1].word.literal()
+                    if lit.isdigit():
+                        fd = int(toks.pop().word.literal())
+                    elif _NAMED_FD_WORD.fullmatch(lit):
+                        toks.pop()
+                        fd = NAMED_FD
                 i += len(op)
                 if (m := _BLANK.match(s, i)):
                     i = m.end()
@@ -1383,6 +1389,8 @@ def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
 def _stdin_code(redirects: list[Redirect], env: Mapping[str, str | None], pipe_prev: Segment | None) -> str | None:
     """셸이 표준입력에서 읽을 코드: heredoc·`<<<`·리터럴 파이프(echo/printf/cat heredoc)는 텍스트, 파일·명령 파이프는 알 수 없다(C2).
     입력원이 없으면 None(도구의 stdin 은 비어 있다)."""
+    if any(r.fd == NAMED_FD and r.op in _STDIN_OPS for r in redirects):
+        raise CodeUnknown("이름 붙은 fd 입력 리다이렉트의 번호를 확정할 수 없음")   # `{v}<&-` 는 v 값의 fd 를 닫는다 — 0 일 수 있다
     if (r := _stdin_redirect(redirects)) is not None:
         if r.op in _HEREDOC:
             return _heredoc_text(r, env)

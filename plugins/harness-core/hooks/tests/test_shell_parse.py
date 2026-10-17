@@ -1294,6 +1294,15 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
         for c in ("timeout 60 $c", "env $U timeout 120 claude -p", "timeout 5 $(dirname x)/run.sh", "nohup $D/$N"):   # 이름 자체를 모른다
             self.assertTrue(dyn(c), c)
 
+    def test_c5_named_fd_redirect(self):   # OOS-A: bash 는 `{var}<…` 를 이름 붙은 fd 리다이렉트로 처리한다(c5/namedfd.out)
+        t = lex("bash {x}</dev/null {fd}>&- a {y} <b")
+        self.assertEqual(words(t), ["bash", "a", "{y}"])
+        self.assertEqual(redirs(t), [("<", shell_parse.NAMED_FD, "/dev/null"), (">&", shell_parse.NAMED_FD, "-"), ("<", None, "b")])
+        for c in ("bash {x}</dev/null <<< 'rm -rf ~/data'", "echo 'rm x' | bash {x}</dev/null", f"{U4} | bash {{x}}<&0"):   # fd 값이 변수 — stdin 미확정
+            self.assertTrue(dyn(c), c)
+        self.assertEqual(inner("bash {x}>out.txt -c 'rm -rf ~/data'"), [("rm", 1, "/w")])   # 이전: `{x}` 를 스크립트 파일로 봐 안쪽이 사라졌다
+        self.assertEqual(names("ls {x} a{x}<b"), ["ls"])
+
 
 if __name__ == "__main__":
     unittest.main()
