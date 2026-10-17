@@ -26,10 +26,10 @@ from shell_parse import (
     _opts,
     _resolve_dir,
     _shell_code,
-    _strip_all,
     _var,
     expand,
     expand_hole,
+    find_exec_command,
     lex,
     literal_args,
 )
@@ -327,8 +327,8 @@ def _find_deletes(seg: Segment) -> bool:
             j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
             # /bin/rm·sudo rm·\rm·busybox rm 도 rm — 해석기의 래퍼 벗기기와 같은 규칙
             try:
-                cmd = _strip_all(a[i + 1:j], {}, seg.env)
-            except LexError:   # 명령 이름을 모른다(resolve_command_name, C6) — 삭제 여부도 모른다
+                cmd = find_exec_command(a[i + 1:j], seg.env)
+            except LexError:   # 명령 이름을 모른다(resolve_command_name C6·`{}` C7) — 삭제 여부도 모른다
                 return True
             if _cmd_name(cmd) in _DELETERS or (_cmd_name(cmd) in SHELLS and _shell_deletes(cmd, seg)):
                 return True

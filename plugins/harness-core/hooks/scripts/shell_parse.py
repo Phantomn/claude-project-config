@@ -1296,6 +1296,15 @@ _SAFE_SPLIT = re.compile(r"[ \t\n]*[\w./+=:@%,-]+(?:[ \t\n]+[\w./+=:@%,-]+)*[ \t
 _NAME_WORDS, _NAME_CHARS = 16, 1024
 
 
+def find_exec_command(words: list[Word], env: Mapping[str, str | None]) -> list[Word]:
+    """find -exec/-execdir/-ok/-okdir 의 명령(할당·래퍼를 벗긴 것). 명령 자리의 `{}` 는 찾은 파일 이름이라 확정 불가(C7 항목 4)
+    — 해석기와 policy 가 같이 쓴다. xargs -I{} 는 명령 자리를 바꾸지 않는다(GNU xargs 실측)."""
+    cmd = _strip_all(words, {}, env)
+    if cmd and "{}" in cmd[0].literal():
+        raise CodeUnknown("find -exec 의 명령 이름을 확정할 수 없음")
+    return cmd
+
+
 def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] | None:
     """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
     결과는 그 자리를 채우는 단어들: 확장이 없거나 값이 정해지면 그 값(따옴표 없는 변수 하나는 bash 처럼 기본 IFS 로 나눈다),
@@ -1745,7 +1754,7 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
                 continue
             j = next((k for k in range(i + 1, len(a)) if a[k].literal() in (";", "+")), len(a))
             try:
-                cmd = _strip_all(a[i + 1:j], {}, seg.env)
+                cmd = find_exec_command(a[i + 1:j], seg.env)
                 sh = Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env, seg.context, d)
                 if sh.name not in SHELLS or _shell_code(sh, None) is not None:
                     continue
