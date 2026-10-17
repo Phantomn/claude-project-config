@@ -1263,19 +1263,31 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             continue
         if _SHELL_C.fullmatch(x):
             if i + 1 >= len(a):
+                if seg.via_xargs:
+                    raise CodeUnknown("xargs 가 넣는 -c 코드를 확정할 수 없음")   # `… | xargs -0 sh -c` — 첫 입력 항목이 코드(C3 D5)
                 return None
             if (code := _text(a[i + 1].parts, o.env, split=True)) is None:
                 raise CodeUnknown("셸 -c 문자열을 확정할 수 없음")
             return code
-        if not x.startswith(("-", "+")) or x in ("-", "--"):
+        if x in ("-", "--"):   # 옵션 끝 — 다음 단어가 스크립트 파일, 없으면 stdin(C3 D3: `bash -- <(…)`)
+            i += 1
             break
+        if not x.startswith(("-", "+")):
+            break
+        if re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", x):
+            return None   # -n: 구문 검사만, 실행하지 않는다(C3 O1)
         stdin = stdin or bool(re.fullmatch(r"-[a-zA-Z]*s[a-zA-Z]*", x))
         i += 1
-    if i < len(a) and a[i].literal() not in ("-", "--") and not stdin:
-        if a[i].literal().startswith("<("):
+    if i < len(a) and not stdin:
+        lit = a[i].literal()
+        if lit.startswith("<("):
             raise CodeUnknown("프로세스 치환으로 넘긴 코드를 확정할 수 없음")   # bash <(curl …)
-        return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s 면 stdin 이 코드)
+        if lit not in _STDIN_PATHS:
+            return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s·stdin 장치 경로면 stdin 이 코드)
     return _stdin_code(seg.redirects, o.env, pipe_prev)
+
+
+_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 
 
 def _stdin_code(redirects: list[Redirect], env: Mapping[str, str | None], pipe_prev: Segment | None) -> str | None:
@@ -1289,6 +1301,8 @@ def _stdin_code(redirects: list[Redirect], env: Mapping[str, str | None], pipe_p
                 raise CodeUnknown("<<< 문자열을 확정할 수 없음")
             return code
         if r.op == "<":
+            if r.target is not None and r.target.literal() == "/dev/null":
+                return None   # 빈 코드(C3 O2)
             raise CodeUnknown("표준입력 파일의 코드를 확정할 수 없음")
     if pipe_prev is None:
         return None
@@ -1471,6 +1485,8 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
     seg.env 는 seg 단어를 확장한 env, run_env 는 seg 가 실행될 때의 env(접두 할당 포함·컨테이너면 컨테이너 쪽).
     """
     d = seg.depth + 1
+    if pipe_prev is not None and seg.argv and _text(seg.argv[0].parts, seg.env) is None:
+        raise CodeUnknown("파이프 대상 명령을 확정할 수 없음")   # `… | $SHELL`·`| $(which sh)` — 셸이면 코드를 돌린다(C3 D4)
     if seg.name in SHELLS:
         if (code := _shell_code(seg, pipe_prev)) is not None:
             _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
@@ -1744,9 +1760,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 if not x.literal().startswith("-"):
                     state_env[_FN + x.literal()] = None
         if name in ("source", "."):
-            a = w[1].literal() if len(w) > 1 else ""
-            if a == "/dev/stdin" or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2)
-                code = _stdin_code(r, unit_env, pipe_prev) if a == "/dev/stdin" else None
+            sa = [x.literal() for x in w[1:]]
+            a = (sa[1:] if sa[:1] == ["--"] else sa)[:1]
+            a = a[0] if a else ""
+            if a in _STDIN_PATHS or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2, C3 D2)
+                code = _stdin_code(r, unit_env, pipe_prev) if a in _STDIN_PATHS else None
                 if code is None:
                     raise CodeUnknown("source 의 코드를 확정할 수 없음")
                 _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
