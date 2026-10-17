@@ -1191,6 +1191,20 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
         self.assertEqual(inner("sh -c 'ls' -- x"), [("ls", 1, "/w")])
         self.assertEqual(inner("bash -xe -c 'ls'"), [("ls", 1, "/w")])
 
+    def test_c4_stdin_last_fd0_redirect(self):   # R-B: N2·OOS-2 — fd 0(또는 생략)에 대한 입력 리다이렉트 중 마지막 것이 stdin(bash 실측)
+        rm = [("rm", 1, "/w")]
+        for c in ("bash < /dev/null <<< 'rm -rf ~/data'", "bash 3< /dev/null <<< 'rm -rf ~/data'", "bash </dev/null <<EOF\nrm -rf ~/data\nEOF",
+                  "echo 'rm x' | bash 3< /dev/null", "bash 0<<< 'rm -rf ~/data'"):
+            self.assertEqual(inner(c), rm, c)
+        for c in ("bash </dev/null < evil.sh", "bash < /dev/null 0< evil.sh", "bash <<< 'echo hi' < evil.sh", "bash </dev/null <<< \"$(curl -s u)\"",
+                  "bash <> evil.sh", "bash </dev/null <> evil.sh", "bash <&3", "docker exec -i c bash <<< 'ls' < evil.sh",
+                  "cat evil.sh <<'EOF' | bash\nls\nEOF"):   # 파일·fd 복제·cat 이 읽는 파일은 코드를 모른다
+            self.assertTrue(dyn(c), c)
+        for c in ("bash < /dev/null", "echo 'rm x' | bash < /dev/null", "bash <<< 'rm -rf ~/data' < /dev/null", "bash 0<&-", "sh 1< f.txt"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
+        self.assertEqual(inner("bash 3</dev/null <<< 'ls'"), [("ls", 1, "/w")])
+        self.assertEqual(inner("cat <<'EOF' | sh\nrm x\nEOF"), [("rm", 1, "/w")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -459,6 +459,7 @@ _HEREDOC = ("<<", "<<-")
 # env 안의 셸 작업 폴더 — 변수 이름이 될 수 없는 키라 사용자 할당(PWD=…)으로 덮이지 않는다. `$(pwd)` 가 읽는다.
 SHELL_CWD = "\x00cwd"
 _STDIN_CODE = ("<<", "<<-", "<<<")
+_STDIN_OPS = ("<", "<>", "<&", "<<", "<<-", "<<<")   # fd 를 생략하면 stdin 에 거는 연산자
 _XARGS_VALUE = ("-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args", "--max-procs",
                 "--max-chars", "--max-lines", "--process-slot-var")
 _XARGS_MARK = "\x00xargs-input\x00"  # xargs 가 입력으로 바꿔 넣는 자리 — 이 표시가 든 대상은 확정 불가
@@ -1241,8 +1242,11 @@ def _heredoc_text(r: Redirect, env: Mapping[str, str | None]) -> str | None:
 
 def _pipe_text(prev: Segment) -> str | None:
     """파이프 앞 단위가 셸에 넘기는 리터럴 텍스트. 모르면 None(해석하지 않고 통과)."""
-    if prev.name == "cat":
-        return next((_heredoc_text(r, prev.env) for r in prev.redirects if r.op in _HEREDOC), None)
+    if prev.name == "cat":   # 피연산자가 있으면 cat 은 stdin 이 아니라 그 파일을 읽는다
+        r = _stdin_redirect(prev.redirects)
+        if r is None or r.op not in _HEREDOC or any(w.literal() != "-" for w in prev.argv[1:]):
+            return None
+        return _heredoc_text(r, prev.env)
     if prev.name not in ("echo", "printf"):
         return None
     args = prev.argv[1:]
@@ -1315,20 +1319,25 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
 _STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 
 
+def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
+    """표준입력을 정하는 리다이렉트 — fd 0(또는 생략)에 대한 입력 리다이렉트 중 마지막 것(bash 실측: 같은 fd 는 마지막이 이긴다, C4 R-B)."""
+    return next((r for r in reversed(redirects) if r.fd == 0 or (r.fd is None and r.op in _STDIN_OPS)), None)
+
+
 def _stdin_code(redirects: list[Redirect], env: Mapping[str, str | None], pipe_prev: Segment | None) -> str | None:
     """셸이 표준입력에서 읽을 코드: heredoc·`<<<`·리터럴 파이프(echo/printf/cat heredoc)는 텍스트, 파일·명령 파이프는 알 수 없다(C2).
     입력원이 없으면 None(도구의 stdin 은 비어 있다)."""
-    for r in redirects:
+    if (r := _stdin_redirect(redirects)) is not None:
         if r.op in _HEREDOC:
             return _heredoc_text(r, env)
         if r.op == "<<<" and r.target is not None:
             if (code := _text(r.target.parts, env)) is None:
                 raise CodeUnknown("<<< 문자열을 확정할 수 없음")
             return code
-        if r.op == "<":
-            if r.target is not None and r.target.literal() == "/dev/null":
-                return None   # 빈 코드(C3 O2)
-            raise CodeUnknown("표준입력 파일의 코드를 확정할 수 없음")
+        t = r.target.literal() if r.target is not None else None
+        if (r.op in ("<", "<>") and t == "/dev/null") or (r.op == "<&" and t == "-"):
+            return None   # 빈 코드·닫힌 stdin(C3 O2)
+        raise CodeUnknown("표준입력의 코드를 확정할 수 없음")
     if pipe_prev is None:
         return None
     if (code := _pipe_text(pipe_prev)) is None:
@@ -1478,7 +1487,7 @@ def _container(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             cenv[SHELL_CWD] = cwd
     if not w:
         return
-    stdin = [r for r in seg.redirects if r.op in _STDIN_CODE]  # exec -i 로 넘어가는 표준입력
+    stdin = [r] if (r := _stdin_redirect(seg.redirects)) is not None else []  # exec -i 로 넘어가는 표준입력(파일이면 확정 불가)
     inner = Segment(_cmd_name(w), w, stdin, cwd, dict(seg.env), ctx, seg.depth + 1, seg.via_xargs)
     code = _shell_code(inner, pipe_prev, seg) if inner.name in SHELLS else None  # -c·<<< 는 호스트 셸이 먼저 확장
     if code is not None:
