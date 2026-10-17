@@ -1205,6 +1205,17 @@ class ShellInvocationC4Test(unittest.TestCase):   # C4: 셸 호출의 옵션·st
         self.assertEqual(inner("bash 3</dev/null <<< 'ls'"), [("ls", 1, "/w")])
         self.assertEqual(inner("cat <<'EOF' | sh\nrm x\nEOF"), [("rm", 1, "/w")])
 
+    def test_c4_stdin_device_path_normalized(self):   # R-C: D1·D2 — 연속 /·.·.. 를 정리한 뒤 /dev/stdin·/dev/fd/0+·/proc/*/fd/0+ (bash 실측)
+        for p in ("//dev/stdin", "/dev/./stdin", "/dev//stdin", "/dev/fd/00", "/proc/thread-self/fd/0", "/proc/$$/fd/0", "/dev/../dev/stdin",
+                  "/./dev/stdin", "/proc/self/task/1/fd/0", "/dev/std$X", "'/dev/stdin'"):
+            for c in (f"{U4} | bash {p}", f"{U4} | source {p}", f"{U4} | . -- {p}"):
+                self.assertTrue(dyn(c), c)
+        self.assertTrue(dyn(f"cd /dev && {U4} | bash ./stdin"))   # 상대경로는 작업 폴더 기준
+        self.assertEqual(inner("echo 'rm x' | bash //dev/stdin"), [("rm", 1, "/w")])
+        self.assertEqual(inner("echo 'rm x' | source /dev/./stdin"), [("rm", 1, "/w")])
+        for c in (f"{U4} | bash ./build.sh", f"{U4} | bash /dev/null", f"{U4} | bash /dev/fd/3", "source ./env.sh", f"{U4} | bash /proc/cpuinfo"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+
 
 if __name__ == "__main__":
     unittest.main()

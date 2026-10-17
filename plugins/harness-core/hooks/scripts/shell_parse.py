@@ -1311,12 +1311,28 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         lit = a[i].literal()
         if lit.startswith("<("):
             raise CodeUnknown("프로세스 치환으로 넘긴 코드를 확정할 수 없음")   # bash <(curl …)
-        if lit not in _STDIN_PATHS:
+        if not _stdin_path(a[i], o.env, seg.cwd):
             return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s·stdin 장치 경로면 stdin 이 코드)
     return _stdin_code(seg.redirects, o.env, pipe_prev)
 
 
 _STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+# stdin 장치(C4 R-C, bash 실측: //dev/stdin·/dev/./stdin·/proc/thread-self/fd/0·/proc/<pid>/fd/0 실행). /dev/fd/00 은 실측상 없는 경로지만 보수적으로 포함
+_STDIN_DEV = re.compile(r"/dev/stdin|/dev/fd/0+|/proc/[^/]+(?:/task/[^/]+)?/fd/0+")
+
+
+def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None) -> bool:
+    """단어가 stdin 장치 경로인가 — 연속 /·.·.. 를 정리한 뒤 판별. 확정할 수 없는 /dev·/proc 경로는 CodeUnknown."""
+    s = _text(w.parts, env)
+    p = s if s is not None else w.literal()
+    if not p.startswith("/") and cwd is not None:
+        p = os.path.join(cwd, p)
+    p = "/" + os.path.normpath(p).lstrip("/") if p.startswith("/") else p   # normpath 는 앞 '//' 를 남긴다
+    if s is None:
+        if p.startswith(("/dev/", "/proc/")):
+            raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
+        return False
+    return bool(_STDIN_DEV.fullmatch(p))
 
 
 def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
@@ -1794,11 +1810,11 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
                 if not x.literal().startswith("-"):
                     state_env[_FN + x.literal()] = None
         if name in ("source", "."):
-            sa = [x.literal() for x in w[1:]]
-            a = (sa[1:] if sa[:1] == ["--"] else sa)[:1]
-            a = a[0] if a else ""
-            if a in _STDIN_PATHS or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2, C3 D2)
-                code = _stdin_code(r, unit_env, pipe_prev) if a in _STDIN_PATHS else None
+            sw = w[2:] if len(w) > 1 and w[1].literal() == "--" else w[1:]
+            a = sw[0].literal() if sw else ""
+            dev = bool(sw) and _stdin_path(sw[0], unit_env, unit_cwd)
+            if dev or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2, C3 D2, C4 R-C)
+                code = _stdin_code(r, unit_env, pipe_prev) if dev else None
                 if code is None:
                     raise CodeUnknown("source 의 코드를 확정할 수 없음")
                 _parse(code, st["cwd"], dict(state_env), context, depth + 1, segments, via_xargs)
