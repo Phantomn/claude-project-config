@@ -438,6 +438,8 @@ fn_called: set[str] = set()   # 인라인된 함수 이름 — 그 정의 시점
 fn_def_segs: list[tuple[str, int, int]] = []   # (이름, 정의 본문 단위의 segments 구간)
 _for_runs = [0, 0]   # [반복 수, 재해석 글자 수] — parse() 마다 0 으로. 훅은 한 프로세스에서 한 번씩 해석한다
 _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 지나면 루프를 묶지 않는다
+_root = [""]   # 최상위 명령 원문과 지금 해석 중인 그 안의 위치 — 단위 밖에서 stdin 이 올 수 있는지 원문으로 본다(C7 항목 2)
+_root_pos = [0]
 _ifs_text = [False]   # 명령 원문 어디에든 'IFS' 가 있다 — 산술·trap·let 등 바꾸는 길을 모델링하지 않고 단어 분리를 확정하지 않는다(C7 S1)
 
 
@@ -1454,9 +1456,8 @@ def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirec
     dev = _dev_like(p) or (globby and any(_dev_like(x) for x in (_expand(w, env, cwd) or [])[:1]))   # 펼친 첫 단어가 스크립트
     if not dev:
         tail = p.rpartition("/")[2]
-        if s is None and (not _named_path(w, env) or tail in ("stdin", "null") or tail.isdigit()) \
-                and (pipe_prev is not None or any(r.op in _STDIN_OPS for r in redirects)):
-            raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
+        if s is None and (tail.isdigit() or ((not _named_path(w, env) or tail in ("stdin", "null")) and _input_possible(redirects, pipe_prev))):
+            raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")   # fd 번호 끝은 어느 fd 가 열렸는지 몰라 늘
         return False
     clean = "/" + "/".join(x for x in p.split("/") if x not in ("", "."))
     if s is not None and not globby and ".." not in p.split("/") and not p.endswith("/"):
@@ -1465,6 +1466,16 @@ def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirec
         if clean == "/dev/null":
             return False
     raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
+
+
+def _input_possible(redirects: list[Redirect], pipe_prev: Segment | None) -> bool:
+    """이 단위의 stdin 에 코드가 올 수 있는가 — 단위의 입력원, 또는 단위 밖(그룹·함수·루프·exec 의 리다이렉트, 앞선 파이프,
+    프로세스 치환, coproc)을 모델링하지 않고 명령 원문의 글자로 본다. 단위가 /dev/null·닫힌 stdin 을 명시하면 아니다."""
+    if (r := _stdin_redirect(redirects)) is not None:
+        t = r.target.literal() if r.target is not None else None
+        return not ((r.op in ("<", "<>") and t == "/dev/null") or (r.op == "<&" and t == "-"))
+    root = _root[0]
+    return pipe_prev is not None or "<" in root or ">(" in root or "coproc" in root or "|" in root[:_root_pos[0]]
 
 
 def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
@@ -1754,6 +1765,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     fn_def_segs.clear()
     _deadline[0] = deadline
     _ifs_text[0] = "IFS" in command
+    _root[0], _root_pos[0] = command, 0
     try:
         _parse(command, cwd, state_env, context, 0, segments)
     except CodeUnknown as e:
@@ -2365,6 +2377,8 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
             continue
         _check_deadline()
         st["idx"] = idx
+        if command is _root[0]:
+            _root_pos[0] = t.pos
         cur = cases[-1] if stack and stack[-1][0] == "case" else None
         word = t.word.literal() if t.kind == "word" and not t.word.is_quoted() else None
         if cur is not None and cur["mode"] == "head":

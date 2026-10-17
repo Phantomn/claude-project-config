@@ -1449,6 +1449,18 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
             self.assertEqual([s.name for s in r.segments][-1], want, c)
 
+    def test_c7_unknown_prefix_input_anywhere(self):   # 항목 2: 끝이 숫자인 값 모르는 경로는 늘 확정 불가, 입력원은 명령 원문 기준(<·<(·>(·앞선 |·coproc)
+        rm = "'rm -rf ~/data'"
+        for c in (f"bash $D/fd/63 <(echo {rm})", f"source $D/fd/63 <(echo {rm})", f"bash $D <(echo {rm})", f"exec 3<<< {rm}; bash $D/fd/3",
+                  "bash $D/fd/3", "bash \"$D\"/fd/9", f"{{ bash $D/stdin; }} <<< {rm}",
+                  f"exec <<< {rm}; bash $D", "while read l; do bash $D/stdin; done < evil.sh", f"{U4} | while read l; do bash \"$X\"; done",
+                  f"echo {rm} > >(bash \"$X\")", f"{U4} | for x in a; do bash \"$X\"; done"):
+            self.assertTrue(dyn(c), c)
+        self.assertIn("표준입력 장치일 수 있는 경로", parse(f"f() {{ bash \"$X\"; }}; echo {rm} | f", "/w", {"HOME": "/h"}).error)   # 함수 재해석 실패로 감싸인다
+        for c in ('bash "$X"', "bash $D/stdin", 'bash "$X" 2>&1 | tail -20', 'for f in a b; do sh "$f"; done', 'bash "$X" < /dev/null',
+                  f'{U4} | bash "$DIR/run.sh"', 'cd x && bash "$S" arg | tee log'):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
+
 
 if __name__ == "__main__":
     unittest.main()
