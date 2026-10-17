@@ -1268,13 +1268,20 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
         if not w:
             break
         if (r := resolve_command_name(w[0], env)) is None:
-            if last == "env" and "=" in w[0].literal():   # env 는 '=' 가 든 인자를 할당으로 받는다(이름 미확정)
+            # env 는 '=' 가 든 인자를 할당으로 받는다(이름 미확정) — 따옴표 없는 치환은 나뉘어 첫 조각이 명령이 될 수 있다(C7 항목 3)
+            if last == "env" and "=" in w[0].literal() and not any(p.quote == "" and ("$(" in p.text or "`" in p.text or "${" in p.text)
+                                                                   for p in w[0].parts):
                 _forget(run_env)
                 w = w[1:]
                 continue
             raise CodeUnknown("명령 이름을 확정할 수 없음")   # 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B·C6)
         w = [*r, *w[1:]]
         if last and _is_assign(r[0]):   # 래퍼가 받는 확정 값이 할당 모양(`X='A=1'; env $X ls`) — 맨 앞 단어는 bash 도 명령으로 본다
+            continue
+        if last == "env" and "=" in (lit := w[0].literal()) and not lit.startswith("-"):   # 따옴표 안 `"A=1"` 도 env 에는 할당(c7/real7.out)
+            if _NAME.fullmatch(k := lit.partition("=")[0]):
+                run_env[k] = v.partition("=")[2] if (v := _text(w[0].parts, env)) is not None else None
+            w = w[1:]
             continue
         if (rest := _strip_wrapper(w, run_env, env)) is None:
             break

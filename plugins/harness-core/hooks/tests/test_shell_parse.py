@@ -1461,6 +1461,14 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
                   f'{U4} | bash "$DIR/run.sh"', 'cd x && bash "$S" arg | tee log'):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
 
+    def test_c7_env_assign_word(self):   # 항목 3: env 의 '=' 단어 — 따옴표 없는 치환은 나뉘어 명령이 될 수 있다, 따옴표 안 'A=1' 도 할당이다(c7/real7.out)
+        for c in ("env $(echo rm -rf ~/data .)=1", "env `echo rm -rf ~/data .`=1", "env ${X:-rm -rf ~/data .}=1 ls", "env A=1 $(x)=2 ls"):
+            self.assertTrue(dyn(c), c)
+        for c in ('env "A=1" rm -rf ~/data', "env 'A=1' rm -rf ~/data", 'X=A=1; env "$X" rm -rf ~/data', "env 'A B=1' rm -rf ~/data"):
+            self.assertEqual(targets(c), [["/h/data"]], c)
+        self.assertEqual(inner_names("env 'A=1' sh -c 'rm -rf ~/data'"), ["rm"])
+        self.assertEqual(names("env $X=1 ls"), ["ls"])   # 이름 모를 할당(§1.5) 뒤 다음 단어는 다시 확정
+
 
 if __name__ == "__main__":
     unittest.main()
