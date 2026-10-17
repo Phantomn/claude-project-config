@@ -1500,6 +1500,14 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
                   "find . -exec bash {} \\;", "find . -exec sh -c 'wc -l \"$1\"' _ {} \\;", "sh -n -s"):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
+    def test_c7_other_shells(self):   # 6c: POSIX 계열(ash·mksh·yash·posh·busybox hush)은 sh 처럼 해석, csh·tcsh·fish 는 문법이 달라 확정 불가
+        for c in ("ash -c 'rm -rf ~/data'", "mksh -c 'rm -rf ~/data'", "yash -c 'rm -rf ~/data'", "posh -c 'rm -rf ~/data'",
+                  "busybox ash -c 'rm -rf ~/data'", "busybox hush -c 'rm -rf ~/data'", "busybox sh -c 'rm -rf ~/data'", "echo 'rm -rf ~/data' | mksh"):
+            self.assertEqual(inner_names(c), ["rm"], c)
+        for c in ("tcsh -c 'rm -rf ~/data'", "csh -c 'rm -rf ~/data'", "fish -c 'rm -rf ~/data'", f"{U4} | ash", f"{U4} | busybox ash",
+                  f"{U4} | fish", "fish script.fish", "docker exec c1 fish -c 'rm -rf /app'"):
+            self.assertTrue(dyn(c), c)
+
 
 if __name__ == "__main__":
     unittest.main()

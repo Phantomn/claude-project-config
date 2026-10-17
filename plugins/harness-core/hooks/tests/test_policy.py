@@ -60,7 +60,8 @@ class DeleteTest(_WorldCase):
     def test_c7_find_exec_braces_command(self):   # C7 항목 4: 명령 자리의 `{}` 는 찾은 파일 이름 — 무엇이 도는지 모른다(c7/real7.out: -exec {} 실행)
         for c in ("find /usr/bin -name rm -exec {} -rf {HOME}/data \\;", "find /usr/bin -name rm -exec {} -rf {HOME}/data +",
                   "find /usr/bin -name rm -execdir {} -rf {HOME}/data \\;", "find . -ok {} \\;", "find . -okdir ./{} \\;",
-                  "find . -exec sudo {} -rf {HOME}/data \\;", "find . -exec {}.sh \\;"):
+                  "find . -exec sudo {} -rf {HOME}/data \\;", "find . -exec {}.sh \\;",
+                  "find . -exec mksh -c 'rm \"$1\"' _ {} \\;", "find . -exec fish -c 'rm $argv' {} \\;"):   # 6c: 셸 목록
             self.assertEqual(ev(c), [("삭제", UNRESOLVED)], c)
         for c in ("find . -name x -exec mv {} /t \\;", "find . -exec bash {} \\;", "echo a | xargs -I{} {} x"):   # 인자 자리·스크립트·xargs(명령 자리는 안 바뀐다)
             self.assertEqual(ev(c), [], c)

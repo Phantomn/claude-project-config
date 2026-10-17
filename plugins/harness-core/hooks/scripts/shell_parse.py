@@ -461,7 +461,10 @@ def _check_deadline() -> None:
         raise LexError("해석 시간 초과")
 
 
-SHELLS = {"bash", "rbash", "sh", "zsh", "dash", "ksh"}   # rbash = bash 링크(제한 모드, 같은 옵션·실행 — c6/rbash.out)
+# rbash = bash 링크(제한 모드, 같은 옵션·실행 — c6/rbash.out). ash·mksh·yash·posh·hush(busybox)는 POSIX sh 계열(-c·-s·stdin 같음, 이 호스트엔 없어 문서 근거),
+# csh·tcsh·fish 는 문법이 달라 코드를 해석하지 않는다(_FOREIGN_SHELLS — 늘 확정 불가, 말뭉치 0건)
+_FOREIGN_SHELLS = frozenset({"csh", "tcsh", "fish"})
+SHELLS = {"bash", "rbash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "yash", "posh", "hush", *_FOREIGN_SHELLS}
 _MAX_DEPTH = 8
 # 셸 호출 옵션(C4 R-A, bash 5.2·dash 0.5.12 실측): 한 글자는 두 셸의 합집합, 그 밖(zsh 전용 등)은 확정 불가
 _SH_LETTERS = frozenset("abcefhiklmnprstuvxBCDEHIPTV")
@@ -1402,6 +1405,8 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
     옵션은 bash getopt 규칙(bash 5.2·dash 0.5.12 실측, C4 R-A): `-`/`+` 묶음, 묶음 안 o/O 마다 다음 단어가 값,
     -c 는 플래그(코드 = 옵션 뒤 첫 단어), noexec(-n·-D·-o noexec)는 마지막 설정이 이긴다(+n·+o 가 해제). 모르는 옵션은 확정 불가.
     bash 는 짧은 옵션 앞의 긴 옵션을 `-name`·`--name` 둘 다 먼저 소비한다(C5 NB1) — 다른 셸에서 긴 이름은 모르는 옵션."""
+    if seg.name in _FOREIGN_SHELLS:
+        raise CodeUnknown(f"{seg.name} 코드는 해석하지 않음")
     o = outer or seg
     a = seg.argv
     i, cmd, stdin, noexec, lead = 1, False, False, False, True
