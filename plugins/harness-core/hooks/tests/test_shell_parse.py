@@ -1408,6 +1408,24 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
         self.assertEqual(names("X=ls; $X"), ["ls"])   # 대조: IFS 글자가 없으면 그대로
         self.assertEqual(targets('while IFS= read -r f; do rm -rf "$f"; done < l; X=/h/a; rm -rf "$X"'), [["/h/a"]])   # 따옴표 안은 분리 없음
 
+    def test_c7_s2_known_value_split_bounded(self):   # S2: 따옴표 없는 값의 분리는 안전 글자 단어 ≤16 개·≤1024 자만, 확장 결과 총량에도 상한(R1)
+        for c in ("X='/bin/@(rm)'; $X -rf ~/data", "shopt -s extglob; X='/bin/@(rm)'; $X -rf ~/data", "X='/bin/r?'; $X -rf ~/data",
+                  "X='!(ls)'; $X", "X='~/bin/x'; $X", "X='a$(b)'; $X", "X=\"a{b,c}\"; $X", "X=$'ls\\v-la'; $X", "X=$'ls\\xa0-la'; $X",
+                  "X='" + " ".join(["a"] * 17) + "'; $X", "X=" + "a" * 1025 + "; $X", "X='ls '\"'\"'x'; $X"):
+            self.assertTrue(dyn(c), c)
+        for n in (24, 30):   # c6rr/exp.py — 값이 두 배씩 자라는 대입 사슬(이전: n=24 에 18초·3GB)
+            for v0, tail in (("'a b'", ""), ("ab", ""), ("$(q)/b", "/ls")):
+                c = f"V0={v0}; " + "; ".join(f"V{i}=$V{i - 1}$V{i - 1}" for i in range(1, n + 1)) + f"; $V{n}{tail} x"
+                t0 = time.monotonic()
+                r = parse(c, "/w", {"HOME": "/h"})
+                self.assertLess(time.monotonic() - t0, 5.0, (n, v0))
+                self.assertTrue(r.dynamic or tail, (n, v0))   # `$Vn/ls` 의 거부는 S3(대입된 미확정 값의 따옴표 없는 사용)
+        for c, argv in (('G="git --no-pager"; $G log', ["git", "--no-pager", "log"]), ("X=ls; $X", ["ls"]),
+                        ("X='" + " ".join(["a"] * 16) + "'; $X", ["a"] * 16), ('X="node --max-old-space-size=4096 a@b,c:d%e+f"; $X', None)):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            if argv:
+                self.assertEqual([x.literal() for x in r.segments[-1].argv], argv, c)
+
 
 if __name__ == "__main__":
     unittest.main()

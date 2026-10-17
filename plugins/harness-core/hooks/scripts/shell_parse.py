@@ -635,6 +635,7 @@ def _dollar(t: str, i: int, env: Mapping[str, str | None]) -> tuple[str | None, 
     return "$", i + 1
 
 
+_EXPAND_CAP = 8192   # 한 단어의 확장 결과 글자 수 상한 — 넘으면 확정 불가
 HOLE = "\x00hole\x00"
 _SHAPE = "\x00shape\x00"   # 변수 값 자리: 값은 모르고 모양(마지막 경로 성분이 리터럴)만 안다 — 이름 확정에만 쓴다(C6 항목 2)
 _SHAPE_REF = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
@@ -680,6 +681,7 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
     """조각 -> (텍스트, 활성) 목록. 활성 = 따옴표 없는 리터럴(중괄호·와일드카드 대상). 확정 불가면 None.
     hole 이면 확정 못 한 변수·치환 자리를 None 대신 표식(HOLE·BASE_HOLE)으로 채운다."""
     out: list[tuple[str, bool]] = []
+    grown = 0   # 확장으로 들어온 글자 수 — 대입 사슬이 값을 두 배씩 키우는 입력(c6rr/exp.py)을 마감 밖에서 묶는다(R1)
     for k, p in enumerate(parts):
         if p.quote == "'":
             out.append((p.text, False))
@@ -702,6 +704,8 @@ def _subst(parts: tuple[Part, ...], env: Mapping[str, str | None], split: bool =
                     return None
                 if split and active and (any(x.isspace() or x in "*?[" for x in val) or (val and _ifs_text[0])):
                     return None  # 따옴표 없는 값은 단어 분할·glob 되어 한 경로로 확정할 수 없다(IFS 가 바뀌었을 수 있으면 어느 값이든)
+                if (grown := grown + len(val)) > _EXPAND_CAP:
+                    return None
                 out += [(t[start:i], active), (val, False)]
                 i = start = j
             elif active and c in "<>" and t[i + 1 : i + 2] == "(":
@@ -1260,6 +1264,10 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
     return w
 
 
+_SAFE_SPLIT = re.compile(r"[ \t\n]*[\w./+=:@%,-]+(?:[ \t\n]+[\w./+=:@%,-]+)*[ \t\n]*", re.ASCII)   # 글롭·확장·따옴표 글자 없는 단어들
+_NAME_WORDS, _NAME_CHARS = 16, 1024
+
+
 def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] | None:
     """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
     결과는 그 자리를 채우는 단어들: 확장이 없거나 값이 정해지면 그 값(따옴표 없는 변수 하나는 bash 처럼 기본 IFS 로 나눈다),
@@ -1267,14 +1275,19 @@ def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] |
     그 모양, 그 밖 None(확정 불가). IFS 가 바뀌었거나 모르면 따옴표 없는 확장은 나뉘는 기준을 몰라 확정 불가."""
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
         return [w]
-    if ("IFS" in env or _ifs_text[0]) and any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts):
+    unq = any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts)
+    if unq and ("IFS" in env or _ifs_text[0]):
         return None
-    if v := _text(w.parts, env, split=True):   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
-        return [Word((Part(v, ""),))]
+    if (v := _text(w.parts, env)) is not None:   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
+        if not unq:
+            return [Word((Part(v, ""),))] if v else None
+        # 따옴표 없는 값은 나뉘고 펼쳐진다 — 안전 글자 단어만, 개수·길이 상한 안에서(C7 S2). 여러 단어는 따옴표 조각이 없을 때만
+        xs = v.split() if len(v) <= _NAME_CHARS and _SAFE_SPLIT.fullmatch(v) else []
+        if not xs or len(xs) > _NAME_WORDS or (len(xs) > 1 and any(p.quote for p in w.parts)):
+            return None
+        return [Word((Part(x, ""),)) for x in xs]
     t = "".join(p.text for p in w.parts)
     ref = _SHAPE_REF.fullmatch(t) if all(p.quote != "'" for p in w.parts) else None
-    if ref and w.parts[0].quote == "" and (v := _text(w.parts, env)) and not any(c in v for c in "*?[") and (xs := v.split()):
-        return [Word((Part(x, ""),)) for x in xs]   # `G="git -C /x"; $G` — 값이 정해진 단어 분리(글롭 글자는 펼침을 몰라 제외)
     if _named_path(w, env):
         return [w]
     if ref and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
