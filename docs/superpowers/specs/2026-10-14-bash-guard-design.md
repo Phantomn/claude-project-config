@@ -247,7 +247,7 @@ class Segment:
    `git -C DIR`, `make -C DIR`(git 만 판정) 는 해당 명령의 cwd 로 반영.
 6. **래퍼 벗기기**(반복 적용): 맨 앞 `\` 제거(`\rm` → `rm`), 절대경로 명령은 basename(`/bin/rm` → `rm`),
    `sudo`(옵션 `-u X` `-g X` `-E` `-H` `-n` 등 값 소비 포함), `doas`, `env`(`-i` `-u X` `VAR=val` 소비),
-   `command`, `builtin`, `exec`, `nice`(`-n N`), `nohup`, `time`(`-p`), `timeout`(옵션 + DURATION), `stdbuf`(옵션),
+   `command`, `builtin`, `exec`, `nice`(`-n N`), `nohup`, `time`(`-p`, GNU `/usr/bin/time` 의 값 옵션 `-f`·`-o`·`--format`·`--output` — C5, GNU time 1.9 실측), `timeout`(옵션 + DURATION), `stdbuf`(옵션),
    `ionice`(옵션), `chronic`, `flock`(옵션 + 파일), `busybox`, `setsid`, `strace`·`ltrace`(값 옵션 소비), `runuser -u USER`
    (최종 리뷰 I6 — 이 호스트 `--help` 실측으로 값 옵션 표 `_WRAPPER_VALUE_OPTS`). 셸 코드를 받는 래퍼 `su -c`·`runuser -c`·`flock <파일> -c`·
    `watch`(`-x` 없을 때 인자 전체)는 `sh -c <코드>` 로 바꿔 단계 7 로 해석한다. 이 목록 밖의 명령 실행 래퍼(`parallel`·`unbuffer`·`script -c`·
@@ -255,27 +255,70 @@ class Segment:
    환경을 바꾸는 래퍼(구현 중 추가): `env -i`·`-u NAME` 과 `sudo`·`doas`(기본 env_reset, `sudo -E` 는 보존)는 안쪽 코드가 보는 바깥 변수를
    미확정으로 둔다. `env -C DIR`·`--chdir`·`sudo -D DIR` 는 명령의 cwd 를 DIR 로(바깥 셸이 확장, 모르면 미확정). `env -S` 는 모델링 불가(§3.8 (가′)).
    래퍼 뒤의 `cd`·`pushd`·`popd` 는 외부 명령 검색이라 폴더를 바꾸지 않는다.
+   **명령 이름 확정은 한 질문이다**(C6·C7 — `shell_parse.resolve_command_name`). 할당·래퍼 벗기기(`_strip_all`)가 매번 명령 자리 단어를 이 함수로 확정한다.
+   그래서 단위 첫 단어(함수 조회 전 포함)·래퍼 뒤·env 할당 뒤·`xargs` 의 명령·`find -exec|-execdir|-ok|-okdir` 의 명령(`find_exec_command`, 해석기와
+   policy `_find_deletes` 공용)·컨테이너 exec 안 명령·파이프 대상이 모두 같은 규칙을 탄다. 규칙(위에서부터, 확정은 모델 없이 사실로 보이는 좁은 경우만 — C7):
+   - (S4) 따옴표 밖 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭 `@(`·`!(` 등)가 든 단어는 확정 불가(`_cmd_glob` — 펼친 이름을 모른다). `[ -f x ]` 의 `[` 는 해당 없다.
+   - 확장이 없으면 그 단어.
+   - (S1) 따옴표 밖 확장이 있는데 명령 원문 어디에든 `IFS` 글자가 있거나 상태의 IFS 를 모르면(대입·`read IFS`·`source` 뒤) 확정 불가. 산술 대입·`trap … DEBUG`·`let` 등
+     IFS 를 바꾸는 경로를 하나씩 모델링하지 않고 원문 글자로 막는다.
+   - (S2) 값이 정해지면: 따옴표 안이면 그 값 한 단어. 따옴표 밖이면 값이 안전 글자(`[A-Za-z0-9_./+=:@%,-]`, `_SAFE_SPLIT`) 단어일 때만 공백·탭·개행으로 나눈다 —
+     16단어·1024자까지, 여러 단어는 단어의 모든 조각이 따옴표 밖일 때만. 빈 값은 확정 불가(bash 는 단어째 지워 다음 단어가 명령이 된다).
+   - 폴더만 모르고 마지막 경로 성분이 리터럴(`$B/vitest`·`"$S"/venv/bin/python`)이면 그 이름(`_named_path`). 단 (S3) 따옴표 밖 자리가 **이 명령에서 값을 모르게 대입된 변수**
+     (`B=$(…); $B/ls`)면 확정 불가 — 치환 출력의 공백이 첫 단어를 바꾼다. 대입 없이 물려받은 변수는 공백이 없다고 본다(§1.5 정직한 실수 모델).
+   - (S3) 할당 모양: 상태 대입의 값은 모르고 마지막 경로 성분만 리터럴(`PY=$(…)/bin/python`)이면 값 자리에 모양 표식(`_SHAPE`)을 둔다(재대입·`source`·갈래 합류·`read`·`for` 가
+     따로 무효화하지 않아도 지운다. 값을 읽는 곳은 모양을 '모름'으로 읽는다). 명령 자리가 **따옴표 안 변수 하나**(`"$PY"`·`"${PY}"`)일 때만 그 이름으로 확정한다.
+   - 그 밖은 확정 불가 — `NameUnknown`("명령 이름을 확정할 수 없음", §3.8 (가′)). '안쪽 없음 = 허용'으로 통과시키지 않는다.
+   - env 뒤 `=` 단어: 확정 못 한 단어에 `=` 가 있고 따옴표 밖 `$(`·백틱·`${` 가 없으면 이름 모를 할당으로 소비(상태를 잊음)하고 **다음 단어를 다시 확정**한다.
+     따옴표 밖 치환이 있으면 확정 불가(출력이 나뉘어 첫 조각이 명령이 될 수 있다). 확정된 `=` 단어는 따옴표와 무관하게 env 의 할당이다(`env "A=1" rm …` 의 명령은 rm).
+   - `find … -exec` 명령 자리의 `{}` 는 찾은 파일 이름이라 확정 불가(`find_exec_command`). GNU `xargs -I{}` 는 명령 자리를 바꾸지 않는다(실측).
+   - 함수 정의 본문 안의 확정 불가는 그 단어가 위치 매개변수(`$1`…`$9`·`$*`·`$@`, `${…}`·큰따옴표 포함 — `_POSITIONAL`)일 때만 상태를 잊고 넘긴다(호출 때 인자로 다시 해석).
+     그 밖(`$X`·`$(…)`)은 정의 시점에 확정 불가다 — `export -f`·`trap` 처럼 인라인하지 않는 호출 경로가 있다(C7 항목 5). 인라인 호출 안의 확정 불가는 모델링 불가(`R_MODEL`)로 감싸진다.
+   대상 경로 확장(`_subst`)도 같은 S1(원문에 `IFS` 가 있으면 따옴표 밖 비지 않은 확장은 확정 불가)과 상한(한 단어의 확장 결과 8192자, `_EXPAND_CAP` — 대입 사슬로 값이 두 배씩 자라
+   판정이 수 GB·수십 초를 쓰던 것, R1)을 쓴다.
 7. **재귀 해석**(같은 cwd 상속. 새 셸 — `-c`·heredoc·파이프 입력 — 에는 export 된 변수와 접두 할당만 넘어가고 `PWD` 는 작업 폴더로
    다시 정해진다. 환경에서 받은 변수 중 추적하는 것은 HOME·TMPDIR·USER·PWD 뿐 — 구현 중 정정. `eval` 은 같은 셸이라 env 그대로):
-   - `bash|sh|zsh|dash|ksh` 의 `-c STR`(옵션 묶음 `-lc` `-ec` 포함) → STR
+   - 셸(`SHELLS` = `bash`·`rbash`·`sh`·`zsh`·`dash`·`ksh`·`ash`·`mksh`·`yash`·`posh`·`hush`, `busybox ash|hush|sh` 는 래퍼 벗기기로 같다)의 `-c STR` → STR.
+     `csh`·`tcsh`·`fish` 는 문법이 달라 해석하지 않는다 — `-c`·스크립트·stdin 모두 늘 확정 불가(`_FOREIGN_SHELLS`, C7 6c. 이 호스트에 없어 각 셸 문서의 의미가 근거).
+     옵션은 한 곳(`_shell_code` 옵션 루프)에서 bash getopt 규칙으로 읽는다(C4 R-A·C5, bash 5.2.21·dash 0.5.12·zsh 5.9 실측):
+     - bash·rbash 는 짧은 옵션을 하나도 보기 전의 긴 옵션을 `--name`·`-name` 둘 다 먼저 소비한다(목록 = bash `--help`: `norc noprofile posix login restricted verbose
+       noediting pretty-print debug debugger`, 값을 받는 `rcfile`·`init-file`, 실행하지 않고 끝나는 `help version dump-strings dump-po-strings`). 다른 셸에서 이 이름은 모르는 옵션.
+     - 그 밖은 `-`/`+` 묶음. 묶음 안 `o`/`O` 는 글자마다 다음 단어를 값으로 먹는다(`-euo pipefail`). `-c` 는 플래그이고 코드는 옵션이 끝난 뒤 첫 단어(`bash -c -x CODE`).
+       `-`·`--` 는 옵션 끝. 한 글자 옵션은 bash∪dash 합집합(`_SH_LETTERS`)만 받는다.
+     - noexec 는 표지다: `-n`·`-D`·`-o noexec` 가 켜고 `+n`·`+o <무엇이든>`·zsh 의 `-o exec`(값은 소문자·`_` 제거로 비교)가 끈다. 루프가 끝났을 때 켜져 있으면 실행하지 않는다.
+     - 모르는 옵션(zsh 전용 글자·`--rcfile=X`·목록 밖 긴 옵션·약어)은 확정 불가 — 문구 "셸 옵션 X 을 해석할 수 없음"(X 는 40자까지).
+     같은 함수를 셸 인터프리터·컨테이너 안 셸·`find -exec` 셸(policy `_shell_deletes`)이 쓴다.
    - `eval STR…` → 인자 연결 문자열
    - `trap [-lp] [--] CODE SIG…` → CODE(최종 리뷰 I4 — bash 가 나중에 현재 셸에서 돌린다). 조회(`-l`·`-p`)·재설정(인자 하나·`-`·`''`)은 무해.
      CODE 는 **trap 을 정의한 시점**의 cwd·변수로 해석한다(실행 시점 상태가 아니다 — LIMITS)
-   - 셸의 stdin 코드(셸에 heredoc·`<<<`·파이프로 넘기는 코드): heredoc 본문, `<<<` 문자열, 파이프 앞 단위가 리터럴 `echo`·`printf`·`cat <<EOF`(본문)면
-     그 텍스트를 해석. 스크립트 자리가 stdin 장치 경로(`/dev/stdin`·`/dev/fd/0`·`/proc/self/fd/0` — `shell_parse._STDIN_PATHS`)여도 stdin 코드다.
-     `source`·`.` 도 같은 경로 집합에 같은 규칙(앞의 `--` 는 건너뛴다). 옵션 끝 `-`·`--` 뒤 단어가 스크립트 자리다(`bash -- <(…)` 는 프로세스 치환).
-     입력원이 없으면(`bash -s` 단독) 해석할 코드가 없다. `< /dev/null` 은 빈 코드, `-n`(옵션 묶음 안의 `n` 포함 — 구문 검사만)은 실행하지 않으므로 해석할 코드가 없다(C3).
+   - 셸의 stdin 코드(셸에 heredoc·`<<<`·파이프로 넘기는 코드): **stdin 은 fd 0(또는 fd 생략)에 대한 마지막 입력 리다이렉트**(`<`·`<>`·`<&`·`<<`·`<<-`·`<<<`)가
+     정한다(`_stdin_redirect`, C4 R-B — bash 는 같은 fd 의 마지막이 이긴다). heredoc 본문·`<<<` 문자열은 텍스트로 해석, `< /dev/null`·`<> /dev/null`·`<&-` 는 빈 코드,
+     그 밖(파일·fd 복제)은 확정 불가. 리다이렉트가 없으면 파이프 앞 단위가 리터럴 `echo`·`printf`·`cat <<EOF`(본문 — cat 에 `-` 아닌 피연산자가 있으면 그 파일을 읽으므로 확정 불가)일 때
+     그 텍스트를 해석. 같은 규칙을 컨테이너 exec 의 stdin 전달에도 쓴다(`-i` 유무는 보지 않는다 — 보수).
+     이름 붙은 fd(`{var}<…` — 렉서가 번호 모르는 fd `NAMED_FD` 로 읽는다)의 입력 리다이렉트가 있으면 stdin 확정 불가(`{v}<&-` 는 v 값의 fd 를 닫는다 — 0 일 수 있다, C5).
+   - 스크립트 자리(옵션 끝 `-`·`--` 뒤 포함)와 `source`·`.`(앞의 `--` 는 건너뛴다)의 경로는 **허용 목록**으로 판별한다(`_stdin_path`·`_dev_like`, C4 R-C·C5):
+     경로(상대는 작업 폴더에 잇는다)가 `/dev`·`/proc` 를 지나면(정리 전 첫 성분, 정리 뒤, 글롭·중괄호를 펼친 첫 단어 중 하나라도) — 확장·글롭·`..`·끝 `/` 가 없고
+     `//`·`/./` 만 정리한 경로가 `/dev/stdin`·`/dev/fd/0+`·`/proc/<무엇이든>[/task/<id>]/fd/0+`(`_STDIN_DEV`)이면 stdin 이 코드, `/dev/null` 이면 빈 코드, 그 밖은 전부
+     확정 불가(`/proc/self/root/dev/stdin`·`/dev/fd/../../self/fd/0`·`/dev/stdi?`·`/dev/fd/3` 등 변형을 목록으로 막지 않는다).
+     값을 모르는 접두(`$D/stdin`·`"$D"/fd/0`·`$D`)는 끝 성분이 숫자면 늘 확정 불가, 이름이 리터럴 스크립트가 아니거나(`_named_path`) 끝이 `stdin`·`null` 이면 **입력이 올 수 있을 때**
+     확정 불가다(C6 항목 3·C7 항목 2). '입력이 올 수 있음'(`_input_possible`) = 단위에 `/dev/null`·`<&-` 아닌 stdin 리다이렉트, 직전 파이프, 또는 명령 원문(최상위)에
+     `<`(리다이렉트·heredoc·`<(`)·`>(`·`coproc` 가 있거나 이 단위보다 앞에 `|` 가 있음 — 그룹·함수·루프·`exec` 의 리다이렉트를 모델링하지 않고 원문 글자로 본다.
+     입력이 없으면 경로가 장치여도 읽을 코드가 없어 스크립트 파일로 본다(정직한 `bash "$X"` 를 지킨다).
+   - **stdin 을 읽는 셸(`-c`·스크립트 없음, `-s`, stdin 장치 경로)은 단위에 입력원(파이프·stdin 리다이렉트)이 없으면 확정 불가**다 — 문구 "단위 밖에서 오는 표준입력의 코드를
+     확정할 수 없음"(C7 6b). 그룹·함수·루프·`exec <` 로 단위 밖에서 들어오는 stdin(`{ bash; } <<< …`·`f() { sh; }; … | f`·`exec < x.sh; bash`·`… | bash -c bash`)을
+     모델링하지 않고, stdin 셸은 단위에 적힌 입력만 받는다. 실행하지 않는 경우(noexec·`--help`·`--version` 류)와 단위에 `< /dev/null`·`<&-` 를 적은 경우는 해석할 코드가 없다(허용).
+     `find -exec|-execdir|-ok|-okdir` 로 띄운 셸은 find 의 stdin(리다이렉트·파이프)을 물려받는다(C5) — `-c` 코드만 알아보는 첫 확인(`probe`)과 policy 는 이 규칙을 쓰지 않는다.
    - 위 코드 자리의 텍스트를 **정적으로 확정할 수 없으면** 모델링 불가의 한 종류(`CodeUnknown`, §3.8 (가′)) — `-c` 문자열·`eval` 인자·`trap` 코드·
      heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력(`curl … | sh`·`cat f | bash`·`base64 -d | sh`), `bash < 파일`,
-     프로세스 치환(`bash <(…)`·`source <(…)`·`. <(…)`). 래퍼(env·command·exec·sudo 등)를 벗긴 셸에도 같다(최종 묶음 C 항목 7·C2 (3)).
-     C3 추가: 파이프 입력이 있는데 대상 명령 이름을 확정할 수 없음(`… | $SHELL`·`| "$PAGER"`·`| $(which sh)` — 셸일 수 있다. 같은 명령 안에서
-     리터럴로 대입한 이름은 확정), `xargs … sh -c`(코드 인자 없음 — 첫 입력 항목이 코드가 된다).
+     프로세스 치환(`bash <(…)`·`source <(…)`·`. <(…)`), `xargs … sh -c`(코드 인자 없음 — 첫 입력 항목이 코드가 된다). 래퍼(env·command·exec·sudo 등)를 벗긴 셸에도 같다(최종 묶음 C 항목 7·C2 (3)).
+     파이프 대상 명령 이름의 미확정(C3 의 `… | $VAR` 검사)은 C6 에서 위 이름 확정 한 질문으로 흡수했다 — 파이프 대상도 같은 확정을 쓰고, 셸이면 stdin 규칙을 따른다.
      같은 명령 안에서 리터럴로 대입한 변수(`c='…'; bash -c "$c"`)는 확정이라 해석된다.
      원격·다른 해석기(`ssh host "$cmd"`·`python -c "$code"`)는 이 호스트의 셸 코드가 아니라 대상이 아니다(§13).
-   - `xargs [옵션] CMD …` → CMD 를 단위로 만들되 대상은 **미확정**(입력을 모름).
+   - `xargs [옵션] CMD …` → CMD 를 단위로 만들되 대상은 **미확정**(입력을 모름). CMD 의 이름도 단계 6 의 확정 규칙을 탄다.
    - `find … -exec CMD … {} [;+]` / `-execdir` / `-delete` → §3.5 find 규칙.
    - `docker [container] exec|run|create`, `docker compose exec|run`, `podman` 동일 → 뒤 명령을 `context=container` 로 해석(§3.6).
      `create` 는 `run` 과 같은 인자로 컨테이너를 만들고 `start` 때 그 명령을 돌리므로 `run` 과 같은 표로 본다(C3, `docker container --help` 실측). `start` 는 명령이 없어 해석 대상 아님.
+     컨테이너 안 명령도 같은 이름 확정·셸 옵션·stdin 규칙을 탄다(`docker exec c bash -posix -c …` 는 bash 긴 옵션, `docker exec c1 $X` 는 이름 확정 불가).
 8. **명령 치환·백틱**: `$(…)`·`` `…` `` 는 안쪽을 별도 단위로 재귀 해석(안쪽의 파괴 작업도 판정). 치환 결과가 들어간
    인자는 미확정. 단 `$(pwd)`·`` `pwd` ``·`$PWD` 는 그 단위의 cwd 로 확정한다(Docker `-v "$(pwd)":/app` 처럼 흔함).
    큰따옴표 토큰 안의 `$(`·백틱도 같은 규칙으로 안쪽을 해석한다.
@@ -304,9 +347,18 @@ class Segment:
      벗기기·내장 처리보다 먼저다. 변수로 부르는 명령은 이름이 확정되면 그 이름, 아니면 cwd·변수 전부 미확정. 재귀·상호 호출·재정의·갈래 정의·
      `source`/`eval` 정의·`unset -f`·함수 안 함수·호출 깊이 4·인라인 총량 200KB 초과는 모델링 불가.
    - **`source`/`.`**: 변수 전부와 cwd 를 미확정으로 둔다. 단 첫 인자가 `<경로>/activate`·`activate.sh` 면 가상환경 변수만 미확정.
+     어느 변수가 바뀌었는지 모르는 변경(`source`·동적 이름 할당·nameref, `_forget`)은 없던 `DOCKER_HOST`·`DOCKER_CONTEXT`·`DOCKER_CONFIG`·`IFS` 도 '모름' 키로 남긴다(C4 R-D·C6) —
+     뒤의 데몬 부재 증거(§3.5)와 이름 확정의 단어 분리(단계 6 S1)가 그 값을 믿지 않게.
+   - **`coproc`**(C7 6a): 예약어다. `coproc 단순명령` 과 `coproc [NAME] 복합명령`(`NAME` 은 바로 뒤가 `{`·`(` 일 때만 이름) 모두 안쪽 명령을 판정하고, cwd·변수 상태는
+     서브셸처럼 되돌린다(비동기 서브셸 — bash 5.2.21 실측). 이름 뒤가 `while`·`if` 등이면 이름으로 보지 않아 구문 오류(§3.8 (가))로 떨어진다(LIMITS).
    - 해석 마감: 토큰화·토큰 루프·합류·해석 입구에서 판정 마감을 확인한다.
 
 `python -c`, `node -e`, `perl -e`, `ruby -e`, 스크립트 파일 실행, `make`, `npm|pnpm|yarn run` 의 내부는 해석하지 않는다(§13).
+
+**해석 범위 원칙**(최종 리뷰 뒤 설계 판정, C7 에서 재확인): 해석기를 더 넓히지 않는다 — 따라가지 못하는 새 구문은 확정 불가(거부)로 떨어뜨리는 것이 기본이다.
+C3~C6 은 확정(= 허용) 면적을 넓히는 모델링(값 단어 분리, 할당 모양 추적, 입력원 판정)을 더했는데, 그 확장마다 전제(사용 시점의 단어 분리, 값 크기, IFS 를 바꾸는 경로,
+단위 밖 stdin)를 빠뜨려 라운드마다 새 거짓 허용(fail-open)이 나왔다. C7 은 확정을 단계 6 의 S1~S4 처럼 **원문 글자·따옴표·고정 상한으로 보이는 좁은 경우**로
+되돌렸다(근거·비용은 DECISIONS "C4~C7 결정"). 새로 더한 구문 모델은 판정을 더하는 방향(coproc 안쪽 판정)이거나 실제 의미와 같은 것(env 의 따옴표 할당)뿐이다.
 
 ### 3.4 대상 분류 (`target_class.py`)
 
@@ -483,8 +535,10 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
   소켓을 확인하지 않으므로 증거 없음 → 확정 불가. 이 허용과 조회 실패는 기록 `stats` 에 센다(§3.9).
   C3 로 좁힘 — 이 증거는 다음일 때만 쓴다(`policy._container_jobs`):
   - 띄운 CLI 가 `docker` 일 때(`Context.cli`). `podman` 은 데몬이 없으므로 docker 소켓 부재가 컨테이너 부재의 증거가 아니다 — 조회 실패 = 확정 불가.
-  - 명령이 데몬을 직접 지정하지 않았을 때(`Context.daemon_set`): 전역 `-H`·`--host`·`-c`·`--context`, 또는 `DOCKER_HOST`·`DOCKER_CONTEXT` 의 할당·해제(접두 할당·
-    `export`·`unset`·`env -u`·`env X=`)가 있으면 그 데몬은 훅 env 의 소켓과 다르므로 증거 없음 → 확정 불가.
+  - 명령이 데몬을 직접 지정하지 않았고 데몬 변수가 '모름' 도 아닐 때(`Context.daemon_set` 이 거짓, `shell_parse._container`): 전역 `-H`·`--host`·`-c`·`--context`·`--config`,
+    또는 `DOCKER_HOST`·`DOCKER_CONTEXT`·`DOCKER_CONFIG`(`_DAEMON_VARS`)가 그 docker 단위의 env 나 상태 env 에 키로 있으면(접두 할당·`export`·`unset`·`env -u`·`env X=`)
+    증거 없음 → 확정 불가. 상태 env 를 확정할 수 없는 문장이 앞에 있어도 같다 — `source`/`.`·동적 이름 할당(`export $(…)`·`declare -x "$N=…"`·`read "$v"`)은
+    데몬 변수를 '모름' 키로 남긴다(C4 R-D, §3.3 단계 10). 그 데몬은 훅 env 의 소켓과 다를 수 있다.
 
 | 컨테이너 호출 형태(§3.3 단계 7) | 마운트 표 | 데몬 부재 증거 |
 |---|---|---|
@@ -535,7 +589,10 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
      유령 기록 경로에 옛 mtime 으로 나타난 파일이 첫 제자리 수정으로 mtime 이 갱신돼 세션 것이 되지 않게. 이후 조회에서 `pre-session` 이 우선한다),
      추적 파일이고 이 세션의 `touched` 가 아직 없는데 이미 수정 상태면 `pre-dirty`.
      그리고 `touched`. 항상 출력 없음, 종료 0. **스위치와 무관하게 항상 기록**한다(D14) — 기록 시점에 꺼져 있던 파일도 나중에 켜진 판정이 정확히 본다.
-  2. 판정기: 해석한 단위가 아래 닫힌 목록의 제자리 수정이면 그 대상에 같은 규칙(`created` 제외)을 적용해 장부에 기록한다 — 쓰기·추가 리다이렉트(`>` `>|` `&>` `>>` `&>>`) 대상, `tee`(`-a` 포함)의 파일 인자, `sed -i|--in-place`, `perl -i|-pi`, `truncate`, `cp`·`mv`·`install`·`rsync`·`dd of=` 의 기존 목적지 파일, `git checkout [--] <경로>`, `git restore <경로>`. 목록 밖(`patch`, `git apply`, 스크립트 내부)은 기록하지 않는다(§13).
+  2. 판정기: 해석한 단위가 아래 닫힌 목록의 제자리 수정이면 그 대상에 같은 규칙(`created` 제외)을 적용해 장부에 기록한다 — 쓰기·추가 리다이렉트(`>` `>|` `&>` `>>` `&>>`) 대상, `tee`(`-a` 포함)의 파일 인자, `sed -i|--in-place`, `perl -i|-pi`, `truncate`, `touch` 의 피연산자(값 옵션 `-d`·`-r`·`-t`·`--date`·`--reference`·`--time` 의 값은 뺀다 — C4 R-E, coreutils `touch --help` 실측. mtime 만 바꿔도
+     created 증거가 생겨 세션 것으로 보이게 되던 경로), `cp`·`mv`·`install`·`rsync`·`dd of=` 의 기존 목적지 파일, `git checkout [--] <경로>`, `git restore <경로>`(`policy.inplace_targets`).
+     목록 밖(`patch`, `git apply`, 스크립트 내부, 파이썬·node 스크립트·편집기·빌드 도구의 파일 쓰기)은 기록하지 않는다(§13) — 그래서 아래 K-c 의 닫힘은 **이 목록의(모델된) 제자리 수정**에만 해당한다.
+     `touch` 가 **새로 만든** 파일은 `created` 로 기록하지 않는다(`created_targets` 밖) — drvfs 에서 그 파일의 이후 삭제는 보호 쪽(LIMITS).
      `ln -f`·`wget -O|-o`·`sort -o`(§3.5 덮어쓰기 표)의 기존 목적지도 같은 제자리 수정으로 기록한다.
      `mv` 단위는 원본을 분류해 위 `moved-in` 조건이면 목적지를 `moved-in` 으로 기록한다. 판정기도 모드와 무관하게 기록한다.
      **생성 기록**(최종 묶음 C 항목 8): 판정기는 해석한 단위가 새로 만들 경로 중 지금 없는 것 — `mkdir` 피연산자(`-p` 면 없는 조상까지)·쓰기/추가
@@ -572,10 +629,29 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 | 상황 | 판정 |
 |---|---|
 | (가) 해석 실패 — **구문 오류·입력 불량만**(닫히지 않은 따옴표·백틱·heredoc·그룹, 짝 없는 `do`/`esac`/`)`, 대상 없는 리다이렉트, 해석할 수 없는 문자, 끝 백슬래시, 명령 자리 확장 글롭, 함수 본문 모양 — bash 도 돌리지 못하는 것). 최종 묶음 C 항목 7 개정: 내용을 확정하지 못하는 코드·목록 밖 docker 옵션·재귀 깊이 초과·case 패턴 안 치환은 bash 가 돌리므로 (가) 가 아니라 (가′) | 원문에 삭제·덮어쓰기·git 파괴 관련 단어(`rm` `unlink` `shred` `truncate` `dd` `mkfs*`(`mkfs.ext4` 등 포함) `-delete` `reset` `clean` `restore` `checkout` `push` `volume` `prune` `>`)가 **단어 경계로**(앞뒤 글자가 영숫자·`_`·`-`·`.` 가 아님. `>` 는 위치 무관) 있으면 거부("명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"), 없으면 허용 |
-| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`·목록 밖 docker/compose 옵션·재귀 깊이(8) 초과·case 패턴 안 치환). 그 하위 종류 **정적으로 알 수 없는 코드**(`CodeUnknown`, 최종 묶음 C 항목 7·C2 (3)): 셸·`eval`·`trap`·`source` 가 돌릴 코드 텍스트를 확정할 수 없음 — `-c` 문자열·`eval` 인자·`trap` 코드·heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력·`< 파일`·프로세스 치환, stdin 장치 경로(`/dev/stdin`·`/dev/fd/0`·`/proc/self/fd/0`, `source --` 포함)·옵션 끝 `-`/`--` 뒤 `<(…)`·파이프 입력이 있는데 대상 명령 이름 미확정(`… \| $VAR`)·`xargs … sh -c`(코드 인자 없음)(§3.3 단계 7, C3). 예외(실행할 코드 없음 → 허용): `-n`(구문 검사만)·`< /dev/null` | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**. 모델링 불가는 "해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"(`R_MODEL`), 정적으로 알 수 없는 코드는 "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`R_DYNAMIC`). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 미확정 코드도 같은 성질이고, 무관한 `>/dev/null` 하나로 거부가 갈리던 것도 닫힌다(재생 새 거부 35+1건 = 0.036%). 구현 `ModelError`·`CodeUnknown`·`ParseResult.unmodeled`·`.dynamic`·`bash_guard.R_MODEL`·`R_DYNAMIC` |
+| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`·목록 밖 docker/compose 옵션·재귀 깊이(8) 초과·case 패턴 안 치환). 그 하위 종류 **정적으로 알 수 없는 코드**(`CodeUnknown`, 최종 묶음 C 항목 7·C2 (3)): 셸·`eval`·`trap`·`source` 가 돌릴 코드 텍스트를 확정할 수 없음 — `-c` 문자열·`eval` 인자·`trap` 코드·heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력·`< 파일`·프로세스 치환, 그리고 C3~C7 이 더한 하위 사유(아래 목록, §3.3 단계 6·7) | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**. 모델링 불가는 "해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"(`R_MODEL`), 정적으로 알 수 없는 코드는 "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`R_DYNAMIC`). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 미확정 코드도 같은 성질이고, 무관한 `>/dev/null` 하나로 거부가 갈리던 것도 닫힌다(재생 새 거부 35+1건 = 0.036%). 구현 `ModelError`·`CodeUnknown`·`ParseResult.unmodeled`·`.dynamic`·`bash_guard.R_MODEL`·`R_DYNAMIC` |
 | (나) 대상 확정 불가 | 해당 작업의 `UNRESOLVED` 규칙(거부 + 대안) |
 | (다) 판정기 내부 예외 | 오류 기록(§3.9, 모드와 무관 — 필드 `error` 와 `fallback: true`. shadow 에서 폴백 발생 수를 센다). 출력: 세션 env 값과 cwd 저장소 값 중 강한 모드(계산 실패 시 `off`)가 `on` 이면 `on` 모드의 내부 예외 폴백도 ask 를 내지 않도록 **OLD ∪ 위험 단어** 로 판정한다 — (가) 의 위험 단어 규칙을 원문에 적용한 결과와 OLD 중 하나라도 거부(OLD 는 `ask`·`deny`)면 거부("판정기 오류 — 단순한 형태로 나눠 실행하라"), 둘 다 허용일 때만 허용(최종 리뷰 I3 — 예외가 OLD 수준 보호를 깎지 않게. 위험 단어 목록에 없는 `cp`·`mv`·`tee` 덮어쓰기도 OLD 가 막던 것은 막는다). `off`·`shadow` 면 OLD 그대로(재감사 rootcause-r1-s2-003). 입구 스크립트는 파이썬이 뜨지 않거나 출력이 비면 OLD 를 출력한다(이때만 `on` 에서도 OLD 의 ask 가 나올 수 있다 — §13) |
 | 시간 예산 초과(내부 마감 5초) | 그때까지 **판정 대상 작업**(§3.5 표에서 판정 행에 해당하는 단위: 삭제·덮어쓰기·디스크·시스템·재귀 권한, git 의 판정 행 하위명령, docker 볼륨 삭제, 컨테이너 문맥 단위)을 만났으면 거부("판정 시간 초과 — 범위를 좁혀라"), 아니면 허용. 끊긴 자리 뒤에 남은 단위 중 판정 대상이 있어도 '만난' 것으로 본다. **해석 도중** 마감이 지나 해석을 멈췄으면 위험 단어와 무관하게 거부(구현 중 추가 — 그러지 않으면 큰 입력 뒤의 `cp a b` 가 허용된다). 외부 명령(git·stat·docker·find)은 개별 `timeout=2`초, 경로 묶음 분류는 경로마다 예산을 본다 |
+
+**(가′) 정적으로 알 수 없는 코드(`R_DYNAMIC`)의 하위 사유 — 최종 목록(C3~C7).** 기록 필드 `dynamic_kind`(§3.9)에 아래 문구가 그대로 남는다.
+
+| 하위 사유(문구) | 모양 |
+|---|---|
+| 셸 -c 문자열을 확정할 수 없음 · eval 인자를 확정할 수 없음 · trap 코드를 확정할 수 없음 · heredoc 본문을 확정할 수 없음 · <<< 문자열을 확정할 수 없음 · source 의 코드를 확정할 수 없음 | 코드 텍스트 미확정 |
+| 파이프로 넘긴 코드를 확정할 수 없음 · 표준입력의 코드를 확정할 수 없음 · 프로세스 치환으로 넘긴 코드를 확정할 수 없음 | 리터럴이 아닌 파이프 입력, fd 0 의 마지막 입력 리다이렉트가 파일·fd 복제, `bash <(…)` |
+| 표준입력 장치일 수 있는 경로를 확정할 수 없음 | 스크립트·`source` 경로가 `/dev`·`/proc` 를 지나는데 깨끗한 stdin 장치·`/dev/null` 이 아님, 값 모르는 접두 + 끝 숫자, 값 모르는 접두 + 입력이 올 수 있음(§3.3 단계 7) |
+| 단위 밖에서 오는 표준입력의 코드를 확정할 수 없음 | stdin 을 읽는 셸에 단위 입력원이 없음(C7 6b) |
+| 이름 붙은 fd 입력 리다이렉트의 번호를 확정할 수 없음 | `{var}<…` 가 셸 stdin 판정에 걸림(C5) |
+| 셸 옵션 X 을 해석할 수 없음 | 셸 getopt 규칙 밖 옵션(X 는 40자까지) |
+| `<셸>` 코드는 해석하지 않음 | `csh`·`tcsh`·`fish`(C7 6c) |
+| xargs 가 넣는 -c 코드를 확정할 수 없음 | `xargs … sh -c`(코드 인자 없음) |
+| 명령 이름을 확정할 수 없음 | §3.3 단계 6 의 이름 확정 실패(C6 — 래퍼 뒤·env 할당 뒤·xargs·컨테이너·파이프 대상 포함) |
+| find -exec 의 명령 이름을 확정할 수 없음 | `find -exec` 명령 자리의 `{}`(C7) — policy 경로에서는 대상 확정 불가(`UNRESOLVED`)로 나타난다 |
+
+**허용 예외 최종형**(실행할 코드가 없다): 옵션 루프가 끝났을 때 noexec 표지가 켜져 있음(`-n`·`-D`·`-o noexec`, `+n`·`+o <무엇이든>`·zsh `-o exec` 로 해제 — 마지막 설정이 이긴다),
+bash 의 `--help`·`--version`·`--dump-strings`·`--dump-po-strings`(한 대시 형 포함), stdin 셸의 단위에 `< /dev/null`·`<> /dev/null`·`<&-` 명시(fd 0 의 마지막 입력 리다이렉트일 때),
+스크립트·`source` 경로가 깨끗한 `/dev/null`. 입력원 없는 `bash -s` 는 더 이상 허용이 아니다(C7 6b — `< /dev/null` 을 붙인다).
 
 플랫폼 제한 10초(`hooks.json` timeout)는 유지한다. 실측 지연: 파이썬 기동+import 35ms, 해석 p99 0.5ms,
 git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1ms, `docker inspect` 33~68ms.
@@ -592,7 +668,7 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
   비용: 스위치와 무관하게 모든 Bash 호출에서 파이썬 판정이 돈다(기동 약 35ms — 사용자 수용 2026-10-14). 구현 실측: 판정 대상이 될 수 없는
   단순 명령은 빠른 길(`_TRIVIAL`)로 무거운 모듈 없이 허용해 off p50 약 40ms(`python3 -c pass` 기준선 대비 +8~20ms, 부하 의존).
 - 기록 파일: `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/bash-guard.jsonl`. 한 줄 JSON:
-  `{ts, mode, session_id, agent_id, cwd, command(최대 2000자), decision, old_decision, reasons[], ms, error, fallback, budget_exhausted, stats, settings_errors, ledger_bytes}`.
+  `{ts, mode, session_id, agent_id, cwd, command(최대 2000자), decision, old_decision, reasons[], ms, error, fallback, budget_exhausted, stats, settings_errors, ledger_bytes, dynamic_kind?}`(`dynamic_kind` 는 `R_DYNAMIC` 거부일 때만).
   최종 리뷰 뒤 추가한 관측 필드(shadow 지표용):
   - `fallback`(bool): 내부 예외 폴백(§3.8 (다))으로 낸 판정. `error` 에 예외 이름·메시지.
   - `budget_exhausted`(bool): 사유에 "판정 시간 초과" 가 있음.
@@ -601,6 +677,8 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
   - `settings_errors`(목록 또는 null): 스위치 settings 파일을 읽다 난 오류(`.claude/<파일>: <예외 이름>`, 파일 없음은 제외 — 스위치가 조용히 `off` 로
     떨어진 것을 본다, `guard_mode.read_failures`).
   - `ledger_bytes`(정수 또는 null): 그 시점 장부 파일 크기.
+  - `dynamic_kind`(문자열, C5): 거부 사유가 `R_DYNAMIC` 일 때만 있는 키 — 해석기의 하위 사유 문구(§3.8 (가′) 표) 그대로. 출력 사유에는 쓰지 않는다(`Decision.dynamic_kind`).
+    별도 코드 표를 두지 않는다 — 문구가 원인별로 고정이고 사용자 단어를 담는 것은 셸 옵션 문구 하나(40자로 자름)뿐이다.
   기록 대상: `on` 의 거부, `shadow` 의 신·구 불일치, 판정기 내부 예외, 그리고 `stats` 나 `settings_errors` 가 있는 판정(허용이어도) — 뒤 셋은
   모드와 무관(`off`·모드 미정 포함). 10MB 초과 시 `.1` 로 한 번 순환. 쓰기는 장부와 같은 잠금 헬퍼(§3.7)로, `LOCK_WAIT`(1초) 안에 못 잠그면 순환을
   건너뛰고 잠금 없이 한 줄 `O_APPEND`(로컬 파일 시스템의 `O_APPEND` write 한 번은 다른 쓰기와 섞이지 않는다).
@@ -872,6 +950,10 @@ class Finding:
 | 2026-10-17 | §3.8 | (가) 를 구문 오류만으로 좁힘, (가′) 에 목록 밖 docker 옵션·재귀 깊이·case 패턴 치환과 정적으로 알 수 없는 코드(`R_DYNAMIC`), (다) 폴백 = OLD ∪ 위험 단어 + 기록 `fallback` | 최종 리뷰 I3(예외 폴백이 `cp`·`mv` 덮어쓰기 허용), 설계 판정(모델링 불가 = 거부 원칙을 미확정 코드까지) |
 | 2026-10-17 | §3.3·§3.5·§3.7·§3.8 (C3) | `docker container exec\|run\|create`(create = run), 데몬 부재 증거는 `docker` CLI·데몬 직접 지정 없음일 때만(podman·`-H`/`--context`·`DOCKER_HOST`/`DOCKER_CONTEXT` 할당·해제 = 확정 불가), wget `--no-X` 정확한 이름만, 동적 stdin 확장(stdin 장치 경로·`source --`·`-- <(…)`·파이프 대상 미확정·`xargs sh -c`)과 허용 예외(`-n`·`< /dev/null`), birth 를 모르고 created 증거 없는 기존 파일의 제자리 수정 → `pre-session`(`created_evidence`) | C2 독립 점검: podman·데몬 직접 지정이 소켓 부재로 허용(I2-a·c), 관리 명령 형태 미인식(I2-b), 동적 stdin 잔여(D1–D5)와 과잉 거부(O1·O2), wget 부정형 과잉 거부(I5-a), 유령 기록 경로의 첫 제자리 수정으로 세션 것이 됨(K-c F1·F3) |
 | 2026-10-17 | §3.9 | 기록 필드 `fallback`·`budget_exhausted`·`stats`·`settings_errors`·`ledger_bytes`, `stats`·`settings_errors` 가 있으면 허용도 기록, 기록 잠금 상한 | 최종 리뷰 권고 4(shadow 관측 지표)·M4(스위치 조용한 off)·I1 |
+| 2026-10-17 | §3.3·§3.5·§3.7·§3.8 (C4) | 셸 옵션 bash getopt 규칙 한 곳(묶음 `o`/`O` 값, `-c` 플래그, noexec 표지와 `+n`·`+o` 해제, 모르는 옵션 = 확정 불가), stdin = fd 0 의 마지막 입력 리다이렉트(컨테이너 exec·`cat <<EOF \|` 공용), stdin 장치 경로 정리 뒤 판별, `source`·동적 이름 할당·`--config`·`DOCKER_CONFIG` 뒤 데몬 증거 금지, 제자리 수정 목록에 `touch` | C3 재검토: 부분 모델이던 셸 호출 해석이 `-n +n`·`-euo pipefail`·`</dev/null` 뒤 `<<<` 를 놓침(N1·N2·OOS-1·OOS-2), 장치 경로 변형 표기(D1·D2), 상태 env 미확정 뒤 데몬 증거(I2-c·N3), `touch` 로 유령 기록이 세션 것이 됨(K-c) |
+| 2026-10-17 | §3.3·§3.8·§3.9 (C5) | bash 맨 앞 긴 옵션 `-name`·`--name` 먼저 소비, zsh `-o exec`, stdin 장치 경로를 허용 목록으로, 래퍼 뒤 명령 자리 미확정 = 확정 불가, GNU time 값 옵션, 이름 붙은 fd, find -exec 셸의 stdin 상속, 기록 필드 `dynamic_kind` | C4 재검토: C4 재작성이 한 대시 긴 옵션 `-posix` 를 짧은 묶음으로 쪼개 거부→허용 회귀(NB1), 목록형 장치 판별이 링크·글롭 변형으로 샘(D1·D2), `env $X rm` 류 안쪽 미판정(OOS-B), `{x}<`(OOS-A)·find stdin(OOS-C) |
+| 2026-10-18 | §3.3·§3.8 (C6) | 명령 이름 확정을 `resolve_command_name` 한 질문으로(단위 첫 단어·래퍼·env 할당 뒤·xargs·find·policy·컨테이너·파이프 대상), `rbash`, 값 모르는 접두 셸 경로 + 입력원 = 확정 불가 | C5 재검토: 같은 질문이 호출 지점마다 따로 구현돼 한 곳을 막으면 옆이 남음(`$X rm`·`env $X=1 $Y`·`$D/stdin`). 이 묶음의 단어 분리·할당 모양 추적은 C7 이 좁혔다 |
+| 2026-10-18 | §3.3·§3.8 (C7) | 확정 면적을 S1(원문 `IFS`)·S2(안전 글자·16단어·1024자, 확장 8192자)·S3(값 모르게 대입된 변수는 따옴표 안만)·S4(글롭 이름 확정 불가)로 되돌림, 숫자 끝 값 모르는 경로·입력원 = 원문 글자, env `=` 치환·따옴표 할당, find `-exec {}`, 함수 본문 예외 = 위치 매개변수만, `coproc`, 단위 밖 stdin = 확정 불가, 셸 목록 `ash mksh yash posh hush`·`csh tcsh fish` 확정 불가 | C6 재검토: 확정을 넓힌 모델링마다 전제를 빠뜨려 새 거짓 허용(할당 모양의 사용 시점 분리, 지수 크기, IFS 산술·trap, 글롭) — 모델링 대신 사실로 보이는 좁은 경우로 |
 
 ---
 
