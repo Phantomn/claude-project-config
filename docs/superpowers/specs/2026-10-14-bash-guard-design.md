@@ -176,7 +176,9 @@ PreToolUse 훅 stdin JSON. 판정기가 쓰는 필드:
 - 거부: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<사유>"}}`
 - **`on` 모드의 새 판정기는 `ask` 를 출력하지 않는다.** `off`·`shadow` 는 현행 판정(`ask` 포함)을 바이트 그대로 낸다(§3.9).
 - 출력은 반드시 `json.dumps` 로 만든다(문자열 연결 금지 — 2026-08-30 `\s` 이스케이프로 JSON 이 깨져 게이트가 증발한 전례).
-- 종료 코드는 항상 0.
+- 판정기(`bash_guard.py`)의 종료 코드는 항상 0. 입구가 판정기 출력을 내보낼 때도 0. 판정기 출력이 비면(`off`·`shadow` 에서 OLD 가 빈 경우,
+  파이썬 기동 실패) 입구는 OLD 와 함께 **OLD 계산의 종료 코드를 그대로** 돌려준다(`exit "$OLD_RC"` — 스위치가 없을 때 변경 전과 종료 코드까지
+  같게 하는 동일성 의도. 최종 리뷰 M2 정정).
 - 사유 형식(거부 근거가 여럿이면 줄마다 하나):
 
 ```
@@ -187,6 +189,9 @@ PreToolUse 훅 stdin JSON. 판정기가 쓰는 필드:
 
 - 거부 근거 줄은 중복을 뺀 뒤 **최대 20줄**(`REASON_CAP`)이다. 넘으면 21번째 줄에 `… 외 N건` 을 쓴다(구현 중 추가 — 대상마다
   근거가 나와 사유가 수백 줄이 되는 경우).
+- 해석 단계 거부 사유 4종(대상 판정 전에 끝나는 경우): "명령을 해석하지 못했다"(§3.8 (가), `R_PARSE`), "해석 한계 — 모델링할 수 없는 구문"
+  (§3.8 (가′), `R_MODEL`), "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(§3.8 (가′),
+  `R_DYNAMIC` — 최종 리뷰 뒤 추가), "판정 시간 초과"(`R_TIMEOUT`). 내부 예외 폴백의 거부는 "판정기 오류"(`R_ERROR`, §3.8 (다)).
 
 ### 3.3 해석기 (`shell_parse.py`)
 
@@ -243,17 +248,26 @@ class Segment:
 6. **래퍼 벗기기**(반복 적용): 맨 앞 `\` 제거(`\rm` → `rm`), 절대경로 명령은 basename(`/bin/rm` → `rm`),
    `sudo`(옵션 `-u X` `-g X` `-E` `-H` `-n` 등 값 소비 포함), `doas`, `env`(`-i` `-u X` `VAR=val` 소비),
    `command`, `builtin`, `exec`, `nice`(`-n N`), `nohup`, `time`(`-p`), `timeout`(옵션 + DURATION), `stdbuf`(옵션),
-   `ionice`(옵션), `chronic`, `flock`(옵션 + 파일), `busybox`.
+   `ionice`(옵션), `chronic`, `flock`(옵션 + 파일), `busybox`, `setsid`, `strace`·`ltrace`(값 옵션 소비), `runuser -u USER`
+   (최종 리뷰 I6 — 이 호스트 `--help` 실측으로 값 옵션 표 `_WRAPPER_VALUE_OPTS`). 셸 코드를 받는 래퍼 `su -c`·`runuser -c`·`flock <파일> -c`·
+   `watch`(`-x` 없을 때 인자 전체)는 `sh -c <코드>` 로 바꿔 단계 7 로 해석한다. 이 목록 밖의 명령 실행 래퍼(`parallel`·`unbuffer`·`script -c`·
+   `chroot`·`systemd-run` 등)는 판정 대상이 아니다(D3, LIMITS).
    환경을 바꾸는 래퍼(구현 중 추가): `env -i`·`-u NAME` 과 `sudo`·`doas`(기본 env_reset, `sudo -E` 는 보존)는 안쪽 코드가 보는 바깥 변수를
    미확정으로 둔다. `env -C DIR`·`--chdir`·`sudo -D DIR` 는 명령의 cwd 를 DIR 로(바깥 셸이 확장, 모르면 미확정). `env -S` 는 모델링 불가(§3.8 (가′)).
    래퍼 뒤의 `cd`·`pushd`·`popd` 는 외부 명령 검색이라 폴더를 바꾸지 않는다.
 7. **재귀 해석**(같은 cwd 상속. 새 셸 — `-c`·heredoc·파이프 입력 — 에는 export 된 변수와 접두 할당만 넘어가고 `PWD` 는 작업 폴더로
    다시 정해진다. 환경에서 받은 변수 중 추적하는 것은 HOME·TMPDIR·USER·PWD 뿐 — 구현 중 정정. `eval` 은 같은 셸이라 env 그대로):
-   - `bash|sh|zsh|dash` 의 `-c STR`(옵션 묶음 `-lc` `-ec` 포함) → STR
+   - `bash|sh|zsh|dash|ksh` 의 `-c STR`(옵션 묶음 `-lc` `-ec` 포함) → STR
    - `eval STR…` → 인자 연결 문자열
-   - 셸에 heredoc 입력 → 본문
-   - `… | bash|sh|zsh|dash`: 파이프 앞 단위가 `echo`·`printf`(리터럴 인자)·`cat <<EOF`(본문)면 그 텍스트를 해석.
-     그 외(curl, base64 -d 등)는 **해석하지 않고 통과**(§13 구멍).
+   - `trap [-lp] [--] CODE SIG…` → CODE(최종 리뷰 I4 — bash 가 나중에 현재 셸에서 돌린다). 조회(`-l`·`-p`)·재설정(인자 하나·`-`·`''`)은 무해.
+     CODE 는 **trap 을 정의한 시점**의 cwd·변수로 해석한다(실행 시점 상태가 아니다 — LIMITS)
+   - 셸의 stdin 코드(셸에 heredoc·`<<<`·파이프로 넘기는 코드): heredoc 본문, `<<<` 문자열, 파이프 앞 단위가 리터럴 `echo`·`printf`·`cat <<EOF`(본문)면
+     그 텍스트를 해석. `source`·`.` 의 `/dev/stdin` 도 같은 규칙. 입력원이 없으면(`bash -s` 단독) 해석할 코드가 없다.
+   - 위 코드 자리의 텍스트를 **정적으로 확정할 수 없으면** 모델링 불가의 한 종류(`CodeUnknown`, §3.8 (가′)) — `-c` 문자열·`eval` 인자·`trap` 코드·
+     heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력(`curl … | sh`·`cat f | bash`·`base64 -d | sh`), `bash < 파일`,
+     프로세스 치환(`bash <(…)`·`source <(…)`·`. <(…)`). 래퍼(env·command·exec·sudo 등)를 벗긴 셸에도 같다(최종 묶음 C 항목 7·C2 (3)).
+     같은 명령 안에서 리터럴로 대입한 변수(`c='…'; bash -c "$c"`)는 확정이라 해석된다.
+     원격·다른 해석기(`ssh host "$cmd"`·`python -c "$code"`)는 이 호스트의 셸 코드가 아니라 대상이 아니다(§13).
    - `xargs [옵션] CMD …` → CMD 를 단위로 만들되 대상은 **미확정**(입력을 모름).
    - `find … -exec CMD … {} [;+]` / `-execdir` / `-delete` → §3.5 find 규칙.
    - `docker exec|run`, `docker compose exec|run`, `podman` 동일 → 뒤 명령을 `context=container` 로 해석(§3.6).
@@ -261,7 +275,8 @@ class Segment:
    인자는 미확정. 단 `$(pwd)`·`` `pwd` ``·`$PWD` 는 그 단위의 cwd 로 확정한다(Docker `-v "$(pwd)":/app` 처럼 흔함).
    큰따옴표 토큰 안의 `$(`·백틱도 같은 규칙으로 안쪽을 해석한다.
 9. **해석 실패**: 두 종류다(구현 중 개정). 구문 오류·입력 불량(`LexError`: 닫히지 않은 따옴표 등)은 §3.8 (가), 해석기가 알지만
-   따라가지 못하는 구문(`ModelError` — `ParseResult.unmodeled`)은 §3.8 (가′). 해석 도중 판정 마감이 지나면 해석을 멈추고 §3.8 시간 예산 규칙.
+   따라가지 못하는 구문(`ModelError` — `ParseResult.unmodeled`)과 그 하위인 정적으로 알 수 없는 코드(`CodeUnknown` — `ParseResult.dynamic`)는 §3.8 (가′).
+   목록 밖 docker/compose 옵션·재귀 깊이 초과·case 패턴 안 치환은 bash(docker)가 돌리는 모양이라 구문 오류가 아니라 `ModelError` 다(최종 묶음 C 항목 7). 해석 도중 판정 마감이 지나면 해석을 멈추고 §3.8 시간 예산 규칙.
 10. **제어 흐름과 실행 경로**(구현 중 확장 — 전수 재생과 적대적 리뷰가 찾은 오탐·누락을 고치며 bash 의미를 따라가도록 넓혔다):
    - **실행 경로 집합**: 각 구문이 만드는 끝 상태 집합을 한 곳(`outcome`·`collect`·`join`)에서 합류한다. `outcome` = 방금 끝난 요소의
      (성공 끝, 실패 끝), `collect` = 진행 중인 `&&`/`||` 목록의 (성공 끝, 실패 끝), `join` = 끝들의 합(비면 도달 불가 — 그 자리의 단위도
@@ -323,7 +338,7 @@ class Segment:
 | 4 | `SCRATCH` 임시 폴더 | 아래 임시 루트의 **하위**(루트 자체 아님). 폴더면 아래 '임시 루트 폴더 규칙' | 허용 |
 | 5 | `SESSION_NEW` 세션 생성 | 생성 시각 ≥ 세션 시작 **그리고** 공유 장부(§3.7)에 이 세션의 `pre-session` 기록이 없고 **다른 세션의 `created` 기록도 없음** | 허용 |
 | 6 | `IGNORED_ARTIFACT` 재생성 산출물 | git 작업 트리 안이고 `git check-ignore -q -- <경로>` 성공이며, **저장소 안 경로 구성요소 중 하나가 `REGENERABLE_NAMES` 이거나 확장자가 `.pyc` `.pyo` `.o` `.class`** | 허용 |
-| 7 | `PRESERVED` 보호 | 그 외 전부: 추적·무시 어느 쪽도 아닌 세션 전 파일, **재생성 이름이 아닌 ignore 대상**(데이터·로컬 설정), 저장소 밖 세션 전 파일, 생성 시각을 못 읽는 경로(`/mnt/c` 등 — 값 0) | 보호 |
+| 7 | `PRESERVED` 보호 | 그 외 전부: 추적·무시 어느 쪽도 아닌 세션 전 파일, **재생성 이름이 아닌 ignore 대상**(데이터·로컬 설정), 저장소 밖 세션 전 파일, 생성 시각을 못 읽는 경로(`/mnt/c` 등 — 값 0) 중 이 세션의 `created` 증거(§3.7)가 없는 것 | 보호 |
 
 `REGENERABLE_NAMES` = `node_modules` `dist` `build` `.next` `.nuxt` `target` `__pycache__` `.pytest_cache` `.ruff_cache` `.mypy_cache`
 `.tox` `.venv` `venv` `coverage` `.coverage` `.gradle` `.parcel-cache` `.turbo` `.cache`(허용 쪽 목록 — 빠진 이름은 보호로 떨어진다).
@@ -374,7 +389,7 @@ class Segment:
   `-prune` `-o` `-a` `!` `(` `)` 등)과 `-delete` 또는 `-exec rm [-rf] {} [;+]` 하나로만 이뤄졌으면, 그 동작을 `-print0` 로
   바꾼 읽기 전용 find 를 시간 예산 안에서 실행해 실제 대상 목록을 얻고 각각 분류한다. `-exec` 의 삭제 명령은 래퍼를 벗긴 이름으로 본다
   (`/bin/rm`·`sudo rm` 도 미리보기). 그 외 형태 → 확정 불가. `-exec sh|bash -c '<코드>'`·`-exec busybox rm` 처럼 코드 안에 삭제 명령 이름이
-  있으면 미리보기 없이 확정 불가(구현 중 추가).
+  있으면 미리보기 없이 확정 불가(구현 중 추가). 미리보기 find 가 0 이 아닌 종료 코드(일부 하위 폴더 권한 오류 등)로 끝나면 출력이 있어도 확정 불가(LIMITS).
 - `xargs rm` → 확정 불가(대안: "`find … -delete` 나 리터럴 경로를 써라").
 
 #### 덮어쓰기
@@ -383,7 +398,13 @@ class Segment:
 의 기존 목적지 파일(목적지가 폴더면 `폴더/원본이름`), `dd of=X`(X 가 장치 경로가 아닐 때),
 **파일을 쓰는 git 옵션**(구현 중 추가 — git 2.43 실측, 정책 표 `_GIT_FILE_OPTS` 한 곳): 모든 git 하위명령의 `--output[=]F`(log·diff·show·stash show·
 reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `archive -o|--output F`, `fast-export`·`fast-import` 의 `--export-marks=F`,
-`bundle create F`(`-` 는 표준 출력). 이 대상들은 장부에도 `>` 와 같은 제자리 쓰기로 기록한다.
+`bundle create F`(`-` 는 표준 출력),
+**`ln -f|--force`**(`-sf` 등 묶음 포함 — 기존 대상을 링크로 바꿔치기한다. `-f` 가 없으면 기존 대상이 있을 때 실패하므로 판정 대상 아님. 목적지 규칙은 `cp` 와 같다),
+**출력 옵션 표 `_OUT_OPTS`**(최종 리뷰 I5 — 이 호스트 실측): `wget -O|--output-document`·`-o|--output-file`(받기에 실패해도 0바이트로 비운다), `sort -o|--output`
+(기존 파일을 비우고 쓴다). `curl -o` 는 실측상 덮어쓰지만 표에 넣지 않는다(전수 재생에서 정직한 내려받기 루프 468건 과잉 거부 — DECISIONS, LIMITS).
+이 대상들은 장부에도 `>` 와 같은 제자리 쓰기로 기록한다.
+긴 옵션 약어(`getopt_long` 규칙)는 명령마다의 긴 옵션 표로 정식 이름으로 바꾼 뒤 판정한다(`cp`·`mv`·`ln` 등·git·wget·sort 공통 — `wget --output-do F` 는
+`--output-document`). 둘 이상에 맞는 모호한 약어(`wget --o`)와 모르는 긴 옵션은 확정 불가(C2 I5-R).
 `/dev/null` `/dev/stdout` `/dev/stderr` `/dev/tty` `/dev/fd/*` 와 bash 네트워크 가상 경로 `/dev/tcp/*` `/dev/udp/*` 는 제외(허용). 장치 경로 대상은 아래 디스크 규칙만 따른다.
 
 | 분류 | 판정 |
@@ -418,7 +439,7 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 |---|---|
 | `branch -d`, `reset`(`--hard` 아님), `rebase`, `commit --amend`, `update-ref -d`, `switch`/`checkout <브랜치>`(강제 아님 — 덮일 변경이 있으면 git 이 스스로 거부), `worktree add`, `stash pop|apply|push`, `rm`(`-f` 없음 — 수정된 파일은 git 이 거부), `restore --staged`만 | 허용 |
 | `branch -D B` | B 가 push 해 둔 상태(upstream `branch.B.remote` 가 있고 그 추적 ref 가 있으며 `git rev-list --count <upstream>..B` = 0)이거나, B 의 내용이 기본 브랜치에 들어갔거나(아래 '병합 판정'), B 끝 커밋이 B 외 다른 ref 에서 도달 가능하거나(`git for-each-ref --contains`), B 가 이번 세션에 만들어졌으면(`git reflog show --date=unix --format=%gd refs/heads/B` 의 마지막 줄 `B@{<epoch>}` = 가장 오래된 reflog 항목 시각 ≥ 세션 시작. `%ct` 는 그 항목이 가리키는 커밋 시각이라 쓰지 않는다) 허용. 아니면 거부 — "어디에도 남지 않는 커밋이 있다. 먼저 push 하거나 태그를 남겨라. 병합된 브랜치면 `git fetch` 뒤 다시 실행하라" |
-| `push`(아래 예외 외 전부: 기능 브랜치 강제 push, `+ref`, `--delete`, `--force-with-lease` 포함) | 허용. 강제·삭제·미러·`+ref`·`:ref` 가 하나도 없는 평범한 push 는 저장소·원격을 조회하지 않고 판정 대상에서 뺀다(구현 중 추가 — 조회 실패로 거부되던 재생 오탐. 시간 예산·모드 수집 대상도 아니다). `-o`/`--push-option` 의 값은 플래그로 세지 않는다 |
+| `push`(아래 예외 외 전부: 기능 브랜치 강제 push, `+ref`, `--delete`, `--force-with-lease` 포함) | 허용. 강제·삭제·미러·`+ref`·`:ref` 가 하나도 없는 평범한 push 는 저장소·원격을 조회하지 않고 판정 대상에서 뺀다(구현 중 추가 — 조회 실패로 거부되던 재생 오탐. 시간 예산·모드 수집 대상도 아니다). `-o`/`--push-option` 의 값은 플래그로 세지 않는다. `--force-with-lease`·`--force-if-includes` 는 강제로 세지 않는다 — 원격이 예상과 같을 때만 덮으므로 남의 새 push 는 지키지만 기본 브랜치 이력 재작성 자체는 막지 않는다(LIMITS, shadow 빈도를 보고 사용자가 결정). 원격 자리가 설정된 원격 이름이 아니면(URL 등) 판정하지 않는다 — 그 URL 이 `origin` 과 같아도(LIMITS) |
 | `push` 의 대상 ref 가 **기본 브랜치**이면서 `--force`·`-f`·`+ref`·`--delete`·`:ref`, 또는 `--mirror` | 거부 — "기본 브랜치 원격 이력 덮어쓰기. 기능 브랜치로 push 하고 PR 을 열어라" |
 | `reset --hard`, `checkout [--] <경로|.>`, `checkout -f`, `switch -f|--discard-changes`, `restore <경로>`(작업 트리 대상), `rm -f|--force <경로>`, `worktree remove [--force]`, linked worktree 최상위 폴더의 `rm -r` | 영향 범위의 커밋 안 된 변경(`git status --porcelain=v1 -z --untracked-files=no -- <범위>`)이 없거나 전부 이번 세션 변경이면 허용, 아니면 거부 — "먼저 `git stash push -u` 하거나 커밋하라". worktree 세 형태는 추가로 §3.4 워크트리 최상위 규칙 ②에 보호 분류가 있으면 거부 — "worktree 안에 유일본이 있다. 옮기거나 사용자에게 요청하라" |
 | `clean`(`-n`·`--dry-run` 이면 허용) | 같은 옵션에 `-n` 을 **더해**(`-f`·`-ff` 는 그대로 둔다 — `-ff` 를 `-f` 로 줄이면 중첩 저장소가 목록에서 빠지고, `-n` 은 `-f` 와 함께여도 지우지 않는다) 지워질 목록을 얻는다. 목록 출력을 막는 `-q`·`--quiet` 는 뺀다(빈 목록 = 허용으로 읽히는 오판 — 긴 옵션 접두 `--q`·`--qui` 포함). 각 항목(git 이 낸 대로, 폴더는 폴더 하나)을 삭제 규칙으로 분류. `--no-*` 긴 옵션이 있으면 미리보기를 만들지 않고 확정 불가 |
@@ -445,7 +466,14 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 
 - 대상 볼륨 목록: `volume rm` 은 인자, `volume prune`·`system prune --volumes` 는 `docker volume ls -q -f dangling=true`, `compose down -v` 는
   `docker volume ls -q -f label=com.docker.compose.project=<프로젝트명>`(프로젝트명은 `-p` 인자 또는 compose 파일 폴더명).
-- Docker 조회 실패(데몬 없음 등) → 볼륨 삭제는 확정 불가(거부), 컨테이너 안 경로는 허용.
+- Docker 조회 실패 → 볼륨 삭제는 확정 불가(거부).
+- 컨테이너 안 경로(최종 리뷰 I2·C2 I2-R 개정 — 원래 문구 '조회 실패 = 허용'을 좁혔다): 마운트 표를 얻지 못하면 **미확정은 `UNRESOLVED`** 다 —
+  컨테이너 이름 단어가 미확정, 없는 이름, compose `exec` 의 프로젝트 폴더를 모름(`cd -` 뒤·`-f "$X"`), 조회 실패, Docker Desktop 바인드 경로 복원 실패
+  모두 안쪽 경로를 확정 불가로 거부한다(조회 실패를 '컨테이너 없음'으로 읽지 않는다). 허용은 **데몬 부재의 긍정 증거**가 있을 때뿐이다(컨테이너가
+  존재할 수 없다): `DOCKER_HOST` 가 `unix://` 이고 그 소켓이 없음, 또는 `DOCKER_HOST`·`DOCKER_CONTEXT`·`~/.docker/config.json` 의 `currentContext` 가
+  모두 없고 기본 소켓 `/var/run/docker.sock` 과 rootless `$XDG_RUNTIME_DIR/docker.sock` 이 둘 다 없음(`target_class.docker_daemon_absent`).
+  클라이언트 실행 파일이 `PATH` 에 없는 것은 증거가 아니다(절대경로·좁은 훅 `PATH` 로도 docker 는 돈다). `tcp://` 등 다른 연결·설정된 컨텍스트는
+  소켓을 확인하지 않으므로 증거 없음 → 확정 불가. 이 허용과 조회 실패는 기록 `stats` 에 센다(§3.9).
 
 ### 3.6 컨테이너 문맥
 
@@ -454,6 +482,7 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 - `docker run|compose run` → 마운트는 `-v/--volume SRC:DST`, `--mount type=bind|volume,source=…,target=…` 인자에서 정적으로 얻는다.
 - 안쪽 명령은 §3.3 으로 해석(`sh -c` 재귀 포함). 대상의 컨테이너 경로가 마운트 `Destination` 자체이거나 그 하위면 `Source`(bind) 또는
   볼륨 이름(volume)으로 사상한다(`rm -rf /app` 처럼 Destination 자체를 지우면 Source 폴더의 내용 전체가 대상). 마운트 밖이면 컨테이너 내부 경로 → 허용.
+  마운트 표를 얻지 못하면 §3.5 Docker 의 컨테이너 안 경로 규칙(미확정 = `UNRESOLVED`, 데몬 부재 긍정 증거일 때만 허용).
 - compose 계열은 `-p/--project-name` 값을 컨테이너 조회(`docker compose -p <p> ps -q <서비스>`)에 쓴다.
 - 시스템 경로 거부 규칙은 **호스트 경로에만** 적용된다.
 - 세션 자체가 컨테이너 안에서 도는 경우(devcontainer)는 범위 밖(§13).
@@ -467,10 +496,12 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
 - 행: `<realpath>\t<kind>\t<session_id>\t<epoch>`. `kind`:
   - `pre-session`: 기록한 세션이 처음 손대기 직전, 생성 시각이 그 세션 시작보다 앞이던 파일
   - `pre-dirty`: 기록한 세션이 처음 손대기 전부터 커밋 안 된 수정이 있던 추적 파일
-  - `created`: 기록한 세션이 Write 로 새로 만든 파일
+  - `created`: 기록한 세션이 Write 로 새로 만든 파일, 그리고 판정기가 해석한 Bash 의 생성 목적지(아래 기록 주체 2 — 최종 묶음 C 항목 8)
   - `touched`: 기록한 세션이 Write·Edit·NotebookEdit 로 고친 파일(매번, 시각 포함)
   - `moved-in`: 판정기가 해석한 `mv` 의 원본이 `PRESERVED`·`PROTECTED_NAME` 이거나, 커밋 안 된 수정이 있고 그 수정이 이번 세션 것이 아닌 `GIT_TRACKED` 일 때 그 목적지 경로(목적지가 폴더면 `폴더/원본이름`). 깨끗한 추적 파일의 이름 변경은 HEAD 에 사본이 있어 기록하지 않는다(PR 흐름 무발동, 재감사 rootcause-r1-s2-001)
 - 쓰기: 추가도 압축도 같은 잠금(flock, `LOCK_EX`)을 장부 파일에 잡고 한다 — 추가는 잠금 안에서 한 줄 = `os.write` 1회(`O_APPEND`).
+  훅의 모든 잠금은 헬퍼 `ledger.lock_file(path, end)` 하나를 거친다(`LOCK_NB` 재시도를 마감까지만, 잠근 뒤 그 inode 가 아직 현재 파일인지 확인 —
+  압축 rename 대비). 판정 기록(`bash-guard.jsonl`, §3.9)도 같은 헬퍼를 쓴다(최종 리뷰 I1 — 무기한 대기가 deny 를 낸 뒤 훅을 멈춰 취소시켰다).
   잠금 대기에는 상한이 있다(판정 예산 마감, `touch-ledger` 는 3초, 마감이 없으면 1초 — `LOCK_NB` 재시도). 넘으면 기록을 포기하지 않고
   **잠금 없이 한 줄 `O_APPEND`** 한다(구현 중 추가 — 무기한 대기는 훅 timeout 에 죽어 같은 줄을 잃었고, 기록의 부재는 보호를 약하게 한다.
   남는 손실은 그 순간 압축 rename 과 겹칠 때의 한 줄, §13).
@@ -482,11 +513,23 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
      있으면 생성 시각 < 세션 시작이면 `pre-session`, 추적 파일이고 이 세션의 `touched` 가 아직 없는데 이미 수정 상태면 `pre-dirty`.
      그리고 `touched`. 항상 출력 없음, 종료 0. **스위치와 무관하게 항상 기록**한다(D14) — 기록 시점에 꺼져 있던 파일도 나중에 켜진 판정이 정확히 본다.
   2. 판정기: 해석한 단위가 아래 닫힌 목록의 제자리 수정이면 그 대상에 같은 규칙(`created` 제외)을 적용해 장부에 기록한다 — 쓰기·추가 리다이렉트(`>` `>|` `&>` `>>` `&>>`) 대상, `tee`(`-a` 포함)의 파일 인자, `sed -i|--in-place`, `perl -i|-pi`, `truncate`, `cp`·`mv`·`install`·`rsync`·`dd of=` 의 기존 목적지 파일, `git checkout [--] <경로>`, `git restore <경로>`. 목록 밖(`patch`, `git apply`, 스크립트 내부)은 기록하지 않는다(§13).
+     `ln -f`·`wget -O|-o`·`sort -o`(§3.5 덮어쓰기 표)의 기존 목적지도 같은 제자리 수정으로 기록한다.
      `mv` 단위는 원본을 분류해 위 `moved-in` 조건이면 목적지를 `moved-in` 으로 기록한다. 판정기도 모드와 무관하게 기록한다.
+     **생성 기록**(최종 묶음 C 항목 8): 판정기는 해석한 단위가 새로 만들 경로 중 지금 없는 것 — `mkdir` 피연산자(`-p` 면 없는 조상까지)·쓰기/추가
+     리다이렉트 대상·`cp`·`mv`·`install` 목적지 — 를 `created` 로 기록한다(`policy.created_targets`, 장치 경로 `/dev/…` 제외). 기록은 단위를 판정할 때
+     하므로 거부되거나 아직 실행하지 않은 명령의 목적지도 남는다 — 아래 조회의 mtime 조건이 그 유령 기록을 거른다.
 - 조회(세션 S 기준):
-  - `SESSION_NEW` = 생성 시각 ≥ S 시작 ∧ S 의 `pre-session` 없음 ∧ 다른 세션의 `created` 없음
+  - `SESSION_NEW` = 생성 시각 ≥ S 시작 ∧ S 의 `pre-session` 없음 ∧ 다른 세션의 `created` 없음.
+    **생성 시각을 못 읽는 경로**(drvfs 의 `/mnt/c` 는 birth 0)에서는 'created 증거'가 생성 시각을 대신한다: S 의 `created` 기록 e 가 있고 파일의
+    mtime(`lstat`) ≥ e.ts − `CLOCK_MARGIN` 이면 생성 시각 조건을 만족한 것으로 본다(나머지 두 조건은 그대로). 생성 시각을 읽을 수 있으면 생성 시각이
+    우선이다(created 를 보지 않는다). mtime 조건은 판정만 거친 명령의 목적지를 외부가 나중에 만든 세션 전 파일(mtime 이 기록보다 과거)을 거른다(C2 K-R).
+    장부가 비활성이면(상태 폴더가 절대경로가 아님 — `HOME` 없음) `pre-session` 을 볼 수 없으므로 `SESSION_NEW` 를 어떤 경로에도 적용하지 않는다(보호 쪽, 최종 리뷰 M5)
   - 이번 세션 변경 = 수정 시각 ≥ S 시작 ∧ S 의 `pre-dirty` 없음 ∧ S 시작 이후 다른 세션의 `touched` 없음
 - 조회 추가: 분류 1a — 경로 자신·상위·(폴더면) 하위 경로에 `moved-in` 이 있으면 보호.
+- **읽기 캐시**(최종 리뷰 C1): 판정 한 번 안에서 장부 행은 파일의 (inode, mtime_ns, 크기) 가 그대로인 동안 다시 읽지 않는다(`Ledger._rows_cached`,
+  `moved-in` 행은 별도 목록). 어느 프로세스의 기록이든 파일을 바꾸므로 키가 달라져 무효가 된다. `touched` 기록은 압축이 필요할 때 외에는 파일을 읽지
+  않는다. 근거: 대상 경로마다 장부 전체를 다시 읽어 수 MB 장부 + 대상 100개에서 판정이 훅 10초 한도를 넘었다(플랫폼이 판정 없이 실행). 분류 입구
+  (`classify`)에서도 시간 예산을 본다.
 - **시각 여유(시계 이상 방어)**: 위 '세션이 만든 것' 판정은 생성·수정 시각과 세션 시작 시각의 비교라 벽시계가 뒤로 가면 틀린다
   (실측 2026-10-15: 이 호스트의 벽시계가 약 30초마다 약 0.6초씩 뒤로 간다 — journald `Time jumped backwards`, 200회 반복에서
   저장소 폴더 생성 시각이 나중에 만든 transcript 보다 늦게 찍혀 분류 1b 가 세션 저장소로 오분류됨). 그래서 세션 시작 시각에 기대는 **모든** 비교
@@ -495,16 +538,18 @@ reflog·shortlog·blame·rev-list 등이 받고 나머지는 git 이 거부), `a
   `PRESERVED`, `pre-session` 기록)으로 판정한다. 비용은 세션 시작 후 첫 2초 안에 만든 것의 삭제가 보호되는 것뿐이다.
   값은 환경변수 `HARNESS_BASH_GUARD_CLOCK_MARGIN`(실수, 음수·파싱 실패·`nan`·`inf` → 2.0)으로 바꿀 수 있다(테스트용 작은 값 포함).
   `nan` 은 모든 비교가 거짓이라 '세션 전 아님' 즉 허용 쪽으로 기울므로 거부한다. 비교는 `target_class.before_session` 한 곳을 거친다.
-- 한계: 다른 세션이 Bash 로 만든·고친 파일, 임의 스크립트가 바꿔치기한 세션 전 파일, `patch`·`git apply` 로 고친 파일, 스크립트 안의 `mv` 는 기록되지 않는다(§13).
+- 한계: 다른 세션이 Bash 로 고친 파일(닫힌 목록 밖)·판정기가 해석하지 못한 모양으로 만든 파일(스크립트 내부 등), 임의 스크립트가 바꿔치기한 세션 전 파일,
+  `patch`·`git apply` 로 고친 파일, 스크립트 안의 `mv` 는 기록되지 않는다(§13). 판정기가 해석한 생성(위 생성 기록)은 다른 세션의 것이면 `created` 로
+  남아 이 세션 것으로 보지 않는다.
 
 ### 3.8 실패 정책과 시간 예산
 
 | 상황 | 판정 |
 |---|---|
-| (가) 해석 실패 — **구문 오류·입력 불량**(따옴표·heredoc 미종결, 짝 없는 예약어, `@(…)` 류 — bash 도 돌리지 못하는 것)과 해석기가 내용을 확정하지 못하는 입력(`-c` 문자열·`eval` 인자·셸에 넘기는 heredoc·`<<<` 를 확정할 수 없음, 목록 밖 docker 옵션, 재귀 깊이 초과) | 원문에 삭제·덮어쓰기·git 파괴 관련 단어(`rm` `unlink` `shred` `truncate` `dd` `mkfs*`(`mkfs.ext4` 등 포함) `-delete` `reset` `clean` `restore` `checkout` `push` `volume` `prune` `>`)가 **단어 경계로**(앞뒤 글자가 영숫자·`_`·`-`·`.` 가 아님. `>` 는 위치 무관) 있으면 거부("명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"), 없으면 허용 |
-| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`) | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**("해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 구현 `ModelError`·`ParseResult.unmodeled`·`bash_guard.R_MODEL` |
+| (가) 해석 실패 — **구문 오류·입력 불량만**(닫히지 않은 따옴표·백틱·heredoc·그룹, 짝 없는 `do`/`esac`/`)`, 대상 없는 리다이렉트, 해석할 수 없는 문자, 끝 백슬래시, 명령 자리 확장 글롭, 함수 본문 모양 — bash 도 돌리지 못하는 것). 최종 묶음 C 항목 7 개정: 내용을 확정하지 못하는 코드·목록 밖 docker 옵션·재귀 깊이 초과·case 패턴 안 치환은 bash 가 돌리므로 (가) 가 아니라 (가′) | 원문에 삭제·덮어쓰기·git 파괴 관련 단어(`rm` `unlink` `shred` `truncate` `dd` `mkfs*`(`mkfs.ext4` 등 포함) `-delete` `reset` `clean` `restore` `checkout` `push` `volume` `prune` `>`)가 **단어 경계로**(앞뒤 글자가 영숫자·`_`·`-`·`.` 가 아님. `>` 는 위치 무관) 있으면 거부("명령을 해석하지 못했다. 단순한 형태로 나눠 실행하라"), 없으면 허용 |
+| (가′) 해석 실패 — **모델링 불가**(구현 중 개정: 해석기가 알지만 따라가지 못하는 구문. 함수 재귀·상호 호출·재정의·갈래 정의 뒤 호출·`source`/`eval` 정의·`unset -f`·함수 안 함수·인라인 깊이/총량 상한 초과·`break`/`continue` 의 변수·0·범위 밖·루프 밖·서브셸 안 모양·본문 재해석 실패·`env -S`·목록 밖 docker/compose 옵션·재귀 깊이(8) 초과·case 패턴 안 치환). 그 하위 종류 **정적으로 알 수 없는 코드**(`CodeUnknown`, 최종 묶음 C 항목 7·C2 (3)): 셸·`eval`·`trap`·`source` 가 돌릴 코드 텍스트를 확정할 수 없음 — `-c` 문자열·`eval` 인자·`trap` 코드·heredoc 본문·`<<<` 문자열의 미확정, 리터럴이 아닌 파이프 입력·`< 파일`·프로세스 치환(§3.3 단계 7) | bash 는 그 명령을 돌리므로 **위험 단어와 무관하게 거부**. 모델링 불가는 "해석 한계 — 모델링할 수 없는 구문… 단순한 형태로 나눠 실행하라"(`R_MODEL`), 정적으로 알 수 없는 코드는 "코드를 정적으로 알 수 없다(변수·치환으로 만든 셸 코드) — 리터럴로 쓰거나 스크립트 파일로 실행하라"(`R_DYNAMIC`). 근거: 인라인 설계가 새로 해석 실패로 보내는 모양이 (가) 의 "위험 단어 없음 = 허용" 을 타고 100바이트~1.3KB 입력으로 `cp`·`mv`·`tee` 덮어쓰기를 숨겼다(위험 단어 목록에 이들이 없다 — 재검토 17건). 미확정 코드도 같은 성질이고, 무관한 `>/dev/null` 하나로 거부가 갈리던 것도 닫힌다(재생 새 거부 35+1건 = 0.036%). 구현 `ModelError`·`CodeUnknown`·`ParseResult.unmodeled`·`.dynamic`·`bash_guard.R_MODEL`·`R_DYNAMIC` |
 | (나) 대상 확정 불가 | 해당 작업의 `UNRESOLVED` 규칙(거부 + 대안) |
-| (다) 판정기 내부 예외 | 오류 기록(§3.9, 모드와 무관). 출력: 세션 env 값과 cwd 저장소 값 중 강한 모드(계산 실패 시 `off`)가 `on` 이면 `on` 모드의 내부 예외 폴백도 ask 를 내지 않도록 (가) 규칙을 원문에 적용해 거부("판정기 오류 — 단순한 형태로 나눠 실행하라") 또는 허용, `off`·`shadow` 면 OLD 그대로(재감사 rootcause-r1-s2-003). 입구 스크립트는 파이썬이 뜨지 않거나 출력이 비면 OLD 를 출력한다(이때만 `on` 에서도 OLD 의 ask 가 나올 수 있다 — §13) |
+| (다) 판정기 내부 예외 | 오류 기록(§3.9, 모드와 무관 — 필드 `error` 와 `fallback: true`. shadow 에서 폴백 발생 수를 센다). 출력: 세션 env 값과 cwd 저장소 값 중 강한 모드(계산 실패 시 `off`)가 `on` 이면 `on` 모드의 내부 예외 폴백도 ask 를 내지 않도록 **OLD ∪ 위험 단어** 로 판정한다 — (가) 의 위험 단어 규칙을 원문에 적용한 결과와 OLD 중 하나라도 거부(OLD 는 `ask`·`deny`)면 거부("판정기 오류 — 단순한 형태로 나눠 실행하라"), 둘 다 허용일 때만 허용(최종 리뷰 I3 — 예외가 OLD 수준 보호를 깎지 않게. 위험 단어 목록에 없는 `cp`·`mv`·`tee` 덮어쓰기도 OLD 가 막던 것은 막는다). `off`·`shadow` 면 OLD 그대로(재감사 rootcause-r1-s2-003). 입구 스크립트는 파이썬이 뜨지 않거나 출력이 비면 OLD 를 출력한다(이때만 `on` 에서도 OLD 의 ask 가 나올 수 있다 — §13) |
 | 시간 예산 초과(내부 마감 5초) | 그때까지 **판정 대상 작업**(§3.5 표에서 판정 행에 해당하는 단위: 삭제·덮어쓰기·디스크·시스템·재귀 권한, git 의 판정 행 하위명령, docker 볼륨 삭제, 컨테이너 문맥 단위)을 만났으면 거부("판정 시간 초과 — 범위를 좁혀라"), 아니면 허용. 끊긴 자리 뒤에 남은 단위 중 판정 대상이 있어도 '만난' 것으로 본다. **해석 도중** 마감이 지나 해석을 멈췄으면 위험 단어와 무관하게 거부(구현 중 추가 — 그러지 않으면 큰 입력 뒤의 `cp a b` 가 허용된다). 외부 명령(git·stat·docker·find)은 개별 `timeout=2`초, 경로 묶음 분류는 경로마다 예산을 본다 |
 
 플랫폼 제한 10초(`hooks.json` timeout)는 유지한다. 실측 지연: 파이썬 기동+import 35ms, 해석 p99 0.5ms,
@@ -522,8 +567,18 @@ git 조회 1.5~8ms(1.3만 파일 저장소 전체 status 최대 70ms), `stat` 1m
   비용: 스위치와 무관하게 모든 Bash 호출에서 파이썬 판정이 돈다(기동 약 35ms — 사용자 수용 2026-10-14). 구현 실측: 판정 대상이 될 수 없는
   단순 명령은 빠른 길(`_TRIVIAL`)로 무거운 모듈 없이 허용해 off p50 약 40ms(`python3 -c pass` 기준선 대비 +8~20ms, 부하 의존).
 - 기록 파일: `${XDG_STATE_HOME:-$HOME/.local/state}/harness-core/bash-guard.jsonl`. 한 줄 JSON:
-  `{ts, mode, session_id, agent_id, cwd, command(최대 2000자), decision, old_decision(shadow), reasons[], ms, error}`.
-  기록 대상: `on` 의 거부, `shadow` 의 신·구 불일치, 그리고 판정기 내부 예외(모드와 무관 — `off`·모드 미정 포함). 10MB 초과 시 `.1` 로 한 번 순환.
+  `{ts, mode, session_id, agent_id, cwd, command(최대 2000자), decision, old_decision, reasons[], ms, error, fallback, budget_exhausted, stats, settings_errors, ledger_bytes}`.
+  최종 리뷰 뒤 추가한 관측 필드(shadow 지표용):
+  - `fallback`(bool): 내부 예외 폴백(§3.8 (다))으로 낸 판정. `error` 에 예외 이름·메시지.
+  - `budget_exhausted`(bool): 사유에 "판정 시간 초과" 가 있음.
+  - `stats`(객체 또는 null): 판정 중 센 횟수 — `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정 → 확정 불가),
+    `compose_project_dir_none`(compose exec 의 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용), `scratch_hole`(임시 폴더 표식 예외(§3.4)로 허용).
+  - `settings_errors`(목록 또는 null): 스위치 settings 파일을 읽다 난 오류(`.claude/<파일>: <예외 이름>`, 파일 없음은 제외 — 스위치가 조용히 `off` 로
+    떨어진 것을 본다, `guard_mode.read_failures`).
+  - `ledger_bytes`(정수 또는 null): 그 시점 장부 파일 크기.
+  기록 대상: `on` 의 거부, `shadow` 의 신·구 불일치, 판정기 내부 예외, 그리고 `stats` 나 `settings_errors` 가 있는 판정(허용이어도) — 뒤 셋은
+  모드와 무관(`off`·모드 미정 포함). 10MB 초과 시 `.1` 로 한 번 순환. 쓰기는 장부와 같은 잠금 헬퍼(§3.7)로, `LOCK_WAIT`(1초) 안에 못 잠그면 순환을
+  건너뛰고 잠금 없이 한 줄 `O_APPEND`(로컬 파일 시스템의 `O_APPEND` write 한 번은 다른 쓰기와 섞이지 않는다).
 - **기록은 로컬 전용**이다. 저장소에 넣지 않는다(명령 원문에 경로·비밀이 섞일 수 있음).
 
 ---
@@ -731,12 +786,13 @@ class Finding:
 설계 시점의 목록이다. 구현 중 확정한 한계(해석기 범위·표식 가정·모델링 불가 비용·shadow 관측 지표 포함)의 전체 목록과 분류는
 `plugins/harness-core/LIMITS.md` 가 정본이다.
 
-- 간접 실행 내부는 보지 않는다: 스크립트 파일, `python -c`·`node -e`·`perl -e`, `make`, `npm|pnpm|yarn run`,
-  내용을 모르는 `… | sh`(`curl | sh`, `base64 -d | sh`). 의도적 난독화는 위협 모델 밖.
+- 간접 실행 내부는 보지 않는다: 스크립트 파일, `python -c`·`node -e`·`perl -e`, `make`, `npm|pnpm|yarn run`. 의도적 난독화는 위협 모델 밖.
+  (구현 중 개정: 내용을 모르는 `… | sh`(`curl | sh`, `base64 -d | sh`)는 통과가 아니라 '정적으로 알 수 없는 코드'로 거부 — §3.3 단계 7, §3.8 (가′).)
 - 장부는 Write·Edit·NotebookEdit 와 해석 가능한 제자리 편집만 기록한다. 임의 스크립트가 바꿔치기한 세션 전 파일은
   `SESSION_NEW` 로 오분류될 수 있다. 세션 전부터 수정돼 있던 추적 파일을 스크립트(포매터 등)가 다시 고치면
   "이번 세션 변경"으로 오분류될 수 있다.
-- 생성 시각을 못 읽는 파일시스템(`/mnt/c` 9p)은 모두 보호 쪽으로 분류된다(임시 루트 제외).
+- 생성 시각을 못 읽는 파일시스템(`/mnt/c` 9p)은 보호 쪽으로 분류된다(임시 루트 제외). 구현 중 개정: 이 세션의 `created` 장부 증거(Write·판정기가
+  해석한 Bash 생성, mtime 조건)가 있으면 세션 생성으로 본다(§3.7).
 - `--resume` 으로 새 기록 파일이 생기면 이전 대화에서 만든 파일은 세션 전 파일로 취급된다(보수적).
 - 판정 시점과 실행 시점 사이의 파일 상태 변화(TOCTOU)는 다루지 않는다.
 - D3(allow 유지)로 인해 auto 모드에서는 분류기 판정이 건너뛰어진다(강한 정황). auto 모드를 쓰게 되면 D3 재검토.
@@ -784,6 +840,12 @@ class Finding:
 | 2026-10-17 | §3.7 | 장부 잠금 대기 상한과 잠금 없는 한 줄 추가, `nan`·`inf` 거부, `before_session` 한 곳 | 무기한 잠금 대기가 훅 timeout 으로 기록을 잃음(기록 부재는 보호 약화) |
 | 2026-10-17 | §3.8 | (가) 범위 명시, (가′) 모델링 불가 = 위험 단어 무관 거부, 해석 중 마감 = 거부, 남은 단위 | 모델링 불가 모양이 (가) 의 허용을 타고 `cp`·`mv`·`tee` 덮어쓰기를 숨김(재검토 17건) |
 | 2026-10-17 | §13 | LIMITS.md 를 정본으로 | 구현 중 한계가 크게 늘어 한 곳에서 분류 |
+| 2026-10-17 | §3.2 | 종료 코드 문구(판정기 0, 판정기 출력이 비면 입구가 OLD 의 종료 코드 전달), 해석 단계 사유 4종(`R_DYNAMIC` 추가) | 최종 리뷰 M2(문서가 구현의 동일성 의도와 어긋남), 최종 묶음 C 항목 7 |
+| 2026-10-17 | §3.3 | 래퍼 `setsid`·`strace`·`ltrace`·`runuser -u`, 셸 코드 래퍼 `su`/`runuser -c`·`flock -c`·`watch`, `trap` 코드 해석, stdin 코드 규칙·`ksh`, `CodeUnknown` | 최종 리뷰 I4·I6(판정기 밖 명령 집합의 거짓 허용), C 재검토의 동적 stdin·프로세스 치환 누락 |
+| 2026-10-17 | §3.5 | `ln -f`, 출력 옵션 표(`wget`·`sort`, `curl -o` 제외), 긴 옵션 약어 해소·모호 약어 확정 불가, push 의 URL 원격·`--force-with-lease` 명시, find 미리보기 rc≠0, **Docker '조회 실패 = 허용' → 미확정은 `UNRESOLVED`, 데몬 부재의 긍정 증거(소켓 부재)만 허용 + 기록** | 최종 리뷰 I2·I5·I7·I8·M6, C 재검토 I2-R(클라이언트 PATH 를 데몬 증거로 써서 절대경로 docker 가 허용됨)·I5-R(wget 약어) |
+| 2026-10-17 | §3.4·§3.7 | 판정기의 Bash `created` 기록, birth 0 경로의 created 증거(mtime ≥ 기록 시각 − 여유), 장부 비활성이면 `SESSION_NEW` 없음, 장부 읽기 캐시·분류 입구 예산, 모든 잠금 = 상한 있는 헬퍼 하나(기록 포함) | `/mnt/c` 세션 폴더가 늘 거부되던 것(최종 묶음 C 항목 8)과 그 유령 기록(C 재검토 K-R), 최종 리뷰 C1(장부 재읽기로 훅 10초 초과 → 판정 없이 실행)·I1(기록 잠금 무한 대기)·M5 |
+| 2026-10-17 | §3.8 | (가) 를 구문 오류만으로 좁힘, (가′) 에 목록 밖 docker 옵션·재귀 깊이·case 패턴 치환과 정적으로 알 수 없는 코드(`R_DYNAMIC`), (다) 폴백 = OLD ∪ 위험 단어 + 기록 `fallback` | 최종 리뷰 I3(예외 폴백이 `cp`·`mv` 덮어쓰기 허용), 설계 판정(모델링 불가 = 거부 원칙을 미확정 코드까지) |
+| 2026-10-17 | §3.9 | 기록 필드 `fallback`·`budget_exhausted`·`stats`·`settings_errors`·`ledger_bytes`, `stats`·`settings_errors` 가 있으면 허용도 기록, 기록 잠금 상한 | 최종 리뷰 권고 4(shadow 관측 지표)·M4(스위치 조용한 off)·I1 |
 
 ---
 
