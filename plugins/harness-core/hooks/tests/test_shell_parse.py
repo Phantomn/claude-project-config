@@ -1269,6 +1269,8 @@ class ShellInvocationC5Test(unittest.TestCase):   # C5: 허용 목록(긍정 증
             for c in (f"{U4} | bash {p}", f"{U4} | source {p}", f"{U4} | . -- {p}", f"{U4} | dash {p}"):
                 self.assertTrue(dyn(c), c)
         self.assertTrue(dyn("echo 'rm x' | bash /dev/fd/../../self/fd/0"))   # 리터럴 파이프라도 경로를 모른다
+        self.assertTrue(dyn("echo 'rm x' | bash /proc/[s]elf/fd/0"))   # 글롭 글자가 장치 정규식([^/]+)에 맞아도 펼친 경로는 모른다
+        self.assertTrue(dyn("echo 'rm x' | bash /proc/*/fd/0"))
         self.assertEqual(inner("echo 'rm x' | bash /proc/self/fd/0"), [("rm", 1, "/w")])   # 깨끗한 stdin 장치는 해석
         for c in (f"{U4} | bash /dev/null", f"{U4} | bash ./build.sh", f"{U4} | bash /opt/dev/stdin.sh", f"{U4} | bash build/../run.sh",
                   "source ./env.sh", "bash ./scripts/*.sh"):
