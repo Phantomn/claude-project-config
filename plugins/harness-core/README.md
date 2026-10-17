@@ -38,7 +38,7 @@ bash-guard 가 그 밖에 읽는 환경 변수(설정 노브가 아니라 실행
 | `HOME` | 상태 폴더 기본값(없으면 장부 비활성 — 세션 생성 판정을 하지 않는 보호 쪽), `~` 확장, 저장소 판정에서 홈 저장소 제외, 임시 루트 `~/.cache`, Docker 컨텍스트 설정 `~/.docker/config.json` |
 | `TMPDIR` | 임시 루트 하나(설정 시). 명령 안에서 바꾼 `TMPDIR` 는 `mktemp` 결과 확정에 쓰지 않는다 |
 | `COMPOSE_PROJECT_NAME` | `docker compose down -v` 의 대상 볼륨 프로젝트명(명령의 `-p` 가 없을 때) |
-| `DOCKER_HOST`·`DOCKER_CONTEXT`·`XDG_RUNTIME_DIR` | 컨테이너 조회가 실패했을 때 데몬 부재의 긍정 증거 판정(소켓 부재만 증거 — `unix://` 소켓, 기본 `/var/run/docker.sock`, rootless `$XDG_RUNTIME_DIR/docker.sock`). 클라이언트가 `PATH` 에 있는지는 보지 않는다 |
+| `DOCKER_HOST`·`DOCKER_CONTEXT`·`XDG_RUNTIME_DIR` | 컨테이너 조회가 실패했을 때 데몬 부재의 긍정 증거 판정(소켓 부재만 증거 — `unix://` 소켓, 기본 `/var/run/docker.sock`, rootless `$XDG_RUNTIME_DIR/docker.sock`). 클라이언트가 `PATH` 에 있는지는 보지 않는다. 이 증거는 `docker exec`·`docker container exec`·`docker compose exec` 에만 쓴다 — `podman`(데몬이 없다)·독립 실행 `docker-compose` 와, 명령이 데몬을 직접 지정한 경우(전역 `-H`·`--host`·`-c`·`--context`, 또는 명령 안에서 `DOCKER_HOST`·`DOCKER_CONTEXT` 를 할당·`export`·`unset`·`env -u`)는 훅 env 의 소켓 부재가 증거가 아니라 확정 불가다(spec §3.5) |
 
 ## bash-guard
 
@@ -95,7 +95,7 @@ touch-ledger.py ─ PreToolUse `Write|Edit|NotebookEdit`(timeout 5초) 장부 �
 | `ms` | 판정 시간(밀리초) |
 | `error`·`fallback` | 내부 예외 메시지(또는 출력 실패), 내부 예외 폴백으로 낸 판정이면 `true` |
 | `budget_exhausted` | 사유에 판정 시간 초과가 있으면 `true` |
-| `stats` | 판정 중 센 횟수(없으면 null): `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정), `compose_project_dir_none`(compose exec 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용), `scratch_hole`(임시 폴더 아래 마지막 이름만 변수인 대상을 허용) |
+| `stats` | 판정 중 센 횟수(없으면 null): `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정), `compose_project_dir_none`(compose exec 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용 — `docker` CLI 이고 데몬 직접 지정이 없을 때만), `scratch_hole`(임시 폴더 아래 마지막 이름만 변수인 대상을 허용) |
 | `settings_errors` | 스위치 settings 파일을 읽다 난 오류(파일 없음 제외). 있으면 스위치가 조용히 `off` 로 떨어졌을 수 있다 |
 | `ledger_bytes` | 그 시점 장부 크기 |
 
@@ -116,6 +116,7 @@ shadow 동안 볼 것과 그 출처(최종 리뷰 권고 목록 기준):
 |---|---|---|
 | 신·구 불일치 수와 방향 | 예 | `decision`·`old_decision`(shadow 불일치 줄) |
 | 거부 사유 종류 분포(확정 불가 비율·사유 상위, 구문 오류·해석 한계·동적 코드) | 예 | `reasons` |
+| 동적 코드 거부 중 "파이프 대상 명령을 확정할 수 없음"(`… \| $VAR` — 정직한 `$PAGER`·`$PYTHON` 까지 거부하는 과잉 거부, LIMITS O16) 건수 | 간접 | `reasons` 는 "코드를 정적으로 알 수 없다" 한 문구뿐이고 하위 사유는 기록하지 않는다. 그 줄의 `command` 를 `shell_parse.parse` 로 다시 해석해 결과의 `error` 문구로 센다 |
 | 판정 시간 p50·p99·최대, 시간 초과 건수 | 예(기록된 줄만) | `ms`·`budget_exhausted` |
 | 장부 크기 | 예 | `ledger_bytes` |
 | 내부 예외 폴백 건수와 명령 모양 | 예 | `error`·`fallback` |
