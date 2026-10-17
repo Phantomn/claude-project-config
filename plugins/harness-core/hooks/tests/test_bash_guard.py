@@ -217,9 +217,23 @@ class MainTest(_WorldCase):
         self.assertEqual(r.returncode, 0); self.assertNotIn("ask", r.stdout)
         out = json.loads(r.stdout)["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny"); self.assertIn("판정기 오류", out["permissionDecisionReason"])
+        # 최종 리뷰 I3: 폴백은 OLD 결과와 위험 단어의 합집합 거부 — 둘 다 허용일 때만 허용
         r = self.run_main({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": 5}, extra=ON)
         self.assertEqual(r.returncode, 0); self.assertNotIn("ask", r.stdout)
-        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")   # OLD 가 ask
+        r = self.run_main({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": 5}, old="", extra=ON)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")  # OLD 허용 + 위험 단어 없음
+        self.assertTrue(all(x["fallback"] for x in self.log_lines()[1:]))
+
+    def test_real_exception_falls_back(self):   # I3: 실제 원인(장부 파일 자리에 폴더)으로 판정 중 예외 → 폴백 경로
+        led = state_dir(w.environ) / "ledger.tsv"; led.mkdir(parents=True)
+        r = self.run_main(w.payload("cp {HOME}/notes.md README.md"), old="", extra=ON)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")   # 위험 단어 없음·OLD 허용
+        r = self.run_main(w.payload("cp {HOME}/notes.md README.md"), extra=ON)
+        out = json.loads(r.stdout)["hookSpecificOutput"]; self.assertEqual(out["permissionDecision"], "deny")   # OLD 가 ask
+        self.assertIn("판정기 오류", out["permissionDecisionReason"])
+        logs = self.log_lines(); self.assertEqual(len(logs), 2)
+        self.assertTrue(all(x["fallback"] and "IsADirectoryError" in x["error"] for x in logs))
 
 
 def load(name: str) -> list[dict]:

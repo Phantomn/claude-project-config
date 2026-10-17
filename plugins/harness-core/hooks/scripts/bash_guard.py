@@ -243,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.monotonic()
         payload: object = None
         raw = b""
+        fallback = False
+        old_dec = _old_decision(old)
         try:
             raw = sys.stdin.buffer.read()   # 바이트로 — 텍스트 인코딩(ascii 등)에 판정이 좌우되지 않게
             payload = json.loads(raw)
@@ -250,11 +252,14 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001 — 판정기 내부 예외는 모두 폴백(spec §3.8 (다))
             d = _fallback(payload, environ, raw.decode("utf-8", "replace"))
             d.error = f"{type(e).__name__}: {e}"
+            fallback = True
+            # 폴백 = OLD 결과와 위험 단어의 합집합 거부(둘 다 허용일 때만 허용) — 예외가 OLD 수준 보호를 깎지 않게(최종 리뷰 I3)
+            if d.allow and old_dec in ("ask", "deny"):
+                d.allow, d.reasons = False, [R_ERROR]
         out = final_output(d, old)
         if not _emit(out, _SAFE[d.allow] if d.mode == "on" else None):
             d.error = "; ".join(filter(None, [d.error, "출력 실패"]))
         out = ""
-        old_dec = _old_decision(old)
         old_allow = old_dec not in ("ask", "deny")
         if d.error or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
             p = payload if isinstance(payload, dict) else {}
@@ -267,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                            "agent_id": p.get("agent_id"), "cwd": p.get("cwd"),
                            "command": command[:2000] if isinstance(command, str) else None,
                            "decision": "allow" if d.allow else "deny", "old_decision": old_dec, "reasons": d.reasons,
-                           "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error}, environ)
+                           "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error, "fallback": fallback}, environ)
             except Exception:  # noqa: BLE001, S110 — 기록 실패가 판정 출력을 막으면 안 된다
                 pass
     except Exception:  # noqa: BLE001 — 폴백 자체가 실패하면 입구가 OLD 를 내는 것과 같게
