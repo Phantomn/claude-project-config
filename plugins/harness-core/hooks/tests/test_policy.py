@@ -92,6 +92,13 @@ class OverwriteTest(_WorldCase):
                   "sort -o src/main.py src/main.py", "curl -s -o {HOME}/notes.md http://x", "curl -O http://x/notes.md"):
             self.assertEqual(ev(c), [], c)
         self.assertEqual(ev('wget -O "$X" http://x'), [("덮어쓰기", UNRESOLVED)])
+        # C2 I5-R: 긴 옵션 약어는 ln 처럼 _long 으로 해소(GNU getopt_long), 모호하면 확정 불가
+        for c in ("wget --output-do {HOME}/notes.md http://x", "wget --output-doc={HOME}/notes.md http://x", "wget -nv --no-clob --output-document {HOME}/notes.md http://x",
+                  "sort --out={HOME}/notes.md x", "sort --o {HOME}/notes.md x"):
+            self.assertEqual(ev(c), [("덮어쓰기", PRESERVED)], c)
+        for c in ("wget --o {HOME}/notes.md http://x", "wget --frobnicate -O {SCRATCH}/s1/o http://x"):   # 모호 약어·모르는 옵션 = 피연산자 경계를 모른다
+            self.assertEqual(ev(c), [("덮어쓰기", UNRESOLVED)], c)
+        self.assertEqual(ev("wget --no-clob --quiet -O {SCRATCH}/s1/o http://x"), [])
 
     def test_git_output_overwrites(self):   # git log/diff/show 의 --output 은 그 파일을 덮어쓴다(git 2.43 실측)
         self.assertEqual(ev("echo x > README.md"), [("덮어쓰기", "DIRTY")])

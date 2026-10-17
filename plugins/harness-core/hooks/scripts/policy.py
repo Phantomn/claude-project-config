@@ -173,6 +173,35 @@ _LONGS: dict[str, tuple[str, str, frozenset[str]]] = {
     "tee": (OP_OVERWRITE, OVERWRITE, frozenset(("--append", "--ignore-interrupts", "--output-error", *_COMMON_LONGS))),
     "truncate": (OP_OVERWRITE, OVERWRITE, frozenset(("--no-create", "--io-blocks", "--reference", "--size", *_COMMON_LONGS))),
 }
+# wget 1.21.4·sort 9.4 `--help` 실측 긴 옵션 전부 — 출력 옵션 표(_OUT_OPTS)의 약어 해소용(C2 I5-R)
+_LONGS.update({k: (OP_OVERWRITE, OVERWRITE, frozenset("--" + o for o in v.split())) for k, v in {
+    "wget": (
+        "accept accept-regex adjust-extension append-output ask-password auth-no-challenge background backup-converted "
+        "backups base bind-address body-data body-file ca-certificate ca-directory certificate certificate-type ciphers "
+        "compression config connect-timeout content-disposition content-on-error continue convert-file-only convert-links "
+        "crl-file cut-dirs debug default-page delete-after directory-prefix dns-timeout domains exclude-directories "
+        "exclude-domains execute follow-ftp follow-tags force-directories force-html ftp-password ftp-user "
+        "ftps-clear-data-connection ftps-fallback-to-ftp ftps-implicit ftps-resume-ssl header help hsts-file http-password "
+        "http-user https-only ignore-case ignore-length ignore-tags include-directories inet4-only inet6-only input-file "
+        "keep-session-cookies level limit-rate load-cookies local-encoding max-redirect method mirror no-cache "
+        "no-check-certificate no-clobber no-config no-cookies no-directories no-dns-cache no-glob no-host-directories no-hsts "
+        "no-http-keep-alive no-if-modified-since no-iri no-netrc no-parent no-passive-ftp no-proxy no-remove-listing "
+        "no-use-server-timestamps no-verbose no-warc-compression no-warc-digests no-warc-keep-log output-document output-file "
+        "page-requisites password pinnedpubkey post-data post-file prefer-family preserve-permissions private-key "
+        "private-key-type progress protocol-directories proxy-password proxy-user quiet quota random-file random-wait "
+        "read-timeout recursive referer regex-type reject reject-regex rejected-log relative remote-encoding report-speed "
+        "restrict-file-names retr-symlinks retry-connrefused retry-on-host-error retry-on-http-error save-cookies "
+        "save-headers secure-protocol server-response show-progress span-hosts spider start-pos strict-comments timeout "
+        "timestamping tries trust-server-names unlink use-askpass user user-agent verbose version wait waitretry warc-cdx "
+        "warc-dedup warc-file warc-header warc-max-size warc-tempdir xattr "
+    ),
+    "sort": (
+        "batch-size buffer-size check compress-program debug dictionary-order field-separator files0-from "
+        "general-numeric-sort help human-numeric-sort ignore-case ignore-leading-blanks ignore-nonprinting key merge "
+        "month-sort numeric-sort output parallel random-sort random-source reverse sort stable temporary-directory unique "
+        "version version-sort zero-terminated "
+    ),
+}.items()})
 _PERM_LONGS = ("--changes", "--dereference", "--no-dereference", "--no-preserve-root", "--preserve-root", "--quiet",
                "--silent", "--reference", "--recursive", "--verbose", *_COMMON_LONGS)
 _LONGS.update({n: (OP_RPERM, RPERM, frozenset(_PERM_LONGS + (("--from",) if n == "chown" else ())))
@@ -410,17 +439,21 @@ _OUT_OPTS: dict[str, tuple[str, ...]] = {"wget": ("-O", "--output-document", "-o
 
 def _out_files(seg: Segment, ctx: Ctx | None) -> list[Job]:
     opts, a, i, words = _OUT_OPTS[seg.name], seg.argv[1:], 0, []
+    longs = _LONGS[seg.name][2]
     while i < len(a):
         w, x = a[i], a[i].literal()
         i += 1
         if x == "--":
             break
+        raw, eq, _ = x.partition("=")
+        if x.startswith("--"):   # 긴 옵션 약어는 ln 처럼 정식 이름으로(getopt_long) — 모호·모름이면 _BadOption → 확정 불가
+            x = _long(raw, longs) + eq + x[len(raw) + 1:]
         for o in opts:
             if o.startswith("--"):
                 if x == o and i < len(a):
                     words.append(a[i]); i += 1
                 elif x.startswith(o + "="):
-                    words.append(_drop(w, len(o) + 1))
+                    words.append(_drop(w, len(raw) + 1))   # 원문 단어에서 '=' 까지 뗀다(약어 길이 기준)
             elif x.startswith("-") and not x.startswith("--") and o[1] in x[1:]:   # 묶음·붙은 값(-sSo F·-qO F·-oF)
                 n = x.index(o[1], 1) + 1
                 if n < len(x):
