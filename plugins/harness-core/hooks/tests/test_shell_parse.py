@@ -1344,6 +1344,20 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
         for c in (f"{U4} | $B/vitest", f"{U4} | \"$S\"/venv/bin/python -", f"PY=$(x)/bin/python; {U4} | $PY -"):
             self.assertIsNone(parse(c, "/w", {"HOME": "/h"}).error, c)
 
+    def test_c6_known_value_word_split(self):   # 완화안: 값을 아는 변수는 bash 처럼 기본 IFS 로 나눠 이름 확정(c6/real3.out) — 재생 새 거부의 최대 무리
+        self.assertEqual([(x.name, x.cwd) for x in segs('G="git -C /x"; $G add f')], [("git", "/x")])   # git -C 는 작업 폴더로
+        for c, argv in (('G="git --no-pager"; $G log', ["git", "--no-pager", "log"]), ('N="node --opt"; $N a.mjs', ["node", "--opt", "a.mjs"]),
+                        ('G="  echo   hi "; ${G}', ["echo", "hi"]), ('G="git --git-dir=$HOME/.v"; $G status', ["git", "--git-dir=/h/.v", "status"])):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([x.literal() for x in r.segments[-1].argv], argv, c)
+        self.assertEqual(targets('G="rm -rf"; $G ~/data'), [["/h/data"]])
+        self.assertEqual(names('X="sudo rm"; $X -rf ~/data'), ["rm"])
+        self.assertEqual(names('X="env A=1 bash"; $X -c "rm -rf ~/data"')[-1], "rm")
+        self.assertEqual(len(segs('G="git -C /x"; "$G" add')[-1].argv), 2)   # 따옴표 안은 나누지 않는다(한 단어 — 없는 명령)
+        # IFS 가 바뀌었거나 모르면 나누는 기준을 모른다 — 따옴표 없는 확장의 이름은 확정 불가(기존 구멍: IFS=: 에서 rm:-rf 를 한 이름으로 봤다)
+        for c in ("IFS=:; X=rm:-rf; $X ~/data", "IFS=:; X=ls; $X", "source ./env.sh; X=ls; $X", 'G="echo *"; $G', "read IFS; X=ls; $X"):
+            self.assertTrue(dyn(c), c)
+
     def test_c6_assignment_shape(self):   # 항목 2: 값은 모르지만 마지막 경로 성분이 리터럴인 대입은 그 이름으로 — `$B/vitest` 규칙의 한 단계 확장
         for c, want in (("PY=$(poetry env info -p)/bin/python; $PY script.py", "python"), ('export PY="$(x)/bin/python"; timeout 300 $PY -m pytest', "python"),
                         ("BIN=$XDG/bin/tool; ${BIN} --help", "tool"), ("local_py=$V/bin/python3.12; \"$local_py\" x", "python3.12"),

@@ -977,7 +977,7 @@ def _forget(env: dict[str, str | None]) -> None:
     for k in env:
         if not k.startswith("\x00"):
             env[k] = None
-    for k in _DAEMON_VARS:
+    for k in (*_DAEMON_VARS, "IFS"):   # IFS 도 바뀌었을 수 있다 — 명령 이름 확정이 단어 분리 기준을 모르게(C6)
         env[k] = None
 
 
@@ -1247,8 +1247,8 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
                 w = w[1:]
                 continue
             raise CodeUnknown("명령 이름을 확정할 수 없음")   # 어느 명령이 도는지 모른다('안쪽 없음 = 허용' 금지, C5 OOS-B·C6)
-        w = [r, *w[1:]]
-        if last and _is_assign(r):   # 래퍼가 받는 확정 값이 할당 모양(`X='A=1'; env $X ls`) — 맨 앞 단어는 bash 도 명령으로 본다
+        w = [*r, *w[1:]]
+        if last and _is_assign(r[0]):   # 래퍼가 받는 확정 값이 할당 모양(`X='A=1'; env $X ls`) — 맨 앞 단어는 bash 도 명령으로 본다
             continue
         if (rest := _strip_wrapper(w, run_env, env)) is None:
             break
@@ -1259,19 +1259,25 @@ def _strip_all(w: list[Word], run_env: dict[str, str | None], env: Mapping[str, 
     return w
 
 
-def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> Word | None:
+def resolve_command_name(w: Word, env: Mapping[str, str | None]) -> list[Word] | None:
     """명령 자리 단어의 이름 확정 — 모든 호출 지점(단위 첫 단어·래퍼 뒤·xargs·find -exec·policy)이 _strip_all 로 이것을 거친다(C6).
-    확장이 없거나 값이 정해지면 그 단어, 폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename),
-    변수 하나이고 그 대입이 그런 모양이면(_SHAPE) 그 모양, 그 밖 None(확정 불가)."""
+    결과는 그 자리를 채우는 단어들: 확장이 없거나 값이 정해지면 그 값(따옴표 없는 변수 하나는 bash 처럼 기본 IFS 로 나눈다),
+    폴더만 모르고 마지막 성분이 리터럴(`$B/vitest`)이면 그대로(_cmd_name 은 basename), 변수 하나이고 그 대입이 그런 모양이면(_SHAPE)
+    그 모양, 그 밖 None(확정 불가). IFS 가 바뀌었거나 모르면 따옴표 없는 확장은 나뉘는 기준을 몰라 확정 불가."""
     if not any(p.quote != "'" and ("$" in p.text or "`" in p.text) for p in w.parts):
-        return w
+        return [w]
+    if "IFS" in env and any(p.quote == "" and ("$" in p.text or "`" in p.text) for p in w.parts):
+        return None
     if v := _text(w.parts, env, split=True):   # 빈 값은 bash 가 단어째 지워 다음 단어가 명령이 된다 — 확정 불가로
-        return Word((Part(v, ""),))
-    if _named_path(w, env):
-        return w
+        return [Word((Part(v, ""),))]
     t = "".join(p.text for p in w.parts)
-    if all(p.quote != "'" for p in w.parts) and (m := _SHAPE_REF.fullmatch(t)) and (s := env.get(m[1] or m[2]) or "").startswith(_SHAPE):
-        return Word((Part(s[len(_SHAPE):], "'"),))   # 대입 모양(`PY=$(…)/bin/python; $PY`) — basename 이 이름
+    ref = _SHAPE_REF.fullmatch(t) if all(p.quote != "'" for p in w.parts) else None
+    if ref and w.parts[0].quote == "" and (v := _text(w.parts, env)) and not any(c in v for c in "*?[") and (xs := v.split()):
+        return [Word((Part(x, ""),)) for x in xs]   # `G="git -C /x"; $G` — 값이 정해진 단어 분리(글롭 글자는 펼침을 몰라 제외)
+    if _named_path(w, env):
+        return [w]
+    if ref and (s := env.get(ref[1] or ref[2]) or "").startswith(_SHAPE):
+        return [Word((Part(s[len(_SHAPE):], "'"),))]   # 대입 모양(`PY=$(…)/bin/python; $PY`) — basename 이 이름
     return None
 
 
@@ -1863,7 +1869,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if w and fn_args and len(w[0].parts) == 1 and w[0].parts[0].quote != "'" and w[0].parts[0].text in ("$@", "${@}"):
             w = [*fn_args[-1], *w[1:]]   # `"$@"` 명령 자리 = 호출 인자 단어들(`run() { "$@"; }; run make -j4`)
         if w and (r0 := resolve_command_name(w[0], unit_env)) is not None:   # 함수 조회도 확정된 이름으로(`c=g; $c`) — 모르면 _strip_all 이 거부
-            w = [r0, *w[1:]]
+            w = [*r0, *w[1:]]
         if w and (fx := _FN + w[0].literal()) in state_env:   # 정의된 함수 호출 — 래퍼를 벗기기 전에 본다(래퍼 이름을 가리는 함수도 함수가 우선)
             if not _harmless(r):   # 호출 단위의 리다이렉트가 실패하면 함수가 돌지 않는다 — 호출 전 상태가 실패 끝
                 elem["pre"] = now()
