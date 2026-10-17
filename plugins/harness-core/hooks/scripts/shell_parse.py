@@ -1381,7 +1381,7 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
         lit = a[i].literal()
         if lit.startswith("<("):
             raise CodeUnknown("프로세스 치환으로 넘긴 코드를 확정할 수 없음")   # bash <(curl …)
-        if not _stdin_path(a[i], o.env, seg.cwd):
+        if not _stdin_path(a[i], o.env, seg.cwd, seg.redirects, pipe_prev):
             return None  # 스크립트 파일을 실행하면 stdin 은 코드가 아니다(-s·stdin 장치 경로면 stdin 이 코드)
     return _stdin_code(seg.redirects, o.env, pipe_prev)
 
@@ -1398,9 +1398,11 @@ def _dev_like(p: str) -> bool:
     return bool(c) and (c[0] in ("dev", "proc") or os.path.normpath("/" + "/".join(c)).startswith(("/dev/", "/proc/")))
 
 
-def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None) -> bool:
+def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirects: list[Redirect], pipe_prev: Segment | None) -> bool:
     """단어가 stdin 장치 경로인가 — 허용 목록(C5 D1·D2): /dev·/proc 를 지나는 경로는 깨끗한(확장·글롭·`..`·끝 / 없음) stdin 장치면
-    True, 깨끗한 /dev/null 은 False(빈 코드), 그 밖(/proc/*/root·fd 링크·글롭·중괄호 등 변형)은 전부 CodeUnknown."""
+    True, 깨끗한 /dev/null 은 False(빈 코드), 그 밖(/proc/*/root·fd 링크·글롭·중괄호 등 변형)은 전부 CodeUnknown.
+    값 모르는 접두(`$D/stdin`·`$D`·`$D/fd/0`)는 이름이 리터럴 스크립트(`$DIR/run.sh`)가 아니면 입력원이 있을 때 CodeUnknown(C6 항목 3)
+    — 입력원이 없으면 장치여도 읽을 코드가 없다(깨끗한 /dev/stdin 과 같은 전제)."""
     s = _text(w.parts, env)
     p = s if s is not None else w.literal()
     if not p.startswith("/") and cwd is not None:
@@ -1408,6 +1410,10 @@ def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None) -> bool
     globby = any(not q.quote and re.search(r"[*?[{]", q.text) for q in w.parts)
     dev = _dev_like(p) or (globby and any(_dev_like(x) for x in (_expand(w, env, cwd) or [])[:1]))   # 펼친 첫 단어가 스크립트
     if not dev:
+        tail = p.rpartition("/")[2]
+        if s is None and (not _named_path(w, env) or tail in ("stdin", "null") or tail.isdigit()) \
+                and (pipe_prev is not None or any(r.op in _STDIN_OPS for r in redirects)):
+            raise CodeUnknown("표준입력 장치일 수 있는 경로를 확정할 수 없음")
         return False
     clean = "/" + "/".join(x for x in p.split("/") if x not in ("", "."))
     if s is not None and not globby and ".." not in p.split("/") and not p.endswith("/"):
@@ -1915,7 +1921,7 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
         if name in ("source", "."):
             sw = w[2:] if len(w) > 1 and w[1].literal() == "--" else w[1:]
             a = sw[0].literal() if sw else ""
-            dev = bool(sw) and _stdin_path(sw[0], unit_env, unit_cwd)
+            dev = bool(sw) and _stdin_path(sw[0], unit_env, unit_cwd, r, pipe_prev)
             if dev or a.startswith("<("):   # 읽어 들이는 코드가 stdin·프로세스 치환 — 셸 인터프리터와 같은 규칙(C2, C3 D2, C4 R-C)
                 code = _stdin_code(r, unit_env, pipe_prev) if dev else None
                 if code is None:

@@ -1356,6 +1356,14 @@ class CommandNameC6Test(unittest.TestCase):   # C6: 명령 이름 확정은 reso
         self.assertEqual(targets("X=$(x)/bin/rm; rm -rf \"$X\""), [None])
         self.assertEqual(targets("HOME=$(x)/h; rm -rf ~/data"), [None])
 
+    def test_c6_unknown_prefix_stdin_path(self):   # 항목 3: 값 모르는 접두의 셸 스크립트 경로는 입력원이 있으면 확정 불가(c5rr/real.sh: D=/dev 면 실행)
+        for c in (f"{U4} | bash $D/stdin", f"{U4} | bash \"$D\"/stdin", f"{U4} | bash $D/fd/0", f"{U4} | bash $D", f"{U4} | source $D/stdin",
+                  "echo 'rm -rf ~/data' | bash $D/stdin", "bash $D/stdin <<< 'rm -rf ~/data'", "bash $D/fd/3 3<<< 'rm -rf ~/data'",
+                  "bash $(x) < evil.sh", f"{U4} | bash $D/null", f"{U4} | . \"$F\""):
+            self.assertTrue(dyn(c), c)
+        for c in (f"{U4} | bash \"$DIR/run.sh\"", f"{U4} | bash $D/run.sh", 'bash "$X"', "bash $D/stdin", 'source "$ENV_FILE"', 'sh "$S" arg'):   # 입력원 없음·리터럴 이름
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error)); self.assertEqual(inner(c), [], c)
+
 
 if __name__ == "__main__":
     unittest.main()
