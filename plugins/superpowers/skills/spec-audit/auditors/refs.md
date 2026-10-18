@@ -2,7 +2,7 @@
 
 ## 4.4.1 감사 축 (refs 행)
 
-| `refs` | 참조 실재(4.4.3), 심볼 3분류·경로 해석·파일 참조(4.4.2), 문서 간·문서 내부 충돌(class `cross-doc-conflict`: 대상 각 문서의 내부 모순, 대상 사이, 대상·other, other 내부), PLAN 내부 정합(Task Consumes ⊆ 앞선 Task Produces, Global Constraints 값 = spec 원문 값, 생성 Step이 사용보다 앞, 삭제 Step이 마지막 사용보다 뒤), 라운드 2 짝 동기화(diff.patch가 바꾼 용어·값·심볼을 언급하는 **모든 곳** — 배정 범위 밖 target 허용) |
+| `refs` | 참조 실재(4.4.3), 심볼 3분류·경로 해석·파일 참조(4.4.2), 문서 간·문서 내부 충돌(class `cross-doc-conflict`: 대상 각 문서의 내부 모순, 대상 사이, 대상·other, other 내부), PLAN 내부 정합(Task Consumes ⊆ 앞선 Task Produces, Global Constraints 값 = spec 원문 값, 생성 Step이 사용보다 앞, 삭제 Step이 마지막 사용보다 뒤), 라운드 2 짝 동기화(diff.patch가 바꾼 용어·값·심볼을 언급하는 **모든 곳** — 배정 범위 밖 target 허용, diff.patch가 바꾸거나 들인 식별자는 선언처와 사용처가 spec·plan에서 같은 이름인지까지) |
 
 ## 4.4.2 심볼·경로·파일 참조
 
@@ -20,7 +20,7 @@
 | 문서 링크 `[[Note]]`, `[x](a.md#sec)` | 파일 존재 + 앵커 제목 존재(Read) |
 | 설정 키 | JSON: `jq` / YAML·TOML: Read |
 | 정본 진술 | 해당 절 Read 후 대조 |
-| 외부 URL | WebFetch |
+| 외부 URL·이슈 번호·제3자 도구의 동작·버전 | 감사자는 네트워크가 없어 확정하지 않는다 — verdict `unverified`, `unverified_reason` `external`, claim을 `unverified-external:`로 시작(리드가 S4에서 웹 대조) |
 
 serena는 세션 프로젝트를 읽으므로 세션 프로젝트가 `<tree>`일 때만 쓰고(`activate_project` 금지), codegraph는 `projectPath=<tree>`로 쓴다. 그 밖은 `git -C <tree> grep -n -w`·Read. harness-core `code-read-guard`가 켜진 프로젝트(`HARNESS_CODEREAD_GUARD=1`)에서는 Bash로 저장소 안 코드 파일을 읽을 수 없으므로 serena/codegraph 또는 Read 도구를 쓴다.
 특정 도구를 강제하지 않는다 — `evidence`에 근거를 남긴다.

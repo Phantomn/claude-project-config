@@ -32,7 +32,7 @@ finding은 아래 유형 중 하나여야 하고 그 유형의 필수 근거를 
 제안, 배정 범위와 겹치지 않는 줄(예외는 4.4.1 refs 짝 동기화), **대상 문서의 LIMITS·Out-of-scope에 이미 받아들인 경우를 다시 지적하는 것**,
 **문서가 다루지 않는 경우(장치 부재)를 지적하면서 그 경우가 실제로 일어남을 실행한 명령의 출력(X 또는 X/head) 또는 기록된 관찰(로그·문서)로
 보이지 못하는 것** — 지어낸 입력만으로는 부족하고, 기록된 관찰은 대상 문서 밖의 로그·문서다. 이런 LIMITS 추가 제안은 ⚠️가 아니라 보고 파일의 메모(4.5.3)로
-쓴다. 이 제외는 4.4.1이 소유 검사로 정한 누락(`oracle-missing`·`requirement-uncovered`·`unverifiable-step`·`under-scope`·`assumption-form`)과 규칙 위반에는
+쓴다. 이 제외는 4.4.1이 소유 검사로 정한 누락(`oracle-missing`·`requirement-uncovered`·`unverifiable-step`·`under-scope`·`assumption-form`, rootcause의 실패/모름·시계 의존·모델링 한계)과 규칙 위반에는
 적용하지 않는다 — 표의 필수 근거로 충분하다. 문서가 이미 정한 규칙의 모호함(계약 공백)·모순도 구성한 입력으로 충분하다.
 
 ## 4.4.1 감사 축 (끝 문단)
@@ -66,7 +66,7 @@ LFS·서브모듈·git이 무시하는 파일·저장소 밖을 가리키는 링
 | `fix_class` | `align`(요구 의미 불변: 참조·이름·경로 정정, 표기 일치, 짝 동기화, 검증 명령·기대 결과 추가, "신규" 표기, 오타, D7 가정 추가) / `requirement`(범위·동작·인터페이스 의미·수용 기준·Out-of-scope 변경, 과잉범위 제거, 배치·분할·단일 출처화, other 문서 수정 전부). 갈리면 `requirement` |
 | `affected` | 범위 문자열 배열(빈 배열 허용) — 같은 수정을 함께 받아야 하는 다른 위치: 같은 class이고 같은 판정 질문에 같은 이유로 걸리는 다른 발생지(사실·키가 달라도 포함)를 대상 문서 전체에서 모두(배정 범위 밖 포함) |
 | `check` | 문자열 또는 null. verdict `fail`이고 판정이 대상 문서와 `<tree>` 읽기만으로 정해지면 필수, 그 밖은 null(D22). bash 명령 하나 — 그 class의 판정 조건을 줄 번호·위치가 아니라 **내용으로, 대상 문서 전체(필요하면 `$TREE`)에 대해** 검사한다. target·`affected`는 근거 표시일 뿐이고, 어느 방향으로 고쳐도(문서 정정·대상 생성) 결함이 없으면 exit 0. 실행 디렉토리는 그 finding이 가리키는 라운드의 `snapshot/`(파일 이름 `<i>-<basename>`), 환경변수 `TREE` = `<tree>` 절대경로. 그 class의 결함이 문서 어디에든 하나라도 남아 있으면 exit 1이고 남은 발생지를 줄마다 `<스냅샷 파일 이름>:<줄>`로 시작해 stdout에 쓴다(필요한 절·파일이 없는 부재형은 줄 0), 없으면 exit 0. 읽기만 하고 30초 안에 끝난다. 그 밖의 종료 코드·시간 초과는 check 오류. **종료코드는 판정 명령이 정하게 쓴다** — bash 파이프라인의 종료코드는 마지막 명령의 것이라 `grep -Hn X f \| cut -d: -f1,2 && exit 1` 은 결함이 없어도(`grep` 이 빈 결과여도) `cut` 이 0 이어서 늘 exit 1 이다(C3 가 거른다). 발생지 출력과 판정을 나눈다: `grep -Hn X f \| cut -d: -f1,2; grep -q X f && exit 1; exit 0` 또는 `out=$(grep -Hn X f \| cut -d: -f1,2); [ -z "$out" ] \|\| { echo "$out"; exit 1; }` |
-| `unverified_reason` | verdict=`unverified`면 `policy`(4.4.5의 금지 행동이 필요) \| `external`(외부 대상 부재) \| `tool`(도구 미설치 또는 4.4.5의 실행 환경 부재) \| `context`(배정 범위를 다 볼 수 없음), 아니면 null. `context` finding은 문서 결함이 아니다 — 그 target은 미검토 줄(4.5.4)이 되고, counts.unverified와 처분 대상에서 빠진다 |
+| `unverified_reason` | verdict=`unverified`면 `policy`(4.4.5의 금지 행동이 필요) \| `external`(외부 대상 부재, 또는 외부 사실 진술 — URL·이슈 번호·제3자 도구의 동작·버전. 네트워크가 없으니 맞다·틀리다로 확정하지 말고 claim을 `unverified-external:`로 시작한다) \| `tool`(도구 미설치 또는 4.4.5의 실행 환경 부재) \| `context`(배정 범위를 다 볼 수 없음), 아니면 null. `context` finding은 문서 결함이 아니다 — 그 target은 미검토 줄(4.5.4)이 되고, counts.unverified와 처분 대상에서 빠진다 |
 
 ## 4.5.2 범위 문자열과 감사자 이름
 
