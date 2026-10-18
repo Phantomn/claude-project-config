@@ -953,6 +953,7 @@ def _is_assign(w: Word) -> bool:
 
 
 _EXTGLOB = re.compile(r"[!@+*?]\(")
+_BRACE = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")   # 중괄호 확장 `{a,b}`·`{a..b}` — 펼친 첫 단어가 명령이 된다(W39)
 _POSITIONAL = re.compile(r"\$(?:[1-9*@]|\{[1-9*@]\})")
 
 
@@ -974,7 +975,7 @@ def _cmd_extglob(w: Word) -> bool:
 
 
 def _cmd_glob(w: Word) -> bool:
-    """명령 자리 단어에 따옴표 없는 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭)가 있는가 — 펼친 이름을 모른다(C7 S4). 확장 안은 보지 않는다."""
+    """명령 자리 단어에 따옴표 없는 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭)나 중괄호 확장이 있는가 — 펼친 이름을 모른다(C7 S4·W39). 확장 안은 보지 않는다."""
     s = []
     for p in w.parts:
         if p.quote:
@@ -989,7 +990,7 @@ def _cmd_glob(w: Word) -> bool:
                 s.append(t[i])
                 i += 1
     x = "".join(s)
-    return "*" in x or "?" in x or "]" in x.partition("[")[2] or _EXTGLOB.search(x) is not None
+    return "*" in x or "?" in x or "]" in x.partition("[")[2] or _EXTGLOB.search(x) is not None or _BRACE.search(x) is not None
 
 
 def _assign_of(w: Word, env: Mapping[str, str | None], shape: bool = False) -> tuple[str, str | None] | None:

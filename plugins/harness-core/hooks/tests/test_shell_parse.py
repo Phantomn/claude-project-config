@@ -1520,6 +1520,15 @@ class RejectOnlyW37Test(unittest.TestCase):   # 병합 뒤 첫 수정(W37·W39·
         self.assertEqual(inner_names("bash -c $'ls\\x20-la'"), ["ls"])   # 대조: 표식 글자가 없으면 그대로
         self.assertEqual(inner_names("bash -c 'X=ls; $X'"), ["ls"])
 
+    def test_w39_brace_expansion_command_word(self):   # W39: 따옴표 밖 중괄호 확장(`{a,b}`·`{a..b}`)이 든 명령 단어는 펼친 첫 단어를 모른다
+        for c in ("{rm,-rf} ~/data", "/bin/r{m,x} -rf ~/data", "r{m..m} -rf ~/data", "sudo {rm,-rf} ~/data", "{\"rm\",-rf} ~/data",
+                  "echo ~/data | xargs {rm,-rf}", "timeout 5 /bin/r{m,x} x"):
+            self.assertTrue(dyn(c), c)
+        for c, want in (("{ ls; }", "ls"), ("echo {a,b}", "echo"), ("'{rm,-rf}' x", "{rm,-rf}"), ("ls {}", "ls"), ("{ls} x", "{ls}"),
+                        ("{a\",\"b} x", "{a,b}")):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments][-1], want, c)
+
 
 if __name__ == "__main__":
     unittest.main()
