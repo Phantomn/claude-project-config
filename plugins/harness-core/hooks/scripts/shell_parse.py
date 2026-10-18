@@ -449,6 +449,7 @@ _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 
 _root = [""]   # 최상위 명령 원문과 지금 해석 중인 그 안의 위치 — 단위 밖에서 stdin 이 올 수 있는지 원문으로 본다(C7 항목 2)
 _root_pos = [0]
 _ifs_text = [False]   # 명령 원문 어디에든 'IFS' 가 있다 — 산술·trap·let 등 바꾸는 길을 모델링하지 않고 단어 분리를 확정하지 않는다(C7 S1)
+_nested_input = [False]   # 풀린 중첩 코드(-c·eval·trap)에 입력원 글자가 있었다 — _input_possible 의 원문 검사에 더한다(W37)
 
 
 def _late() -> bool:
@@ -952,6 +953,7 @@ def _is_assign(w: Word) -> bool:
 
 
 _EXTGLOB = re.compile(r"[!@+*?]\(")
+_BRACE = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")   # 중괄호 확장 `{a,b}`·`{a..b}` — 펼친 첫 단어가 명령이 된다(W39)
 _POSITIONAL = re.compile(r"\$(?:[1-9*@]|\{[1-9*@]\})")
 
 
@@ -973,7 +975,7 @@ def _cmd_extglob(w: Word) -> bool:
 
 
 def _cmd_glob(w: Word) -> bool:
-    """명령 자리 단어에 따옴표 없는 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭)가 있는가 — 펼친 이름을 모른다(C7 S4). 확장 안은 보지 않는다."""
+    """명령 자리 단어에 따옴표 없는 글롭 글자(`*`·`?`·짝 있는 `[…]`·확장 글롭)나 중괄호 확장이 있는가 — 펼친 이름을 모른다(C7 S4·W39). 확장 안은 보지 않는다."""
     s = []
     for p in w.parts:
         if p.quote:
@@ -988,7 +990,7 @@ def _cmd_glob(w: Word) -> bool:
                 s.append(t[i])
                 i += 1
     x = "".join(s)
-    return "*" in x or "?" in x or "]" in x.partition("[")[2] or _EXTGLOB.search(x) is not None
+    return "*" in x or "?" in x or "]" in x.partition("[")[2] or _EXTGLOB.search(x) is not None or _BRACE.search(x) is not None
 
 
 def _assign_of(w: Word, env: Mapping[str, str | None], shape: bool = False) -> tuple[str, str | None] | None:
@@ -1310,7 +1312,7 @@ _NAME_WORDS, _NAME_CHARS = 16, 1024
 
 def find_exec_command(words: list[Word], env: Mapping[str, str | None]) -> list[Word]:
     """find -exec/-execdir/-ok/-okdir 의 명령(할당·래퍼를 벗긴 것). 명령 자리의 `{}` 는 찾은 파일 이름이라 확정 불가(C7 항목 4)
-    — 해석기와 policy 가 같이 쓴다. xargs -I{} 는 명령 자리를 바꾸지 않는다(GNU xargs 실측)."""
+    — 해석기와 policy 가 같이 쓴다. xargs -I{} 는 명령 자리를 바꾸지 않는다(GNU xargs 실측). -c 코드 안의 `{}` 는 둘 다 바꾼다(W40, _descend·_shell_code)."""
     cmd = _strip_all(words, {}, env)
     if cmd and "{}" in cmd[0].literal():
         raise CodeUnknown("find -exec 의 명령 이름을 확정할 수 없음")
@@ -1453,6 +1455,8 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             return None
         if (code := _text(a[i].parts, o.env, split=True)) is None:
             raise CodeUnknown("셸 -c 문자열을 확정할 수 없음")
+        if _XARGS_MARK in code:
+            raise CodeUnknown("xargs 가 -c 코드 안에 입력을 넣는다")   # `xargs -I{} sh -c {}` — 입력 줄이 코드(W40)
         return code
     if i < len(a) and not stdin:
         lit = a[i].literal()
@@ -1505,12 +1509,12 @@ def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirec
 
 def _input_possible(redirects: list[Redirect], pipe_prev: Segment | None) -> bool:
     """이 단위의 stdin 에 코드가 올 수 있는가 — 단위의 입력원, 또는 단위 밖(그룹·함수·루프·exec 의 리다이렉트, 앞선 파이프,
-    프로세스 치환, coproc)을 모델링하지 않고 명령 원문의 글자로 본다. 단위가 /dev/null·닫힌 stdin 을 명시하면 아니다."""
+    프로세스 치환, coproc)을 모델링하지 않고 명령 원문과 풀린 중첩 코드의 글자로 본다. 단위가 /dev/null·닫힌 stdin 을 명시하면 아니다."""
     if (r := _stdin_redirect(redirects)) is not None:
         t = r.target.literal() if r.target is not None else None
         return not ((r.op in ("<", "<>") and t == "/dev/null") or (r.op == "<&" and t == "-"))
     root = _root[0]
-    return pipe_prev is not None or "<" in root or ">(" in root or "coproc" in root or "|" in root[:_root_pos[0]]
+    return pipe_prev is not None or _nested_input[0] or "<" in root or ">(" in root or "coproc" in root or "|" in root[:_root_pos[0]]
 
 
 def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
@@ -1775,10 +1779,13 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             try:
                 cmd = find_exec_command(a[i + 1:j], seg.env)
                 sh = Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env, seg.context, d)
-                if sh.name not in SHELLS or _shell_code(sh, None, probe=True) is not None:
-                    continue
+                code = _shell_code(sh, None, probe=True) if sh.name in SHELLS else None
             except LexError:
                 continue   # 명령 이름·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정
+            if code is not None and "{}" in code:
+                raise CodeUnknown("find 가 -c 코드 안의 {} 를 찾은 이름으로 바꾼다")   # GNU find 는 인자 어디의 {} 든 바꾼다(W40)
+            if sh.name not in SHELLS or code is not None:
+                continue
             if (code := _shell_code(replace(sh, redirects=seg.redirects), pipe_prev)) is not None:
                 _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
     return None
@@ -1800,6 +1807,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     fn_def_segs.clear()
     _deadline[0] = deadline
     _ifs_text[0] = "IFS" in command
+    _nested_input[0] = False
     _root[0], _root_pos[0] = command, 0
     try:
         _parse(command, cwd, state_env, context, 0, segments)
@@ -1890,6 +1898,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     if depth > _MAX_DEPTH:
         raise ModelError("재귀 깊이 초과")
     _check_deadline()
+    if command is not _root[0]:   # 중첩 코드는 풀린 뒤에야 글자가 생긴다(ANSI-C `$'\x49FS'`) — 원문 글자 검사에 누적만 한다(W37)
+        _ifs_text[0] = _ifs_text[0] or "IFS" in command
+        _nested_input[0] = _nested_input[0] or any(x in command for x in ("<", ">(", "coproc", "|"))
     toks = lex(command)
     state_env = _Env(state_env)   # 쓰기 로그(합류 비용) — 호출자의 dict 는 그대로 둔다
     st: dict = {"cwd": cwd, "dead": False, "fn": False, "start": True}   # start = 지금 단어들이 모두 예약어(명령 자리)   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다

@@ -830,9 +830,9 @@ class ReviewFixTest(unittest.TestCase):  # 리뷰 라운드 1
         self.assertIsNone(targets("rm -rf " + "{a,b}" * 25)[0])
 
     def test_c3_xargs_propagates(self):
-        rm = seg_of("find . | xargs -I{} sh -c 'rm {}'", "rm")
+        self.assertTrue(dyn("find . | xargs -I{} sh -c 'rm {}'"))   # -c 코드 안의 치환 문자열은 입력 줄이 코드가 된다(W40)
+        rm = seg_of("find . | xargs sh -c 'rm \"$@\"' _", "rm")
         self.assertEqual([s.via_xargs for s in rm], [True])
-        self.assertIsNone(expand(rm[0].argv[1], rm[0]))
         rm = seg_of("ls | xargs -I % rm -rf '%'", "rm")[0]
         self.assertIsNone(expand(rm.argv[2], rm))
 
@@ -1507,6 +1507,38 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
         for c in ("tcsh -c 'rm -rf ~/data'", "csh -c 'rm -rf ~/data'", "fish -c 'rm -rf ~/data'", f"{U4} | ash", f"{U4} | busybox ash",
                   f"{U4} | fish", "fish script.fish", "docker exec c1 fish -c 'rm -rf /app'"):
             self.assertTrue(dyn(c), c)
+
+
+class RejectOnlyW37Test(unittest.TestCase):   # 병합 뒤 첫 수정(W37·W39·W40): 해석기를 늘리지 않고 거부 방향으로만 닫는다(w37/real.sh 실측)
+    def test_w37_nested_code_text_marks(self):   # W37: ANSI-C 로 짠 중첩 코드가 풀린 뒤에 생기는 'IFS'·입력원 글자도 원문 글자 검사에 누적
+        for c in ("bash -c $': $((\\x49FS=5)); X=rm5-rf; $X ~/data'", "eval $': $((\\x49FS=5)); X=rm5-rf; $X ~/data'",
+                  "bash -c $'trap \\'\\x49FS=5\\' DEBUG; X=rm5-rf; $X ~/data'",
+                  "bash -c $'D=$(echo /dev); { bash $D/stdin; } \\x3c\\x3c\\x3c \"rm -rf ~/data\"'",
+                  "eval $'D=$(echo /dev); { bash $D/stdin; } \\x3c\\x3c\\x3c \"rm -rf ~/data\"'"):
+            self.assertTrue(dyn(c), c)
+        self.assertEqual(targets("bash -c $': $((\\x49FS=5)); X=.5~/data; rm -rf $X'"), [None])
+        self.assertEqual(inner_names("bash -c $'ls\\x20-la'"), ["ls"])   # 대조: 표식 글자가 없으면 그대로
+        self.assertEqual(inner_names("bash -c 'X=ls; $X'"), ["ls"])
+
+    def test_w39_brace_expansion_command_word(self):   # W39: 따옴표 밖 중괄호 확장(`{a,b}`·`{a..b}`)이 든 명령 단어는 펼친 첫 단어를 모른다
+        for c in ("{rm,-rf} ~/data", "/bin/r{m,x} -rf ~/data", "r{m..m} -rf ~/data", "sudo {rm,-rf} ~/data", "{\"rm\",-rf} ~/data",
+                  "echo ~/data | xargs {rm,-rf}", "timeout 5 /bin/r{m,x} x"):
+            self.assertTrue(dyn(c), c)
+        for c, want in (("{ ls; }", "ls"), ("echo {a,b}", "echo"), ("'{rm,-rf}' x", "{rm,-rf}"), ("ls {}", "ls"), ("{ls} x", "{ls}"),
+                        ("{a\",\"b} x", "{a,b}")):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
+            self.assertEqual([s.name for s in r.segments][-1], want, c)
+
+    def test_w40_replace_string_in_shell_code(self):   # W40: find·xargs -I 는 -c 코드 안의 `{}`(치환 문자열)도 찾은 이름·입력 줄로 바꾼다 — 코드를 모른다
+        rm = "'rm -rf ~/data'"
+        for c in ("find /usr/bin -name rm -exec sh -c '{} -rf ~/data' \\;", "find /usr/bin -name rm -execdir sh -c '{} -rf ~/data' \\;",
+                  "f() { $1 -rf ~/data; }; export -f f; find /usr/bin -name rm -exec bash -c 'f {}' \\;", "find . -exec sh -c {} \\;",
+                  "find . -ok env bash -c \"echo {}\" \\;", f"echo {rm} | xargs -I{{}} sh -c {{}}", f"echo {rm} | xargs -I{{}} bash -c \"{{}}\"",
+                  f"echo {rm} | xargs -i sh -c 'x {{}}'", f"echo {rm} | xargs --replace=@ sh -c @", f"echo {rm} | xargs -I % sudo sh -c %"):
+            self.assertTrue(dyn(c), c)
+        for c in ("find . -exec sh -c 'ls \"$1\"' _ {} \\;", "find . -exec sh -c 'wc -l \"$@\"' _ {} +", "echo a | xargs -I{} cp {} /tmp",
+                  "echo a | xargs -I{} sh -c 'cp \"$1\" /tmp' _ {}", "echo a | xargs sh -c 'echo \"$@\"' _", "find . -exec bash {} \\;"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
 
 if __name__ == "__main__":
