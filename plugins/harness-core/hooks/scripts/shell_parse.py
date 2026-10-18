@@ -449,6 +449,7 @@ _deadline: list[float | None] = [None]   # 판정기 마감(time.monotonic) — 
 _root = [""]   # 최상위 명령 원문과 지금 해석 중인 그 안의 위치 — 단위 밖에서 stdin 이 올 수 있는지 원문으로 본다(C7 항목 2)
 _root_pos = [0]
 _ifs_text = [False]   # 명령 원문 어디에든 'IFS' 가 있다 — 산술·trap·let 등 바꾸는 길을 모델링하지 않고 단어 분리를 확정하지 않는다(C7 S1)
+_nested_input = [False]   # 풀린 중첩 코드(-c·eval·trap)에 입력원 글자가 있었다 — _input_possible 의 원문 검사에 더한다(W37)
 
 
 def _late() -> bool:
@@ -1505,12 +1506,12 @@ def _stdin_path(w: Word, env: Mapping[str, str | None], cwd: str | None, redirec
 
 def _input_possible(redirects: list[Redirect], pipe_prev: Segment | None) -> bool:
     """이 단위의 stdin 에 코드가 올 수 있는가 — 단위의 입력원, 또는 단위 밖(그룹·함수·루프·exec 의 리다이렉트, 앞선 파이프,
-    프로세스 치환, coproc)을 모델링하지 않고 명령 원문의 글자로 본다. 단위가 /dev/null·닫힌 stdin 을 명시하면 아니다."""
+    프로세스 치환, coproc)을 모델링하지 않고 명령 원문과 풀린 중첩 코드의 글자로 본다. 단위가 /dev/null·닫힌 stdin 을 명시하면 아니다."""
     if (r := _stdin_redirect(redirects)) is not None:
         t = r.target.literal() if r.target is not None else None
         return not ((r.op in ("<", "<>") and t == "/dev/null") or (r.op == "<&" and t == "-"))
     root = _root[0]
-    return pipe_prev is not None or "<" in root or ">(" in root or "coproc" in root or "|" in root[:_root_pos[0]]
+    return pipe_prev is not None or _nested_input[0] or "<" in root or ">(" in root or "coproc" in root or "|" in root[:_root_pos[0]]
 
 
 def _stdin_redirect(redirects: list[Redirect]) -> Redirect | None:
@@ -1800,6 +1801,7 @@ def parse(command: str, cwd: str | None, env: Mapping[str, str], context: Contex
     fn_def_segs.clear()
     _deadline[0] = deadline
     _ifs_text[0] = "IFS" in command
+    _nested_input[0] = False
     _root[0], _root_pos[0] = command, 0
     try:
         _parse(command, cwd, state_env, context, 0, segments)
@@ -1890,6 +1892,9 @@ def _parse(command: str, cwd: str | None, state_env: dict[str, str | None], cont
     if depth > _MAX_DEPTH:
         raise ModelError("재귀 깊이 초과")
     _check_deadline()
+    if command is not _root[0]:   # 중첩 코드는 풀린 뒤에야 글자가 생긴다(ANSI-C `$'\x49FS'`) — 원문 글자 검사에 누적만 한다(W37)
+        _ifs_text[0] = _ifs_text[0] or "IFS" in command
+        _nested_input[0] = _nested_input[0] or any(x in command for x in ("<", ">(", "coproc", "|"))
     toks = lex(command)
     state_env = _Env(state_env)   # 쓰기 로그(합류 비용) — 호출자의 dict 는 그대로 둔다
     st: dict = {"cwd": cwd, "dead": False, "fn": False, "start": True}   # start = 지금 단어들이 모두 예약어(명령 자리)   # fn = 함수 머리 뒤 — 다음 복합 명령이 본문이라 격리한다   # dead = 지금 자리는 도달 불가(모든 경로가 exit·조건이 늘 참/거짓) — 단위는 판정하되 끝 상태를 남기지 않는다

@@ -1509,5 +1509,17 @@ class NarrowC7Test(unittest.TestCase):   # C7: 확정 면적을 되돌린다 —
             self.assertTrue(dyn(c), c)
 
 
+class RejectOnlyW37Test(unittest.TestCase):   # 병합 뒤 첫 수정(W37·W39·W40): 해석기를 늘리지 않고 거부 방향으로만 닫는다(w37/real.sh 실측)
+    def test_w37_nested_code_text_marks(self):   # W37: ANSI-C 로 짠 중첩 코드가 풀린 뒤에 생기는 'IFS'·입력원 글자도 원문 글자 검사에 누적
+        for c in ("bash -c $': $((\\x49FS=5)); X=rm5-rf; $X ~/data'", "eval $': $((\\x49FS=5)); X=rm5-rf; $X ~/data'",
+                  "bash -c $'trap \\'\\x49FS=5\\' DEBUG; X=rm5-rf; $X ~/data'",
+                  "bash -c $'D=$(echo /dev); { bash $D/stdin; } \\x3c\\x3c\\x3c \"rm -rf ~/data\"'",
+                  "eval $'D=$(echo /dev); { bash $D/stdin; } \\x3c\\x3c\\x3c \"rm -rf ~/data\"'"):
+            self.assertTrue(dyn(c), c)
+        self.assertEqual(targets("bash -c $': $((\\x49FS=5)); X=.5~/data; rm -rf $X'"), [None])
+        self.assertEqual(inner_names("bash -c $'ls\\x20-la'"), ["ls"])   # 대조: 표식 글자가 없으면 그대로
+        self.assertEqual(inner_names("bash -c 'X=ls; $X'"), ["ls"])
+
+
 if __name__ == "__main__":
     unittest.main()
