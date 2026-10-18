@@ -1312,7 +1312,7 @@ _NAME_WORDS, _NAME_CHARS = 16, 1024
 
 def find_exec_command(words: list[Word], env: Mapping[str, str | None]) -> list[Word]:
     """find -exec/-execdir/-ok/-okdir 의 명령(할당·래퍼를 벗긴 것). 명령 자리의 `{}` 는 찾은 파일 이름이라 확정 불가(C7 항목 4)
-    — 해석기와 policy 가 같이 쓴다. xargs -I{} 는 명령 자리를 바꾸지 않는다(GNU xargs 실측)."""
+    — 해석기와 policy 가 같이 쓴다. xargs -I{} 는 명령 자리를 바꾸지 않는다(GNU xargs 실측). -c 코드 안의 `{}` 는 둘 다 바꾼다(W40, _descend·_shell_code)."""
     cmd = _strip_all(words, {}, env)
     if cmd and "{}" in cmd[0].literal():
         raise CodeUnknown("find -exec 의 명령 이름을 확정할 수 없음")
@@ -1455,6 +1455,8 @@ def _shell_code(seg: Segment, pipe_prev: Segment | None, outer: Segment | None =
             return None
         if (code := _text(a[i].parts, o.env, split=True)) is None:
             raise CodeUnknown("셸 -c 문자열을 확정할 수 없음")
+        if _XARGS_MARK in code:
+            raise CodeUnknown("xargs 가 -c 코드 안에 입력을 넣는다")   # `xargs -I{} sh -c {}` — 입력 줄이 코드(W40)
         return code
     if i < len(a) and not stdin:
         lit = a[i].literal()
@@ -1777,10 +1779,13 @@ def _descend(seg: Segment, segments: list[Segment], pipe_prev: Segment | None,
             try:
                 cmd = find_exec_command(a[i + 1:j], seg.env)
                 sh = Segment(_cmd_name(cmd), cmd, [], seg.cwd, seg.env, seg.context, d)
-                if sh.name not in SHELLS or _shell_code(sh, None, probe=True) is not None:
-                    continue
+                code = _shell_code(sh, None, probe=True) if sh.name in SHELLS else None
             except LexError:
                 continue   # 명령 이름·-c 코드 미확정 — policy 가 삭제 여부 모름으로 판정
+            if code is not None and "{}" in code:
+                raise CodeUnknown("find 가 -c 코드 안의 {} 를 찾은 이름으로 바꾼다")   # GNU find 는 인자 어디의 {} 든 바꾼다(W40)
+            if sh.name not in SHELLS or code is not None:
+                continue
             if (code := _shell_code(replace(sh, redirects=seg.redirects), pipe_prev)) is not None:
                 _parse(code, seg.cwd, _child_env(seg, run_env), seg.context, d, segments, seg.via_xargs)
     return None

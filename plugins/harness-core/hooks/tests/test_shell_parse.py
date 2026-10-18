@@ -830,9 +830,9 @@ class ReviewFixTest(unittest.TestCase):  # 리뷰 라운드 1
         self.assertIsNone(targets("rm -rf " + "{a,b}" * 25)[0])
 
     def test_c3_xargs_propagates(self):
-        rm = seg_of("find . | xargs -I{} sh -c 'rm {}'", "rm")
+        self.assertTrue(dyn("find . | xargs -I{} sh -c 'rm {}'"))   # -c 코드 안의 치환 문자열은 입력 줄이 코드가 된다(W40)
+        rm = seg_of("find . | xargs sh -c 'rm \"$@\"' _", "rm")
         self.assertEqual([s.via_xargs for s in rm], [True])
-        self.assertIsNone(expand(rm[0].argv[1], rm[0]))
         rm = seg_of("ls | xargs -I % rm -rf '%'", "rm")[0]
         self.assertIsNone(expand(rm.argv[2], rm))
 
@@ -1528,6 +1528,17 @@ class RejectOnlyW37Test(unittest.TestCase):   # 병합 뒤 첫 수정(W37·W39·
                         ("{a\",\"b} x", "{a,b}")):
             r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
             self.assertEqual([s.name for s in r.segments][-1], want, c)
+
+    def test_w40_replace_string_in_shell_code(self):   # W40: find·xargs -I 는 -c 코드 안의 `{}`(치환 문자열)도 찾은 이름·입력 줄로 바꾼다 — 코드를 모른다
+        rm = "'rm -rf ~/data'"
+        for c in ("find /usr/bin -name rm -exec sh -c '{} -rf ~/data' \\;", "find /usr/bin -name rm -execdir sh -c '{} -rf ~/data' \\;",
+                  "f() { $1 -rf ~/data; }; export -f f; find /usr/bin -name rm -exec bash -c 'f {}' \\;", "find . -exec sh -c {} \\;",
+                  "find . -ok env bash -c \"echo {}\" \\;", f"echo {rm} | xargs -I{{}} sh -c {{}}", f"echo {rm} | xargs -I{{}} bash -c \"{{}}\"",
+                  f"echo {rm} | xargs -i sh -c 'x {{}}'", f"echo {rm} | xargs --replace=@ sh -c @", f"echo {rm} | xargs -I % sudo sh -c %"):
+            self.assertTrue(dyn(c), c)
+        for c in ("find . -exec sh -c 'ls \"$1\"' _ {} \\;", "find . -exec sh -c 'wc -l \"$@\"' _ {} +", "echo a | xargs -I{} cp {} /tmp",
+                  "echo a | xargs -I{} sh -c 'cp \"$1\" /tmp' _ {}", "echo a | xargs sh -c 'echo \"$@\"' _", "find . -exec bash {} \\;"):
+            r = parse(c, "/w", {"HOME": "/h"}); self.assertIsNone(r.error, (c, r.error))
 
 
 if __name__ == "__main__":
