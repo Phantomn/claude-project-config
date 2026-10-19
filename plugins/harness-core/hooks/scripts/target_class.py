@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import stat
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -40,6 +41,8 @@ class Ctx:
     deadline: float  # time.monotonic() 기준
     clock_margin: float = CLOCK_MARGIN
     stats: dict[str, int] = field(default_factory=dict)   # shadow 관측 지표(컨테이너 조회 실패·데몬 없음·임시 구멍 허용 건수)
+    allow_patterns: dict[str, list[tuple[str, str]]] = field(default_factory=dict)   # 저장소 → 삭제 허용 목록(판정당 1회 읽기)
+    allowed_deletes: list[str] = field(default_factory=list)   # 허용 목록으로 풀린 삭제 '대상 ← 패턴'(기록 allow_delete)
 
     @functools.cached_property
     def session_start(self) -> float | None:
@@ -183,7 +186,8 @@ def protected_name(path: str) -> bool:
 
 MISSING, UNRESOLVED, PROTECTED_NAME, GIT_TRACKED, SCRATCH, SESSION_NEW, IGNORED_ARTIFACT, PRESERVED = (
     "MISSING", "UNRESOLVED", "PROTECTED_NAME", "GIT_TRACKED", "SCRATCH", "SESSION_NEW", "IGNORED_ARTIFACT", "PRESERVED")
-DIR_ENTRY_CAP = 2000
+# 비용 한도는 시간 예산(_budget)이 지킨다 — 상한은 그 안에 끝나는 크기(ext4 실측 20,000개 0.6초; /mnt/c 는 예산이 먼저 끊는다, 2026-10-19)
+DIR_ENTRY_CAP = 20000
 REGENERABLE_NAMES: frozenset[str] = frozenset(
     ["node_modules", "dist", "build", ".next", ".nuxt", "target", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox", ".venv", "venv", "coverage", ".coverage", ".gradle", ".parcel-cache", ".turbo", ".cache"])
 REGENERABLE_SUFFIXES = (".pyc", ".pyo", ".o", ".class")
@@ -205,8 +209,11 @@ class _Unresolved(Exception):
 
 
 def _start_dir(path: str) -> str:
-    # 대상이 링크면 링크가 놓인 폴더 기준(링크 대상의 저장소가 아니라)
-    return path if os.path.isdir(path) and not os.path.islink(path) else os.path.dirname(path)
+    # 대상이 링크면 링크가 놓인 폴더 기준(링크 대상의 저장소가 아니라). lstat 한 번 = isdir+islink(/mnt/c 는 호출당 수 ms)
+    try:
+        return path if stat.S_ISDIR(os.lstat(path).st_mode) else os.path.dirname(path)
+    except OSError:
+        return os.path.dirname(path)
 
 
 def _git_top(path: str, ctx: Ctx) -> str | None:
@@ -339,7 +346,7 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     for p in paths:   # 경로마다 조상 lstat — /mnt/c 에서는 수백 개만으로 수 초(재생 최대 7.5초 실측)
         _budget(ctx)
         near[p] = _nearest_git(p, cache)
-    tops = sorted({t for t in near.values() if _is_session_repo(t, ctx)})
+    tops = sorted(t for t in set(near.values()) if _is_session_repo(t, ctx))   # 저장소마다 한 번(경로마다가 아니라)
     new_tops = _session_new(tops, ctx)
     for p in paths:
         if near[p] in new_tops:
@@ -363,10 +370,8 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     for p in rest:
         if is_scratch(p, ctx):
             res[p] = Cls(SCRATCH, p)
-    rest = [p for p in rest if p not in res]
-    _budget(ctx)   # 예산이 다한 뒤의 빈 births() 는 '세션 전'으로 떨어진다 — 시간 초과 사유가 맞다
-    for p in _session_new(rest, ctx):
-        res[p] = Cls(SESSION_NEW, p)
+    # 재생성 산출물은 SESSION_NEW 보다 먼저 — 이번 세션이 만든 build/ 도 세션 전 build/ 처럼 폴더째 판정한다(순회하면 상한에 걸려
+    # 같은 입력이 세션 전/중에 따라 허용/거부로 갈렸다, 2026-10-19)
     for top, ps in groups.items():
         ps = [p for p in ps if p not in res]
         ignored = git_ignored(top, ps, ctx)
@@ -376,6 +381,10 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
             rel = os.path.relpath(p, top)
             if REGENERABLE_NAMES.intersection(rel.split("/")) or rel.endswith(REGENERABLE_SUFFIXES):
                 res[p] = Cls(IGNORED_ARTIFACT, p)
+    rest = [p for p in rest if p not in res]
+    _budget(ctx)   # 예산이 다한 뒤의 빈 births() 는 '세션 전'으로 떨어진다 — 시간 초과 사유가 맞다
+    for p in _session_new(rest, ctx):
+        res[p] = Cls(SESSION_NEW, p)
     return [res.get(p) or Cls(PRESERVED, p) for p in paths]
 
 
@@ -448,6 +457,33 @@ def classify(path: str | None, ctx: Ctx, trailing_slash: bool = False) -> Cls:
         return worst if worst is me else Cls(worst.kind, p, f"{worst.path} {worst.detail}".rstrip())
     except _Unresolved as e:
         return Cls(UNRESOLVED, p, str(e))
+
+
+def delete_allowed(p: str, ctx: Ctx) -> bool:
+    """사용자가 대상 저장소 설정의 삭제 허용 목록에 둔 경로인가(p 는 classify 가 정규화한 경로). 보호 이름·추적 파일·
+    홈·루트·임시 루트 자체는 목록과 무관하게 안 된다 — 폴더면 안까지(분류 결과는 가장 나쁜 항목 하나만 담는다)."""
+    from fnmatch import fnmatchcase
+
+    from guard_mode import allow_delete_patterns, repo_root
+    root = repo_root(p, ctx.environ)
+    if root is None:
+        return False
+    if root not in ctx.allow_patterns:
+        ctx.allow_patterns[root] = allow_delete_patterns(root, ctx.environ)
+    hit = next((pat for pat, full in ctx.allow_patterns[root] if fnmatchcase(p, full)), None)
+    home = os.path.realpath(ctx.environ.get("HOME") or "/")
+    if hit is None or p in ("/", home, os.path.realpath(root)) or is_scratch_root(p, ctx) or protected_name(p):
+        return False
+    try:
+        top = _git_top(p, ctx)
+        if top is None or git_tracked(top, [p], ctx) != set():
+            return False
+        if os.path.isdir(p) and not os.path.islink(p) and _protected_inside(p, ctx) is not None:
+            return False
+    except _Unresolved:
+        return False
+    ctx.allowed_deletes.append(f"{p} ← {hit}")
+    return True
 
 
 def in_workspace(path: str, ctx: Ctx) -> bool:

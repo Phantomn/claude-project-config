@@ -777,5 +777,47 @@ class ReplayFixTest(_WorldCase):   # 전수 재생 오탐 군집 — 군집 구�
         self.assertEqual(ev("rm -rf {SCRATCH}/s1/sub/a-$(basename $f)"), [])
 
 
+ALLOW = "HARNESS_BASH_GUARD_ALLOW_DELETE"
+
+
+class AllowDeleteTest(_WorldCase):   # 2026-10-19: 세션 전 유일본·조회 한계 삭제를 사용자가 저장소 설정으로 허용하는 통로
+    def test_allow_preserved(self):
+        self.assertEqual(ev("rm notes_presession.txt"), [("삭제", PRESERVED)])
+        w.set_repo_switch("notes_*.txt:{REPO}/local.sqlite".replace("{REPO}", str(w.repo)), key=ALLOW)   # 상대·절대
+        ctx = w.ctx()
+        self.assertEqual(ev("rm notes_presession.txt local.sqlite", ctx=ctx), [])
+        self.assertEqual(ctx.allowed_deletes, [f"{w.repo}/notes_presession.txt ← notes_*.txt", f"{w.repo}/local.sqlite ← {w.repo}/local.sqlite"])
+        self.assertEqual(ev("rm {HOME}/notes.md"), [("삭제", PRESERVED)])                    # 패턴 밖·저장소 밖
+        self.assertEqual(ev("echo x > notes_presession.txt"), [("덮어쓰기", PRESERVED)])      # 삭제에만
+
+    def test_never_allowed(self):
+        w.sh("mv notes_presession.txt src/")   # 추적 파일과 세션 전 유일본이 섞인 폴더(분류는 PRESERVED)
+        w.set_repo_switch(".env:src:src/main.py:.:..", key=ALLOW)
+        self.assertEqual(ev("rm .env"), [("삭제", PROTECTED_NAME)]); self.assertEqual(ev("rm src/main.py"), [("삭제", GIT_TRACKED)])
+        self.assertEqual(ev("rm -rf src"), [("삭제", PRESERVED)])
+        self.assertEqual(ev("rm -rf {REPO}"), [("삭제", PROTECTED_NAME)])                     # 프로젝트 루트 자체(.git)
+
+    def test_unresolved_dir_rechecks_protected(self):
+        from target_class import DIR_ENTRY_CAP
+        big = w.fmt("{REPO}/out/big"); Path(big).mkdir()
+        w.sh(f"cd {big} && seq {DIR_ENTRY_CAP + 1} | xargs touch && mv {w.repo}/notes_presession.txt .")
+        self.assertEqual(ev("rm -rf out/big"), [("삭제", UNRESOLVED)])
+        w.set_repo_switch("out/*", key=ALLOW); self.assertEqual(ev("rm -rf out/big"), [])
+        w.sh(f"echo k > {big}/id_rsa"); self.assertEqual(ev("rm -rf out/big"), [("삭제", UNRESOLVED)])   # 안의 보호 이름은 허용 안 함
+
+    def test_cover_all_and_broken_rejected(self):
+        import guard_mode
+        for pat in ("*", "/**", "**/*", "/*", "{HOME}/*"):
+            n = len(guard_mode.read_failures)
+            w.set_repo_switch(w.fmt(pat), key=ALLOW)
+            self.assertEqual(ev("rm notes_presession.txt"), [("삭제", PRESERVED)], pat)
+            self.assertIn("전체를 덮는 패턴", guard_mode.read_failures[-1]); self.assertGreater(len(guard_mode.read_failures), n)
+        w.set_repo_switch(["notes_presession.txt"], key=ALLOW); self.assertEqual(ev("rm notes_presession.txt"), [("삭제", PRESERVED)])
+        self.assertIn(ALLOW, guard_mode.read_failures[-1])
+        w.set_repo_switch("notes_presession.txt", key=ALLOW); self.assertEqual(ev("rm notes_presession.txt"), [])
+        (w.repo / ".claude/settings.local.json").write_text("{broken")   # 읽기 실패는 다음 파일로 넘어가지 않고 빈 목록
+        self.assertEqual(ev("rm notes_presession.txt"), [("삭제", PRESERVED)])
+
+
 if __name__ == "__main__":
     unittest.main()

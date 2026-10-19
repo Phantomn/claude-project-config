@@ -48,6 +48,7 @@ class Decision:
         self.error = error
         self.stats: dict[str, int] = {}   # 관측 지표(Ctx.stats)
         self.dynamic_kind: str | None = None   # R_DYNAMIC 의 하위 사유(해석기 문구) — 기록 전용, 출력에는 안 쓴다
+        self.allow_delete: list[str] = []      # 삭제 허용 목록으로 풀린 대상(Ctx.allowed_deletes) — 기록 전용
 
 
 def _env_mode(environ: Mapping[str, str]) -> str:
@@ -165,7 +166,7 @@ def judge(payload: dict, environ: Mapping[str, str], budget: float = BUDGET_SECO
         except Exception as e:  # noqa: BLE001 — 장부 기록은 부가 작업, 실패해도 판정은 유지
             errors.append(f"장부 기록 실패: {type(e).__name__}: {e}")
     d = Decision(not reasons, _cap(reasons), _strongest(modes), "; ".join(errors) or None)
-    d.stats = ctx.stats
+    d.stats, d.allow_delete = ctx.stats, ctx.allowed_deletes
     return d
 
 
@@ -279,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             d.error = "; ".join(filter(None, [d.error, "출력 실패"]))
         out = ""
         old_allow = old_dec not in ("ask", "deny")
-        if d.error or d.stats or read_failures or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
+        if d.error or d.stats or d.allow_delete or read_failures or (d.mode == "on" and not d.allow) or (d.mode == "shadow" and d.allow != old_allow):
             p = payload if isinstance(payload, dict) else {}
             ti = p.get("tool_input")
             command = ti.get("command") if isinstance(ti, dict) else None
@@ -293,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
                            "ms": round((time.monotonic() - t0) * 1000, 1), "error": d.error, "fallback": fallback,
                            "budget_exhausted": R_TIMEOUT in d.reasons, "stats": d.stats or None,
                            "settings_errors": read_failures or None, "ledger_bytes": _ledger_bytes(environ),
-                           **({"dynamic_kind": d.dynamic_kind} if d.dynamic_kind else {})}, environ)
+                           **({"dynamic_kind": d.dynamic_kind} if d.dynamic_kind else {}),
+                           **({"allow_delete": d.allow_delete} if d.allow_delete else {})}, environ)
             except Exception:  # noqa: BLE001, S110 — 기록 실패가 판정 출력을 막으면 안 된다
                 pass
     except Exception:  # noqa: BLE001 — 폴백 자체가 실패하면 입구가 OLD 를 내는 것과 같게

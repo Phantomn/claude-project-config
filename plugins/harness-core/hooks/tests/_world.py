@@ -339,10 +339,10 @@ class World:
             self._git("update-ref", "-m", f"commit: extra {i + 1}", f"refs/heads/{name}", new, tip, env=env)
             tip = new
 
-    def set_repo_switch(self, value: str, local: bool = False) -> None:
+    def set_repo_switch(self, value: object, local: bool = False, key: str = "HARNESS_BASH_GUARD") -> None:
         p = self.repo / ".claude" / ("settings.local.json" if local else "settings.json")
         data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        data.setdefault("env", {})["HARNESS_BASH_GUARD"] = value
+        data.setdefault("env", {})[key] = value
         self._write(p, json.dumps(data))
 
     def _docker(self, *args: str, cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess | None:

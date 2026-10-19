@@ -112,6 +112,7 @@ bash-guard 가 알고 받아들인 한계. 설계: `docs/superpowers/specs/2026-
 | O29 | **셸 호출 해석의 보수 쪽 판정**(C4·C5): 모르는 셸 옵션 — zsh 전용 한 글자, `--rcfile=X` 형태, 목록 밖 긴 옵션과 약어(`--verb`·`--posix=1`), bash 가 아닌 셸의 bash 긴 이름(`dash -posix` — 실제로는 실행 안 함)은 확정 불가. `bash -e -posix -c …` 처럼 짧은 옵션 뒤 한 대시 긴 이름은 묶음으로 읽혀 `-s` 가 들어가면 stdin 셸이 된다. `/dev`·`/proc` 를 지나는 모든 스크립트 경로(`/dev/fd/3`·`/proc/cpuinfo`·`/dev/null/`·`/proc/self/cwd/x`·실측상 없는 `/dev/fd/00`)는 확정 불가. dash 의 `{x}</dev/null`(dash 는 단어 + stdin 리다이렉트)도 이름 붙은 fd 로 본다. `X="A=1 echo"; $X` 는 bash 에서 `A=1` 이 없는 명령인데 할당으로 소비한다(안전 쪽) | 안 | 재생 판정 변화 0(합성 시험으로만). 거부 쪽으로만 틀린다 | M2 |
 | O30 | **컨테이너 exec 의 `< 파일` 은 `-i` 유무와 무관하게 확정 불가**(C4): docker 는 `-i` 가 없으면 stdin 을 넘기지 않지만 판정기는 넘긴다고 본다 — `docker exec c sh < f.sh` 를 거부(`dynamic_kind` "표준입력의 코드를 확정할 수 없음") | 안 | 재생 0건 | M2 |
 | O31 | **`coproc NAME while\|if\|for\|case …`**(C7 재검토 #7): 이름은 바로 뒤가 `{`·`(` 일 때만 건너뛰므로 이 꼴은 구문 오류(spec §3.8 가)로 떨어진다 — 위험 단어가 있으면 거부, 없으면 허용. bash 는 이 꼴을 받는다 | 안 | 드묾. 거부 쪽 | M2 |
+| O32 | **삭제 허용 목록(`HARNESS_BASH_GUARD_ALLOW_DELETE`)은 사용자 책임**: 목록에 맞는 세션 전 유일본·확정 불가 대상은 판정기가 내용을 모른 채 지운다(보호 이름·추적 파일만 다시 본다). 저장소 밖 대상에는 적용되지 않는다 | 안 | 넓은 패턴은 유일본 손실. 기록 `allow_delete` 로 사후 추적만 | M2 |
 ---
 
 ## X — 범위 밖

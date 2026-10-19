@@ -28,6 +28,7 @@ agent·analysis·bounty, **셋 다 내용 상이**), 하네스 파일 98개 중 
 | `HARNESS_RM_REPO_DIRS` | `src\|lib\|app\|docs\|scripts\|.claude` | 재귀삭제 시 ask 로 올릴 저장소 추적 트리. 저장소마다 다르다. 기존 판정(OLD) 전용 — **bash-guard `on` 안정화 후 제거 예정** |
 | `HARNESS_CODEREAD_GUARD` | `0`(끔) | bash 로 코드 읽기(grep·sed·awk·cat 등에 코드파일 인자, 코드 트리 재귀 검색)를 **첫 시도부터 차단**하고 사유에 serena 대체 호출을 적는다(`code-read-guard.py`). git 저장소 밖·비코드·파이프 입력은 무개입. **serena 가 실제로 붙은 프로젝트에서만 켠다** — 없는 프로젝트에서 켜면 없는 도구를 권하며 막는다 |
 | `HARNESS_BASH_GUARD` | `off` | bash-guard 모드 `off`·`shadow`·`on`(그 외 값 = `off`). **프로젝트 `.claude/settings.json`(또는 `settings.local.json`, local 우선)의 `env` 에만** 둔다 — 전역 `~/.claude/settings.json` 금지. 판정은 **대상 저장소 기준**: 세션 env 값, 훅 cwd 저장소 값, 판정 대상 단위의 cwd 저장소 값, 대상 경로들의 저장소 값 중 가장 강한 것(`on` > `shadow` > `off`). 그래서 홈에서 연 세션도 스위치를 켠 저장소를 건드리면 켜진다. 저장소 = 위로 올라가 처음 만나는 `.git` 을 가진 폴더(그 폴더가 `$HOME`·`/` 이면 값 없음) |
+| `HARNESS_BASH_GUARD_ALLOW_DELETE` | (없음) | bash-guard 가 '세션 전부터 있던 유일본'(`PRESERVED`)·대상 확정 불가(`UNRESOLVED` — 폴더 항목 상한 초과 등)로 막는 **삭제**를 사용자가 허용하는 목록. `:` 로 구분한 경로 패턴(`*`·`?`·`[…]` 글롭, `*` 는 `/` 도 넘는다), 절대경로 또는 프로젝트 루트 상대. **대상 저장소**의 `.claude/settings.local.json` → `settings.json` 순으로 처음 나오는 값(저장소 밖 대상에는 없음). 목록과 무관하게 안 되는 것: 보호 이름(폴더면 안까지 다시 본다), 추적 파일·추적 파일을 품은 폴더(→ `git rm`), 홈·`/`·프로젝트 루트·임시 루트 자체, 덮어쓰기 등 삭제 아닌 규칙. `/`·홈 아래 전부나 프로젝트 루트 아래 이름 전부(`*`·`**/*`)를 덮는 패턴은 버리고, 설정 파일을 못 읽거나 값이 문자열이 아니면 목록 전체를 버린다 — 둘 다 `settings_errors` 에 남는다. 풀린 삭제는 기록 `allow_delete` 에 남는다. 예: `"HARNESS_BASH_GUARD_ALLOW_DELETE": "android/*/build:tmp-data"` |
 | `HARNESS_BASH_GUARD_CLOCK_MARGIN` | `2.0`(초) | 세션 시작 뒤 이 초 안에 생성·수정된 대상은 세션 전 것으로 본다(벽시계 역행 방어, DECISIONS "시각 여유"). 0 이상 실수. 음수·파싱 실패·`nan`·`inf` → 기본값. 운영에서는 바꾸지 않는다(테스트 세계가 작은 값을 쓴다) |
 
 bash-guard 가 그 밖에 읽는 환경 변수(설정 노브가 아니라 실행 환경 값):
@@ -67,7 +68,7 @@ touch-ledger.py ─ PreToolUse `Write|Edit|NotebookEdit`(timeout 5초) 장부 �
 | `shadow` | OLD 를 바이트 그대로(종료 코드 포함) | 새 판정과 OLD 가 다르면 한 줄 + 모드 무관 |
 | `on` | 새 판정: `allow` 또는 `deny`+사유. **`ask` 를 내지 않는다** | 거부마다 한 줄 + 모드 무관 |
 
-모드 무관 기록: 판정기 내부 예외(`error`·`fallback`), 그리고 `stats`·`settings_errors` 가 있는 판정(허용이어도 — 아래 필드).
+모드 무관 기록: 판정기 내부 예외(`error`·`fallback`), 그리고 `stats`·`settings_errors`·`allow_delete` 가 있는 판정(허용이어도 — 아래 필드).
 
 스위치와 무관하게 모든 Bash 호출에서 파이썬 판정이 돈다(모드를 정하려면 대상 경로가 필요하다). `on` 에서도 파이썬 기동이
 실패하면 입구 폴백으로 OLD(그 `ask` 포함)가 나간다. `on` 에서 판정기 내부 예외가 나면 OLD ∪ 위험 단어로 판정한다(OLD 가 `ask`·`deny` 이거나
@@ -96,7 +97,8 @@ touch-ledger.py ─ PreToolUse `Write|Edit|NotebookEdit`(timeout 5초) 장부 �
 | `error`·`fallback` | 내부 예외 메시지(또는 출력 실패), 내부 예외 폴백으로 낸 판정이면 `true` |
 | `budget_exhausted` | 사유에 판정 시간 초과가 있으면 `true` |
 | `stats` | 판정 중 센 횟수(없으면 null): `container_lookup_none`(컨테이너 마운트 조회 실패·이름 미확정), `compose_project_dir_none`(compose exec 프로젝트 폴더 모름), `container_no_daemon`(데몬 부재 증거로 허용 — `docker` CLI 이고 데몬 직접 지정이 없을 때만), `scratch_hole`(임시 폴더 아래 마지막 이름만 변수인 대상을 허용) |
-| `settings_errors` | 스위치 settings 파일을 읽다 난 오류(파일 없음 제외). 있으면 스위치가 조용히 `off` 로 떨어졌을 수 있다 |
+| `settings_errors` | 스위치 settings 파일을 읽다 난 오류(파일 없음 제외). 있으면 스위치가 조용히 `off` 로 떨어졌을 수 있다. 삭제 허용 목록의 버린 패턴·깨진 값도 여기 |
+| `allow_delete` | 삭제 허용 목록(`HARNESS_BASH_GUARD_ALLOW_DELETE`)으로 풀린 삭제가 있을 때만 있는 키 — `대상 ← 패턴 원문` 목록. 모드와 무관하게 기록한다(사유 추적) |
 | `ledger_bytes` | 그 시점 장부 크기 |
 | `dynamic_kind` | 거부 사유가 "코드를 정적으로 알 수 없다"(`R_DYNAMIC`)일 때만 있는 키 — 해석기의 하위 사유 문구 그대로(목록은 spec §3.8 (가′) 표). 예: `명령 이름을 확정할 수 없음`·`단위 밖에서 오는 표준입력의 코드를 확정할 수 없음`·`표준입력 장치일 수 있는 경로를 확정할 수 없음`·`파이프로 넘긴 코드를 확정할 수 없음`·`셸 -c 문자열을 확정할 수 없음`·`셸 옵션 X 을 해석할 수 없음`(X 는 40자까지)·`이름 붙은 fd 입력 리다이렉트의 번호를 확정할 수 없음`·`fish 코드는 해석하지 않음`. 출력 사유에는 들어가지 않는다. `find -exec 의 명령 이름을 확정할 수 없음` 은 policy 경로에서 "대상을 확정할 수 없다" 로 나타나 이 키가 없다. 함수 호출 인라인 안의 이름 미확정은 "해석 한계"(`R_MODEL`)로 감싸져 이 키가 없다 |
 
