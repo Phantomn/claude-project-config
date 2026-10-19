@@ -363,10 +363,8 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     for p in rest:
         if is_scratch(p, ctx):
             res[p] = Cls(SCRATCH, p)
-    rest = [p for p in rest if p not in res]
-    _budget(ctx)   # 예산이 다한 뒤의 빈 births() 는 '세션 전'으로 떨어진다 — 시간 초과 사유가 맞다
-    for p in _session_new(rest, ctx):
-        res[p] = Cls(SESSION_NEW, p)
+    # 재생성 산출물은 SESSION_NEW 보다 먼저 — 이번 세션이 만든 build/ 도 세션 전 build/ 처럼 폴더째 판정한다(순회하면 상한에 걸려
+    # 같은 입력이 세션 전/중에 따라 허용/거부로 갈렸다, 2026-10-19)
     for top, ps in groups.items():
         ps = [p for p in ps if p not in res]
         ignored = git_ignored(top, ps, ctx)
@@ -376,6 +374,10 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
             rel = os.path.relpath(p, top)
             if REGENERABLE_NAMES.intersection(rel.split("/")) or rel.endswith(REGENERABLE_SUFFIXES):
                 res[p] = Cls(IGNORED_ARTIFACT, p)
+    rest = [p for p in rest if p not in res]
+    _budget(ctx)   # 예산이 다한 뒤의 빈 births() 는 '세션 전'으로 떨어진다 — 시간 초과 사유가 맞다
+    for p in _session_new(rest, ctx):
+        res[p] = Cls(SESSION_NEW, p)
     return [res.get(p) or Cls(PRESERVED, p) for p in paths]
 
 

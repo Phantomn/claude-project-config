@@ -344,6 +344,16 @@ class ClassifyTest(_WorldCase):
         c = classify(big, w.ctx()); self.assertEqual(c.kind, UNRESOLVED); self.assertIn("2000", c.detail)
         os.unlink(f"{big}/0"); self.assertEqual(k("{HOME}/big"), SESSION_NEW)          # 정확히 상한이면 순회
 
+    def test_session_new_regenerable_is_artifact(self):   # 2026-10-19 과차단: 이번 세션이 만든 build/ 도 세션 전 build/ 와 같은 부류(순회·상한 없음)
+        w2 = World(worktree=True); self.addCleanup(w2.close)   # 링크드 워크트리 — 실사용 재현 모양
+        for d in ("{WT}/android/app/build", "{WT}/build"):     # 세션 중 생성 / 세션 전 생성
+            p = w2.fmt(d); os.makedirs(p, exist_ok=True)
+            for i in range(DIR_ENTRY_CAP + 1):
+                open(f"{p}/{i}", "w").close()
+            self.assertEqual(classify(p, w2.ctx()).kind, IGNORED_ARTIFACT, d)
+        w2.sh("echo x > {WT}/new.sqlite"); self.assertEqual(classify(w2.fmt("{WT}/new.sqlite"), w2.ctx()).kind, SESSION_NEW)   # 재생성 이름 아닌 ignore 는 기존대로
+        self.assertEqual(classify(w2.fmt("{WT}/local.sqlite"), w2.ctx()).kind, PRESERVED)
+
     def test_unreadable_subdir_is_unresolved(self):    # Review Focus 5
         if os.geteuid() == 0:
             self.skipTest("root 는 권한 000 폴더도 읽는다")
