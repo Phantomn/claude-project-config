@@ -187,6 +187,14 @@ class MainTest(_WorldCase):
         r = self.run_main(w.payload("rmdir d"), old="")
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
+    def test_allow_delete_logged(self):   # 2026-10-19: 허용 목록으로 풀린 삭제는 모드와 무관하게 기록에 남는다(사유 추적)
+        w.set_repo_switch("notes_presession.txt", key="HARNESS_BASH_GUARD_ALLOW_DELETE")
+        r = self.run_main(w.payload("rm notes_presession.txt"), extra=ON)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(self.log_lines()[-1]["allow_delete"], [f"{w.repo}/notes_presession.txt ← notes_presession.txt"])
+        r = self.run_main(w.payload("rm notes_presession.txt"))   # off: 출력은 OLD 그대로, 기록만
+        self.assertEqual(r.stdout, OLD_ASK + "\n"); self.assertEqual(len(self.log_lines()), 2)
+
     def test_ascii_stdout(self):   # 리뷰 3: stdout 인코딩이 ascii 여도 deny JSON 이 나오고 rc 0
         r = subprocess.run([sys.executable, str(SCRIPTS / "bash_guard.py"), "--old", OLD_ASK], input=json.dumps(w.payload("rm src/main.py")).encode(),
                            env={**w.environ, **ON, "PYTHONIOENCODING": "ascii"}, capture_output=True, timeout=30, check=False)

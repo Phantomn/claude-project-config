@@ -48,6 +48,7 @@ from target_class import (
     before_session,
     classify,
     compose_container_id,
+    delete_allowed,
     docker_container_info,
     docker_daemon_absent,
     docker_volume_created,
@@ -860,6 +861,8 @@ def _judge_path(j: Job, p: str, ctx: Ctx, host: bool = True) -> Finding | None:
         return _worktree(j.op, c.worktree_root, ctx)
     if c.kind in _ALLOWED:
         return None
+    if j.rule == DELETE and c.kind in (PRESERVED, UNRESOLVED) and c.path and delete_allowed(c.path, ctx):
+        return None   # 사용자가 저장소 설정으로 허용한 삭제(HARNESS_BASH_GUARD_ALLOW_DELETE)
     if c.kind == UNRESOLVED:
         return Finding(j.op, target, UNRESOLVED, _unresolved_advice(c.detail, j.advice))
     if c.kind in (PROTECTED_NAME, PRESERVED):

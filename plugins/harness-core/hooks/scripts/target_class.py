@@ -41,6 +41,8 @@ class Ctx:
     deadline: float  # time.monotonic() 기준
     clock_margin: float = CLOCK_MARGIN
     stats: dict[str, int] = field(default_factory=dict)   # shadow 관측 지표(컨테이너 조회 실패·데몬 없음·임시 구멍 허용 건수)
+    allow_patterns: dict[str, list[tuple[str, str]]] = field(default_factory=dict)   # 저장소 → 삭제 허용 목록(판정당 1회 읽기)
+    allowed_deletes: list[str] = field(default_factory=list)   # 허용 목록으로 풀린 삭제 '대상 ← 패턴'(기록 allow_delete)
 
     @functools.cached_property
     def session_start(self) -> float | None:
@@ -455,6 +457,33 @@ def classify(path: str | None, ctx: Ctx, trailing_slash: bool = False) -> Cls:
         return worst if worst is me else Cls(worst.kind, p, f"{worst.path} {worst.detail}".rstrip())
     except _Unresolved as e:
         return Cls(UNRESOLVED, p, str(e))
+
+
+def delete_allowed(p: str, ctx: Ctx) -> bool:
+    """사용자가 대상 저장소 설정의 삭제 허용 목록에 둔 경로인가(p 는 classify 가 정규화한 경로). 보호 이름·추적 파일·
+    홈·루트·임시 루트 자체는 목록과 무관하게 안 된다 — 폴더면 안까지(분류 결과는 가장 나쁜 항목 하나만 담는다)."""
+    from fnmatch import fnmatchcase
+
+    from guard_mode import allow_delete_patterns, repo_root
+    root = repo_root(p, ctx.environ)
+    if root is None:
+        return False
+    if root not in ctx.allow_patterns:
+        ctx.allow_patterns[root] = allow_delete_patterns(root, ctx.environ)
+    hit = next((pat for pat, full in ctx.allow_patterns[root] if fnmatchcase(p, full)), None)
+    home = os.path.realpath(ctx.environ.get("HOME") or "/")
+    if hit is None or p in ("/", home, os.path.realpath(root)) or is_scratch_root(p, ctx) or protected_name(p):
+        return False
+    try:
+        top = _git_top(p, ctx)
+        if top is None or git_tracked(top, [p], ctx) != set():
+            return False
+        if os.path.isdir(p) and not os.path.islink(p) and _protected_inside(p, ctx) is not None:
+            return False
+    except _Unresolved:
+        return False
+    ctx.allowed_deletes.append(f"{p} ← {hit}")
+    return True
 
 
 def in_workspace(path: str, ctx: Ctx) -> bool:
