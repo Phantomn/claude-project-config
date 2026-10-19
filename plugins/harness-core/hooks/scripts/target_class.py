@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import stat
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -183,7 +184,8 @@ def protected_name(path: str) -> bool:
 
 MISSING, UNRESOLVED, PROTECTED_NAME, GIT_TRACKED, SCRATCH, SESSION_NEW, IGNORED_ARTIFACT, PRESERVED = (
     "MISSING", "UNRESOLVED", "PROTECTED_NAME", "GIT_TRACKED", "SCRATCH", "SESSION_NEW", "IGNORED_ARTIFACT", "PRESERVED")
-DIR_ENTRY_CAP = 2000
+# 비용 한도는 시간 예산(_budget)이 지킨다 — 상한은 그 안에 끝나는 크기(ext4 실측 20,000개 0.6초; /mnt/c 는 예산이 먼저 끊는다, 2026-10-19)
+DIR_ENTRY_CAP = 20000
 REGENERABLE_NAMES: frozenset[str] = frozenset(
     ["node_modules", "dist", "build", ".next", ".nuxt", "target", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox", ".venv", "venv", "coverage", ".coverage", ".gradle", ".parcel-cache", ".turbo", ".cache"])
 REGENERABLE_SUFFIXES = (".pyc", ".pyo", ".o", ".class")
@@ -205,8 +207,11 @@ class _Unresolved(Exception):
 
 
 def _start_dir(path: str) -> str:
-    # 대상이 링크면 링크가 놓인 폴더 기준(링크 대상의 저장소가 아니라)
-    return path if os.path.isdir(path) and not os.path.islink(path) else os.path.dirname(path)
+    # 대상이 링크면 링크가 놓인 폴더 기준(링크 대상의 저장소가 아니라). lstat 한 번 = isdir+islink(/mnt/c 는 호출당 수 ms)
+    try:
+        return path if stat.S_ISDIR(os.lstat(path).st_mode) else os.path.dirname(path)
+    except OSError:
+        return os.path.dirname(path)
 
 
 def _git_top(path: str, ctx: Ctx) -> str | None:
@@ -339,7 +344,7 @@ def _classify_many(paths: list[str], ctx: Ctx) -> list[Cls]:
     for p in paths:   # 경로마다 조상 lstat — /mnt/c 에서는 수백 개만으로 수 초(재생 최대 7.5초 실측)
         _budget(ctx)
         near[p] = _nearest_git(p, cache)
-    tops = sorted({t for t in near.values() if _is_session_repo(t, ctx)})
+    tops = sorted(t for t in set(near.values()) if _is_session_repo(t, ctx))   # 저장소마다 한 번(경로마다가 아니라)
     new_tops = _session_new(tops, ctx)
     for p in paths:
         if near[p] in new_tops:
