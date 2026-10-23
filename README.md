@@ -1,3 +1,10 @@
+> **⚠ 이 저장소는 더 이상 갱신되지 않습니다 (2026-10-23, archived).**
+> `phantomn-harness` 마켓플레이스와 플러그인(harness-core·superpowers fork·graphify·akm-eval)은 작성자의 비공개
+> 하네스 저장소로 이력째 통합되었습니다. 이 저장소는 마지막 공개판으로 읽기 전용으로 남습니다.
+>
+> **This repository is archived (2026-10-23).** The `phantomn-harness` marketplace and its plugins moved, with full
+> history, into the author's private harness repository. This is the last public snapshot.
+
 # Claude Code 범용 프로젝트 템플릿
 
 모든 프로젝트 타입에서 사용 가능한 범용 Claude Code 설정 템플릿
