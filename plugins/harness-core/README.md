@@ -19,6 +19,7 @@ agent·analysis·bounty, **셋 다 내용 상이**), 하네스 파일 98개 중 
 - **bash-guard**(`bash_guard.py`·`shell_parse.py`·`target_class.py`·`policy.py`·`ledger.py`·`guard_mode.py`·`touch-ledger.py`) —
   대상 성질 기반 파괴적 명령 판정기. 스위치 `HARNESS_BASH_GUARD`(기본 `off`). 설계: `docs/superpowers/specs/2026-10-14-bash-guard-design.md`,
   결정: [DECISIONS.md](DECISIONS.md), 한계: [LIMITS.md](LIMITS.md).
+- `bootstrap/` — 새 PC 개발 환경 이식 도구(수동 실행, 훅 아님). `verify` 로 충족 여부를 판정하고 `selftest` 로 자체 시험한다. 사용·결정·한계: [bootstrap/README.md](bootstrap/README.md).
 - `code-read-guard.py`·`guard-read-codefile.sh`·`symbol-tools.sh`(코드 읽기 → serena/codegraph), `task-handoff.sh`(/wrap 태스크 인계).
 
 ## 프로젝트별 값 (env 노브 — settings.json 의 `env`)

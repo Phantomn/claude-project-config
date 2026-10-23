@@ -8,3 +8,6 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 .DS_Store
+
+# bootstrap export 가 만드는 생성물 (패키지·저장소·크론 인벤토리)
+plugins/harness-core/bootstrap/manifest.txt
